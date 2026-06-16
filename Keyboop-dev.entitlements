@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- DEV-ONLY entitlements. Идентичны Keyboop.entitlements, но с disable-library-validation:
+         dev-сборка подписана self-signed «Keyboop Dev», а встроенный Sparkle.framework тем же
+         self-signed → Library Validation (часть hardened runtime) их бы не подружила. В RELEASE
+         этот файл НЕ используется: там всё подписано одним Developer ID (Q9244KA2SS) → LV проходит
+         сама, и ослаблять её не нужно. -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    <key>com.apple.security.device.microphone</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

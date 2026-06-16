@@ -1,0 +1,8 @@
+.build/
+.DS_Store
+Keyboop.app/
+*.xcodeproj
+
+# Punto-копии для reverse-engineering — не коммитим бинарь
+research/punto-switcher/PuntoSwitcher.app/
+PuntoS files/
