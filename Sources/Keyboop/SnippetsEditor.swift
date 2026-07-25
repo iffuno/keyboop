@@ -1,48 +1,61 @@
 import AppKit
 
-/// Редактор автозамены: таблица из двух колонок (что заменять | на что).
-/// UX: кнопка-корзина в каждой строке удаляет её; кнопка «+» добавляет новую строку;
-/// поддерживается вставка (Cmd+V) в оба поля — NSTextField принимает нативно.
-final class SnippetsEditor: NSView, NSTableViewDataSource, NSTableViewDelegate {
-    private var rows: [(String, String)]
-    private let table = NSTableView()
+/// Clip-view с верхним якорем — контент скролла начинается СВЕРХУ (а не снизу), как в канонe автора.
+private final class FlippedClipView: NSClipView { override var isFlipped: Bool { true } }
+
+/// Редактор автозамены: список строк «что заменять | на что | корзина», РУЧНАЯ вёрстка на NSStackView.
+///
+/// Почему не NSTableView (отказались 2026-06-25): его column-tiling неуправляем при фиксированной
+/// ширине scrollview — колонка «на что» (без maxWidth) упорно раздувалась на весь клип и выносила
+/// колонку корзины за правый край (frameOfCell корзины оказывался на x=tableW, кнопка «пряталась
+/// правее» — баг-репорт). Жёсткая фиксация колонок и привязка ширины таблицы не помогали.
+/// Ручные строки-HStack дают железную раскладку: trig (фикс) | exp (тянется) | корзина (фикс, у правого
+/// края, всегда видна). Бонусом нативно решаются: редактирование по ПЕРВОМУ клику (NSTextField ловит
+/// клик сам, без перехвата выделением таблицы) и сохранение на ЛЮБОЙ уход из поля (delegate).
+///
+/// Инвариант: всегда ровно одна пустая строка в конце — «куда добавлять». Начал писать в неё → снизу
+/// появляется новая пустая. Сохраняем в SnippetStore на каждое изменение и на конец редактирования.
+final class SnippetsEditor: NSView, NSTextFieldDelegate {
+    private var rows: [(String, String)] = []
     private let store = SnippetStore.shared
+    private let rowsStack = NSStackView()
+    private let scroll = NSScrollView()
+    private let rowHeight: CGFloat = 30
+    private let trigW: CGFloat = 150
+    private let trashW: CGFloat = 24
 
     override init(frame frameRect: NSRect) {
-        rows = store.pairs()
         super.init(frame: frameRect)
+        rows = store.pairs()
+        normalizeTrailing()
         build()
+        rebuild()
     }
     required init?(coder: NSCoder) { fatalError("no xib") }
 
+    /// Всегда ровно одна пустая строка в конце (и без «дыр» — пустые в середине схлопываем).
+    private func normalizeTrailing() {
+        rows.removeAll { $0.0.isEmpty && $0.1.isEmpty }
+        rows.append(("", ""))
+    }
+
     private func build() {
-        let trig = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("trigger"))
-        trig.title = L10n.t("snip.colTrigger")
-        trig.minWidth = 90; trig.width = 140; trig.maxWidth = 220
+        rowsStack.orientation = .vertical
+        rowsStack.alignment = .leading           // строки прижаты влево; ширину каждой пиним отдельно
+        rowsStack.spacing = 0
+        rowsStack.translatesAutoresizingMaskIntoConstraints = false
 
-        let exp = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("expansion"))
-        exp.title = L10n.t("snip.colExpansion")
-        exp.minWidth = 120
+        let doc = NSView()
+        doc.translatesAutoresizingMaskIntoConstraints = false
+        doc.addSubview(rowsStack)
 
-        let trash = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("trash"))
-        trash.title = ""; trash.minWidth = 30; trash.width = 30; trash.maxWidth = 30
-
-        table.addTableColumn(trig)
-        table.addTableColumn(exp)
-        table.addTableColumn(trash)
-        table.usesAlternatingRowBackgroundColors = true
-        table.rowHeight = 26
-        table.dataSource = self
-        table.delegate = self
-        table.style = .inset
-        table.allowsMultipleSelection = false
-        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        // Скрываем стандартный header (колонка корзины выглядит чище без header-бордера)
-        table.headerView = nil
-
-        let scroll = NSScrollView()
-        scroll.documentView = table
+        scroll.contentView = FlippedClipView()   // контент сверху
+        scroll.documentView = doc
         scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false     // по горизонтали НИКОГДА не скроллим
+        scroll.autohidesScrollers = true
+        scroll.scrollerStyle = .overlay
+        scroll.drawsBackground = false
         scroll.borderType = .lineBorder
         scroll.wantsLayer = true
         scroll.layer?.cornerRadius = 7
@@ -52,12 +65,11 @@ final class SnippetsEditor: NSView, NSTableViewDataSource, NSTableViewDelegate {
         scroll.translatesAutoresizingMaskIntoConstraints = false
         addSubview(scroll)
 
-        // Кнопка «+» для добавления новой строки
-        let add = NSButton(title: "", target: self, action: #selector(addRow))
+        // «+» — добавить строку (фокус в пустую снизу) с клавиатуры.
+        let add = NSButton(title: "", target: self, action: #selector(addRowAction))
         add.bezelStyle = .rounded
         add.image = NSImage(systemSymbolName: "plus", accessibilityDescription: L10n.t("snip.add"))
         add.imagePosition = .imageOnly
-        add.widthAnchor.constraint(equalToConstant: 30).isActive = true
         add.translatesAutoresizingMaskIntoConstraints = false
         addSubview(add)
 
@@ -65,91 +77,142 @@ final class SnippetsEditor: NSView, NSTableViewDataSource, NSTableViewDelegate {
             scroll.topAnchor.constraint(equalTo: topAnchor),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scroll.heightAnchor.constraint(equalToConstant: 220),
+            scroll.heightAnchor.constraint(equalToConstant: 470),
             add.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 8),
             add.leadingAnchor.constraint(equalTo: leadingAnchor),
-            add.bottomAnchor.constraint(equalTo: bottomAnchor)
+            add.widthAnchor.constraint(equalToConstant: 30),
+            add.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            // documentView шириной В КЛИП (без горизонтального скролла), высота — по контенту строк.
+            doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
+            rowsStack.topAnchor.constraint(equalTo: doc.topAnchor),
+            rowsStack.leadingAnchor.constraint(equalTo: doc.leadingAnchor),
+            rowsStack.trailingAnchor.constraint(equalTo: doc.trailingAnchor),
+            rowsStack.bottomAnchor.constraint(equalTo: doc.bottomAnchor),
         ])
     }
 
-    // MARK: NSTableView
+    // MARK: - Построение строк
 
-    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
+    private func rebuild() {
+        for v in rowsStack.arrangedSubviews { rowsStack.removeArrangedSubview(v); v.removeFromSuperview() }
+        for i in rows.indices { addRow(i) }
+    }
 
-    func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard row < rows.count else { return nil }
-        let colID = tableColumn?.identifier.rawValue ?? ""
+    private func addRow(_ index: Int) {
+        let row = makeRow(index)
+        rowsStack.addArrangedSubview(row)
+        row.widthAnchor.constraint(equalTo: rowsStack.widthAnchor).isActive = true   // строка на всю ширину
+    }
 
-        if colID == "trash" {
-            let id = NSUserInterfaceItemIdentifier("trashBtn")
-            let btn = (tableView.makeView(withIdentifier: id, owner: self) as? NSButton) ?? {
-                let b = NSButton(title: "", target: self, action: #selector(deleteRow(_:)))
-                b.identifier = id
-                b.bezelStyle = .regularSquare
-                b.isBordered = false
-                b.image = NSImage(systemSymbolName: "trash", accessibilityDescription: "Удалить")
-                b.imagePosition = .imageOnly
-                b.contentTintColor = .tertiaryLabelColor
-                // При hover подсвечиваем coral — через tracking
-                b.wantsLayer = true
-                return b
-            }()
-            btn.tag = row
-            return btn
+    private func makeRow(_ index: Int) -> NSView {
+        let empty = rows[index].0.isEmpty && rows[index].1.isEmpty
+        let isLast = index == rows.count - 1
+
+        let trig = field(mono: true,  value: rows[index].0, id: "trig",
+                         placeholder: isLast ? L10n.t("snip.phTrigger") : nil)
+        let exp  = field(mono: false, value: rows[index].1, id: "exp",
+                         placeholder: isLast ? L10n.t("snip.phExpansion") : nil)
+
+        let trash = NSButton(title: "", target: self, action: #selector(deleteRowAction(_:)))
+        trash.bezelStyle = .regularSquare
+        trash.isBordered = false
+        let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        trash.image = NSImage(systemSymbolName: "trash", accessibilityDescription: L10n.t("act.delete"))?.withSymbolConfiguration(cfg)
+        trash.imagePosition = .imageOnly
+        trash.imageScaling = .scaleProportionallyDown
+        trash.contentTintColor = .secondaryLabelColor
+        trash.toolTip = L10n.t("snip.delRow")
+        trash.isHidden = empty                        // у пустой строки удалять нечего
+        trash.translatesAutoresizingMaskIntoConstraints = false
+
+        let h = NSStackView(views: [trig, exp, trash])
+        h.orientation = .horizontal
+        h.alignment = .centerY
+        h.spacing = 8
+        h.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 8)
+        h.translatesAutoresizingMaskIntoConstraints = false
+        h.wantsLayer = true
+        h.layer?.backgroundColor = (index % 2 == 1) ? NSColor.white.withAlphaComponent(0.03).cgColor : NSColor.clear.cgColor
+
+        // trig фикс, корзина фикс, exp тянется (низкий hugging) → корзина всегда у правого края.
+        trig.widthAnchor.constraint(equalToConstant: trigW).isActive = true
+        trash.widthAnchor.constraint(equalToConstant: trashW).isActive = true
+        h.heightAnchor.constraint(equalToConstant: rowHeight).isActive = true
+        trig.setContentHuggingPriority(.required, for: .horizontal)
+        trig.setContentCompressionResistancePriority(.required, for: .horizontal)
+        exp.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        return h
+    }
+
+    private func field(mono: Bool, value: String, id: String, placeholder: String?) -> NSTextField {
+        let f = NSTextField()
+        f.identifier = NSUserInterfaceItemIdentifier(id)
+        f.stringValue = value
+        f.placeholderString = placeholder
+        f.isBordered = false
+        f.drawsBackground = false
+        f.isEditable = true
+        f.focusRingType = .none
+        f.font = mono ? .monospacedSystemFont(ofSize: 12, weight: .regular) : .systemFont(ofSize: 12)
+        f.lineBreakMode = .byTruncatingTail
+        f.cell?.usesSingleLineMode = true
+        f.delegate = self
+        f.translatesAutoresizingMaskIntoConstraints = false
+        return f
+    }
+
+    // MARK: - Редактирование (нативно по первому клику в поле)
+
+    /// Индекс строки, которой принадлежит поле/кнопка (по позиции в стеке — устойчиво к сдвигам).
+    private func rowIndex(of view: NSView) -> Int? {
+        guard let rowView = view.superview else { return nil }
+        return rowsStack.arrangedSubviews.firstIndex(of: rowView)
+    }
+
+    @discardableResult
+    private func syncField(_ f: NSTextField) -> Int? {
+        guard let row = rowIndex(of: f), row < rows.count else { return nil }
+        if f.identifier?.rawValue == "trig" { rows[row].0 = f.stringValue } else { rows[row].1 = f.stringValue }
+        return row
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        guard let f = obj.object as? NSTextField, let row = syncField(f) else { return }
+        save()                                        // сохраняем на КАЖДОЕ изменение, не только по Enter
+        // Начали писать в последней (пустой) строке → показать её корзину и добавить новую пустую снизу.
+        if row == rows.count - 1, !(rows[row].0.isEmpty && rows[row].1.isEmpty) {
+            if let h = f.superview as? NSStackView, let trash = h.arrangedSubviews.last { trash.isHidden = false }
+            rows.append(("", ""))
+            addRow(rows.count - 1)
         }
-
-        let isTrig = colID == "trigger"
-        let id = NSUserInterfaceItemIdentifier(isTrig ? "tCell" : "eCell")
-        let field = (tableView.makeView(withIdentifier: id, owner: self) as? NSTextField) ?? {
-            let f = NSTextField()
-            f.identifier = id
-            f.isBordered = false
-            f.drawsBackground = false
-            f.isEditable = true
-            f.font = isTrig ? .monospacedSystemFont(ofSize: 12, weight: .regular) : .systemFont(ofSize: 12)
-            f.placeholderString = isTrig ? L10n.t("snip.phTrigger") : L10n.t("snip.phExpansion")
-            f.target = self
-            f.action = #selector(edited(_:))
-            return f
-        }()
-        field.stringValue = isTrig ? rows[row].0 : rows[row].1
-        field.tag = row * 2 + (isTrig ? 0 : 1)
-        return field
     }
 
-    @objc private func edited(_ s: NSTextField) {
-        let row = s.tag / 2
-        let isTrig = (s.tag % 2 == 0)
-        guard row < rows.count else { return }
-        if isTrig { rows[row].0 = s.stringValue } else { rows[row].1 = s.stringValue }
-        save()
+    func controlTextDidEndEditing(_ obj: Notification) {
+        guard let f = obj.object as? NSTextField else { return }
+        syncField(f)
+        save()                                        // уход из поля (Tab/клик/Enter) — тоже сохраняет
     }
 
-    @objc private func addRow() {
-        rows.append(("", ""))
-        table.reloadData()
-        table.scrollRowToVisible(rows.count - 1)
-        // Сразу начинаем редактировать поле «триггер» новой строки
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.table.editColumn(0, row: self.rows.count - 1, with: nil, select: true)
-        }
+    // MARK: - Кнопки
+
+    @objc private func addRowAction() {
+        // последняя строка по инварианту пустая → просто ставим в неё фокус
+        guard let last = rowsStack.arrangedSubviews.last as? NSStackView,
+              let trig = last.arrangedSubviews.first as? NSTextField else { return }
+        window?.makeFirstResponder(trig)
     }
 
-    @objc private func deleteRow(_ sender: NSButton) {
-        let row = sender.tag
-        guard row < rows.count else { return }
+    @objc private func deleteRowAction(_ sender: NSButton) {
+        guard let row = rowIndex(of: sender), row < rows.count else { return }
         rows.remove(at: row)
-        table.reloadData()
+        normalizeTrailing()
+        rebuild()
         save()
     }
 
     private func save() {
-        var map: [String: String] = [:]
-        for (t, e) in rows {
-            let trigger = t.trimmingCharacters(in: .whitespaces)
-            if !trigger.isEmpty { map[trigger] = e }
-        }
-        store.setAll(map)
+        // В ПОРЯДКЕ строк (по добавлению) — стор сам отфильтрует пустые и схлопнет дубли.
+        store.setAll(rows.map { ($0.0, $0.1) })
     }
 }

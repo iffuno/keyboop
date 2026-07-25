@@ -2,8 +2,9 @@ import AppKit
 
 /// Своё всплывающее окно-баннер вместо системных уведомлений (UNUserNotification): без запроса
 /// разрешений, без лишнего раздражения, полный контроль над видом. Появляется вверху справа под
-/// меню-баром — как нативное уведомление, но это НАШЕ окно. Тёмный HUD-материал + coral.
-/// Применяется: предложение обновления (2 кнопки) и инфо «выучил слово» (авто-скрытие).
+/// меню-баром — как нативное уведомление, но это НАШЕ окно. Тёмный фон + coral.
+/// Два вида: ИНФО-тост (без кнопок) — компактный, авто-скрытие, клик/свайп/× закрывают;
+/// и баннер-вопрос/обновление (с кнопками) — ждёт решения.
 final class AppBanner {
     static let shared = AppBanner()
 
@@ -13,8 +14,9 @@ final class AppBanner {
     private var panel: NSPanel?
     private var dismissTimer: Timer?
     private var actionHandlers: [() -> Void] = []
+    private var restX: CGFloat = 0          // x в покое (для свайпа/возврата)
 
-    /// Показать баннер. `actions` пусто → инфо-баннер. `autoDismiss` > 0 → сам скроется через N сек.
+    /// Показать баннер. `actions` пусто → инфо-тост. `autoDismiss` > 0 → сам скроется через N сек.
     func show(title: String, body: String, actions: [Action] = [], autoDismiss: TimeInterval = 0) {
         DispatchQueue.main.async { self.present(title: title, body: body, actions: actions, autoDismiss: autoDismiss) }
     }
@@ -22,24 +24,28 @@ final class AppBanner {
     func dismiss() {
         dismissTimer?.invalidate(); dismissTimer = nil
         guard let p = panel else { return }
+        panel = nil
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.18; p.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in p.orderOut(nil); self?.panel = nil })
+        }, completionHandler: { p.orderOut(nil) })
     }
 
     // MARK: present
 
     private func present(title: String, body: String, actions: [Action], autoDismiss: TimeInterval) {
         dismiss(); dismissTimer?.invalidate()
-        let width: CGFloat = 420   // = makeContent width
-        // Сплошной тёмный фон (не HUD-блюр): коралловая кнопка играет, вид как в нашем рендере — чище.
-        let (content, height) = makeContent(title: title, body: body, actions: actions, solidDarkBG: true)
+        let (content, width, height) = makeContent(title: title, body: body, actions: actions, solidDarkBG: true)
 
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let margin: CGFloat = 14
         let rect = NSRect(x: screen.maxX - width - margin, y: screen.maxY - height - margin, width: width, height: height)
+        restX = rect.minX
 
         let p = NSPanel(contentRect: rect, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        // Баннер всегда на тёмно-сером фоне (0.15) — пиннем тёмную тему, иначе в СВЕТЛОЙ системной
+        // теме .labelColor/.secondaryLabelColor резолвятся в тёмный → тёмный текст на тёмном (автор
+        // поймал «серое окошко с чёрным шрифтом»). Раньше пиннилось только в dev-хуке renderSample.
+        p.appearance = NSAppearance(named: .darkAqua)
         p.level = .floating
         p.isOpaque = false
         p.backgroundColor = .clear
@@ -55,20 +61,36 @@ final class AppBanner {
             p.animator().setFrame(rect, display: true)
         }
         panel = p
+
+        // Свайп вправо → закрыть (как у нативных уведомлений). Работает в обоих видах.
+        let pan = NSPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        content.addGestureRecognizer(pan)
+        // Инфо-тост (без кнопок) — клик по нему тоже закрывает (кнопок нет, не конфликтует).
+        if actions.isEmpty {
+            let click = NSClickGestureRecognizer(target: self, action: #selector(handleClick(_:)))
+            content.addGestureRecognizer(click)
+        }
+
+        // Авто-скрытие — таймер в .common, чтобы срабатывал даже во время трекинга/скролла.
         if autoDismiss > 0 {
-            dismissTimer = Timer.scheduledTimer(withTimeInterval: autoDismiss, repeats: false) { [weak self] _ in self?.dismiss() }
+            let t = Timer(timeInterval: autoDismiss, repeats: false) { [weak self] _ in self?.dismiss() }
+            RunLoop.main.add(t, forMode: .common)
+            dismissTimer = t
         }
     }
 
-    // MARK: content (общее для показа и off-screen рендера)
+    // MARK: content
 
-    /// `solidDarkBG` — тёмная заливка вместо живого HUD-блюра (блюр off-screen не рисуется).
-    ///
-    /// Композиция: крупный логотип слева во всю высоту карточки, справа от него — ОДНА колонка
-    /// (заголовок → текст → кнопки), выровненная по единой левой линии. Левый край левой кнопки
-    /// стоит ровно под текстом, ничего не «торчит» в сторону. Логотип отцентрован по высоте колонки.
-    private func makeContent(title: String, body: String, actions: [Action], solidDarkBG: Bool = false) -> (NSView, CGFloat) {
-        let width: CGFloat = 420
+    /// Возвращает (вью, ширина, высота). ИНФО-тост (actions пусто): компактный — логотип слева с
+    /// равными полями сверху/снизу/слева, ширина по контенту. Баннер с кнопками: крупный логотип + колонка.
+    private func makeContent(title: String, body: String, actions: [Action], solidDarkBG: Bool = false) -> (NSView, CGFloat, CGFloat) {
+        let compact = actions.isEmpty
+        let maxW: CGFloat = 420
+        let pad: CGFloat = compact ? 14 : 20          // равные поля (сверху/снизу/слева)
+        let rightPad: CGFloat = compact ? 34 : 20     // справа чуть больше — под крестик
+        let iconSize: CGFloat = compact ? 40 : 72
+        let gap: CGFloat = compact ? 12 : 16
+
         let content: NSView
         if solidDarkBG {
             let v = NSView(); v.wantsLayer = true
@@ -79,17 +101,16 @@ final class AppBanner {
             content = v
         }
         content.wantsLayer = true
-        content.layer?.cornerRadius = 18
+        content.layer?.cornerRadius = compact ? 14 : 18
         content.layer?.cornerCurve = .continuous
         content.layer?.masksToBounds = true
         content.layer?.borderWidth = 1
         content.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
 
-        // Логотип — крупный (~на высоту трёх строк текста), якорь всей композиции.
         let icon = NSImageView(); icon.image = NSApp.applicationIconImage
         icon.translatesAutoresizingMaskIntoConstraints = false
-        icon.widthAnchor.constraint(equalToConstant: 72).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 72).isActive = true
+        icon.widthAnchor.constraint(equalToConstant: iconSize).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: iconSize).isActive = true
         icon.setContentHuggingPriority(.required, for: .horizontal)
 
         let titleL = NSTextField(labelWithString: title)
@@ -102,7 +123,6 @@ final class AppBanner {
         let textCol = NSStackView(views: [titleL, bodyL]); textCol.orientation = .vertical
         textCol.alignment = .leading; textCol.spacing = 3
 
-        // Правая колонка: текст + кнопки, всё по одной левой линии.
         var colRows: [NSView] = [textCol]
         if !actions.isEmpty {
             actionHandlers = actions.map { $0.handler }
@@ -116,41 +136,52 @@ final class AppBanner {
         rightCol.alignment = .leading; rightCol.spacing = 14
 
         let row = NSStackView(views: [icon, rightCol]); row.orientation = .horizontal
-        row.spacing = 16; row.alignment = .centerY
+        row.spacing = gap; row.alignment = .centerY
         row.translatesAutoresizingMaskIntoConstraints = false
-        row.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)   // ровные щедрые поля
+        row.edgeInsets = NSEdgeInsets(top: pad, left: pad, bottom: pad, right: rightPad)
         content.addSubview(row)
         NSLayoutConstraint.activate([
             row.leadingAnchor.constraint(equalTo: content.leadingAnchor),
             row.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             row.topAnchor.constraint(equalTo: content.topAnchor),
             row.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            content.widthAnchor.constraint(equalToConstant: width)
         ])
 
-        // × — в правом верхнем углу (абсолютно, не влияет на раскладку).
-        let close = NSButton(title: "", target: self, action: #selector(closeTapped))
+        // Ширина: с кнопками — фиксированные 420 (тексту есть где переноситься); тост — по контенту (до maxW).
+        var widthC: NSLayoutConstraint? = nil
+        if !compact {
+            widthC = content.widthAnchor.constraint(equalToConstant: maxW); widthC!.isActive = true
+        }
+        content.layoutSubtreeIfNeeded()
+        var w = compact ? min(content.fittingSize.width, maxW) : maxW
+        if compact && content.fittingSize.width > maxW {   // длинный текст — упираем в maxW, перенос на 2 строки
+            widthC = content.widthAnchor.constraint(equalToConstant: maxW); widthC!.isActive = true
+            content.layoutSubtreeIfNeeded(); w = maxW
+        }
+
+        // × — в правом верхнем углу (поверх, не влияет на раскладку). FirstMouseButton — иначе первый
+        // клик по неактивной .nonactivatingPanel macOS глотает и кнопка кажется «мёртвой».
+        let close = FirstMouseButton(title: "", target: self, action: #selector(closeTapped))
         close.isBordered = false; close.bezelStyle = .regularSquare
-        close.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Закрыть")
+        close.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: L10n.t("act.close"))
         close.imageScaling = .scaleProportionallyDown
         close.contentTintColor = .tertiaryLabelColor
         close.translatesAutoresizingMaskIntoConstraints = false
         content.addSubview(close)
         NSLayoutConstraint.activate([
-            close.topAnchor.constraint(equalTo: content.topAnchor, constant: 13),
-            close.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -13),
-            close.widthAnchor.constraint(equalToConstant: 15),
-            close.heightAnchor.constraint(equalToConstant: 15)
+            close.topAnchor.constraint(equalTo: content.topAnchor, constant: 12),
+            close.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -12),
+            close.widthAnchor.constraint(equalToConstant: 16),
+            close.heightAnchor.constraint(equalToConstant: 16)
         ])
 
         content.layoutSubtreeIfNeeded()
-        return (content, content.fittingSize.height)
+        return (content, w, content.fittingSize.height)
     }
 
-    /// Кнопка-«пилюля» с ГАРАНТИРОВАННЫМ цветом (layer-фон + белый/светлый текст), а не капризный
-    /// bezelColor (он в живом окне на тёмном HUD не красился — выходил серым).
+    /// Кнопка-«пилюля» с гарантированным цветом (layer-фон). FirstMouseButton — первый клик срабатывает.
     private func pillButton(_ title: String, coral: Bool, tag: Int) -> NSButton {
-        let b = NSButton(title: "", target: self, action: #selector(actionTapped(_:)))
+        let b = FirstMouseButton(title: "", target: self, action: #selector(actionTapped(_:)))
         b.tag = tag
         b.isBordered = false
         b.wantsLayer = true
@@ -162,7 +193,7 @@ final class AppBanner {
             .foregroundColor: coral ? NSColor.white : NSColor.labelColor, .font: font])
         let tw = ceil((title as NSString).size(withAttributes: [.font: font]).width)
         b.translatesAutoresizingMaskIntoConstraints = false
-        b.widthAnchor.constraint(equalToConstant: tw + 32).isActive = true   // ~16px поля по бокам
+        b.widthAnchor.constraint(equalToConstant: tw + 32).isActive = true
         b.heightAnchor.constraint(equalToConstant: 36).isActive = true
         b.setContentHuggingPriority(.required, for: .horizontal)
         return b
@@ -170,22 +201,57 @@ final class AppBanner {
 
     /// Off-screen рендер образца баннера в PNG (dev-хук визуальной проверки; язык — по L10n.current).
     func renderSample(to path: String) {
-        let (content, height) = makeContent(
+        let (content, width, height) = makeContent(
             title: String(format: L10n.t("upd.notifyTitle"), "0.2.4"), body: L10n.t("upd.notifyBody"),
             actions: [.init(title: L10n.t("upd.now"), coral: true) {}, .init(title: L10n.t("upd.autoShort"), coral: false) {}],
             solidDarkBG: true)
         content.appearance = NSAppearance(named: .darkAqua)
-        content.frame = NSRect(x: 0, y: 0, width: 420, height: height)
+        content.frame = NSRect(x: 0, y: 0, width: width, height: height)
         content.layoutSubtreeIfNeeded()
         guard let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { return }
         content.cacheDisplay(in: content.bounds, to: rep)
         if let data = rep.representation(using: .png, properties: [:]) { try? data.write(to: URL(fileURLWithPath: path)) }
     }
 
+    // MARK: жесты
+
+    @objc private func handleClick(_ g: NSClickGestureRecognizer) { dismiss() }
+
+    @objc private func handlePan(_ g: NSPanGestureRecognizer) {
+        guard let p = panel else { return }
+        let tx = g.translation(in: nil).x
+        switch g.state {
+        case .changed:
+            var f = p.frame; f.origin.x = restX + max(0, tx); p.setFrame(f, display: true)   // тянем только вправо
+        case .ended, .cancelled, .failed:
+            if tx > 60 {                                   // свайп достаточный → улетает вправо и закрывается
+                dismissTimer?.invalidate(); dismissTimer = nil
+                let win = p; panel = nil
+                NSAnimationContext.runAnimationGroup({ ctx in
+                    ctx.duration = 0.16
+                    var f = win.frame; f.origin.x += 360; win.animator().setFrame(f, display: true)
+                    win.animator().alphaValue = 0
+                }, completionHandler: { win.orderOut(nil) })
+            } else {                                       // недостаточно → возврат на место
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = 0.15
+                    var f = p.frame; f.origin.x = restX; p.animator().setFrame(f, display: true)
+                }
+            }
+        default: break
+        }
+    }
+
     @objc private func actionTapped(_ s: NSButton) {
         let h = actionHandlers[safe: s.tag]; dismiss(); h?()
     }
     @objc private func closeTapped() { dismiss() }
+}
+
+/// Кнопка, реагирующая на ПЕРВЫЙ клик даже когда окно неактивно (.nonactivatingPanel).
+/// Без этого первый клик по × / кнопкам баннера macOS «съедает» — кнопка кажется мёртвой.
+private final class FirstMouseButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 private extension Array {

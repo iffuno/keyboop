@@ -18,6 +18,38 @@ enum CueSynth {
     static let startData: Data = makeTwoTone(baseHz, baseHz * ratio)                 // 330 → 440 ↗
     static let stopData:  Data = makeTwoTone(baseHz * ratio, baseHz * ratio * ratio) // 440 → 587 ↗
     static let failData:  Data = makeTwoTone(300, 225)                               // 300 → 225 ↘ «не вышло»
+    /// СВОЙ звук переключения раскладки (опция в настройках; по умолчанию остаётся системный Pop —
+    /// решение автора 25.07). Выбран им из десяти вариантов на слух — №9: «короткий и сухой».
+    ///
+    /// Параметры и почему такие: 440 Гц — выше нашей базовой 330 (на 330 с падением тона звук
+    /// получался «грустным»: падение = минорный ход). Тон РОВНЫЙ, без съезда. Удар короче обычного
+    /// (34 мс вместо 45) и спад быстрее (taufrac 0.38) — отсюда «сухость», без звона и хвоста.
+    /// Мягкая атака 7 мс, как у остальных наших звуков (не щелчок). Повтор через 22 мс — двойной,
+    /// но слитный. Итого ~90 мс.
+    static let switchData: Data = makeSwitchCue()
+
+    private static func makeSwitchCue() -> Data {
+        var s: [Int16] = []
+        appendDry(&s)
+        appendSilence(&s, 0.022)
+        appendDry(&s)
+        return wav(s)
+    }
+
+    /// Один короткий сухой удар 440 Гц (без падения тона и обертонов).
+    private static func appendDry(_ out: inout [Int16]) {
+        let dur = 0.034, freq = 440.0
+        let n = Int(sampleRate * dur)
+        out.reserveCapacity(out.count + n)
+        for i in 0..<n {
+            let t = Double(i) / sampleRate
+            let attack = min(1.0, t / 0.007)
+            let decay  = exp(-t / (dur * 0.38))
+            let v = sin(2.0 * .pi * freq * t) * attack * decay * amp
+            out.append(Int16(max(-1.0, min(1.0, v)) * 32_767))
+        }
+    }
+
     /// Звук перевода: тёплое восходящее трезвучие (три ноты) — «преобразование / перетекание
     /// смысла из языка в язык». Отличается от двухтонового «тук-тук» конвертации и записи.
     static let translateData: Data = makeTriTone(330, 415, 523)                      // до-ми-соль ↗ мажор

@@ -107,8 +107,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         sidebar.onSelect = { [weak self] s in self?.detail.show(s) }
         detail.onLanguageChanged = { [weak self] in
-            self?.sidebar.refreshTitles()
-            self?.detail.reshow()
+            // Тоже откладываем: приходит из action popup'а языка, а reshow сносит сам popup.
+            DispatchQueue.main.async {
+                self?.sidebar.refreshTitles()
+                self?.detail.reshow()
+            }
         }
         sidebar.select(0, animated: false)
     }
@@ -116,6 +119,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     func show(section: SettingsSection? = nil) {
         detail.reload()
         if let section { sidebar.select(section.rawValue, animated: false) }
+        else { detail.revalidateVoiceIfShown() }   // без явного раздела — пере-проверить файлы моделей на диске
+        // Пока открыты настройки — показываем иконку в Доке. У LSUIElement-агента её нет, а меню-бар у
+        // многих переполнен (наш пункт не умещается и его не видно). Док — надёжный способ вернуться в
+        // приложение. На закрытии снова прячем (windowWillClose) — в простое остаёмся чистым агентом.
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }
@@ -133,7 +141,15 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             try? png.write(to: URL(fileURLWithPath: base + "_narrow.png"))
         }
     }
-    func windowWillClose(_ notification: Notification) { detail.saveAll() }
+    func windowWillClose(_ notification: Notification) {
+        detail.saveAll()
+        NSApp.setActivationPolicy(.accessory)   // настройки закрыты → убираем иконку из Дока (снова агент)
+    }
+    /// Фокус вернулся к окну (напр. удалили файл модели в Finder и переключились обратно) — освежаем
+    /// статус моделей, если открыт раздел «Голос», чтобы «Установлена/Скачать» отражали реальность на диске.
+    func windowDidBecomeKey(_ notification: Notification) {
+        detail.revalidateVoiceIfShown()
+    }
     /// Обновить поля (напр. список «Выученные» после обучения на отмене), если окно открыто.
     func reload() { if window?.isVisible == true { detail.reload() } }
 
@@ -363,7 +379,7 @@ final class DetailVC: NSViewController {
         NSLayoutConstraint.activate([
             column.topAnchor.constraint(equalTo: docView.topAnchor, constant: DS.contentMargin),
             column.bottomAnchor.constraint(equalTo: docView.bottomAnchor, constant: -DS.contentMargin),
-            // ЛЕВЫЙ КРАЙ + ФИКС ширина (по просьбе Ивана): блок прижат влево, ширина 480, справа —
+            // ЛЕВЫЙ КРАЙ + ФИКС ширина (по просьбе автора): блок прижат влево, ширина 480, справа —
             // свободное место. Окно не сужается ниже minWindowWidth → блок гарантированно влезает,
             // обрезки нет. Никакого центрирования и «docView шире вьюпорта».
             column.leadingAnchor.constraint(equalTo: docView.leadingAnchor, constant: DS.contentMargin),
@@ -505,6 +521,37 @@ final class DetailVC: NSViewController {
     }
 
     func reshow() { show(currentSection) }
+    /// Дешёвая сигнатура файлов моделей на диске (имя+размер+mtime). Меняется ровно тогда, когда
+    /// модель скачали/удалили/подменили — включая удаление ИЗВНЕ через Finder.
+    private func modelsSignature() -> String {
+        let dir = (VoiceController.modelPath("") as NSString).deletingLastPathComponent
+        let fm = FileManager.default
+        guard let names = try? fm.contentsOfDirectory(atPath: dir) else { return "" }
+        return names.sorted().map { n -> String in
+            let a = try? fm.attributesOfItem(atPath: (dir as NSString).appendingPathComponent(n))
+            let size = (a?[.size] as? NSNumber)?.int64Value ?? -1
+            let mtime = (a?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? -1
+            return "\(n):\(size):\(Int(mtime))"
+        }.joined(separator: "|")
+    }
+    private var lastModelsSignature: String?
+
+    /// Пере-проверить статус моделей (файлы на диске), если сейчас показан раздел «Голос».
+    /// Нужно, когда модель удалили ИЗВНЕ (Finder/rm) — строка статуса строится один раз по живой
+    /// проверке, а `reload()` её не трогает, поэтому «Установлена/Скачать» устаревали (репорт 16.07).
+    /// Только раздел «Голос»: у других (Исключения) есть поля ввода — пересборка сбросила бы недонабранное.
+    ///
+    /// ВАЖНО (20.07): пересобираем ТОЛЬКО если сигнатура файлов изменилась. Безусловный reshow на
+    /// каждую активацию окна прогонял SwiftUI-графы всех контролов раздела по 2–3 раза за открытие
+    /// и умножал частоту PAC-краша на macOS 26 в разы (см. RowMetrics). Фикс 16.07 при этом цел:
+    /// удалили модель в Finder → сигнатура другая → пересборка происходит.
+    func revalidateVoiceIfShown() {
+        guard currentSection == .voice else { return }
+        let sig = modelsSignature()
+        guard sig != lastModelsSignature else { return }   // на диске ничего не менялось — не трогаем UI
+        lastModelsSignature = sig
+        reshow()
+    }
     func reload() {
         ignoredChips?.set(exceptions.ignoredSorted)
         learnedChips?.set(exceptions.learnedSorted)
@@ -544,11 +591,28 @@ final class DetailVC: NSViewController {
             group(8),
             card([
                 switchRow(L10n.t("switch.auto"), L10n.t("switch.autoSub"), settings.autoEnabled, #selector(toggleAuto)),
-                switchRow(L10n.t("switch.live"), L10n.t("switch.liveSub"), settings.liveFixEnabled, #selector(toggleLive)),
+                // «Чинить на лету» — надстройка над авто-переключением: движок и так гейтит его по
+                // autoEnabled (Engine ~278). Показываем это честно: авто выкл → тумблер серый и
+                // выключенный. САМА настройка при этом не трогается — включат авто обратно, и
+                // live-fix вернётся таким, каким был (регресс замечено в тестировании).
+                switchRow(L10n.t("switch.live"), L10n.t("switch.liveSub"),
+                          settings.autoEnabled && settings.liveFixEnabled, #selector(toggleLive),
+                          enabled: settings.autoEnabled),
                 switchRow(L10n.t("switch.dev"), L10n.t("switch.devSub"), settings.developerMode, #selector(toggleDev)),
                 controlRow(L10n.t("switch.manual"), HotkeyControl()),
                 groupConvertRow()            // «переключать несколько слов» — сразу после ручного хоткея
             ]),
+            group(6),
+            sectionTitle(L10n.t("is.title")),
+            card([
+                switchRow(L10n.t("is.enable"), L10n.t("is.enableSub"),
+                          settings.instantSwitchEnabled, #selector(toggleInstantSwitch)),
+                controlRow(L10n.t("is.combo"), instantSwitchControl())
+            ]),
+            group(2),
+            instantSwitchStatusView(),       // что затеняем этой комбинацией — честно и заранее
+            group(2),
+            hint(L10n.t("is.beta")),         // честная бета-метка: фича новая и трогает системные хоткеи
             group(6),
             sectionTitle(L10n.t("switch.trig")),
             card([
@@ -567,6 +631,7 @@ final class DetailVC: NSViewController {
     @objc private func toggleGroupConvert(_ s: NSSwitch) { settings.groupConvert = (s.state == .on) }
 
     private weak var trPackLabel: NSTextField?
+    private weak var trDownloadBtn: NSButton?
 
     private func buildTranslate() -> NSView {
         var items: [NSView] = [
@@ -607,12 +672,20 @@ final class DetailVC: NSViewController {
         let nameCol = NSStackView(views: [name, meta]); nameCol.orientation = .vertical
         nameCol.alignment = .leading; nameCol.spacing = 1
 
+        // Главная кнопка — докачка ПРЯМО из приложения (акцентная). Появляется, только когда пакета нет.
+        let dl = NSButton(title: L10n.t("tr.download"), target: self, action: #selector(downloadTrPack))
+        dl.bezelStyle = .rounded; dl.controlSize = .regular
+        dl.bezelColor = DS.coral; dl.contentTintColor = .white
+        dl.setContentHuggingPriority(.required, for: .horizontal)
+        trDownloadBtn = dl
+
+        // Вторично — системный менеджер языков (фолбэк, если по кнопке что-то пошло не так).
         let sys = NSButton(title: L10n.t("tr.openSys"), target: self, action: #selector(openLangSettings))
         sys.bezelStyle = .rounded; sys.controlSize = .regular
         sys.setContentHuggingPriority(.required, for: .horizontal)
 
         let spacer = NSView(); spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let row = NSStackView(views: [nameCol, spacer, sys])
+        let row = NSStackView(views: [nameCol, spacer, dl, sys])
         row.orientation = .horizontal; row.spacing = 8; row.alignment = .centerY
         row.edgeInsets = NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 14)
         row.heightAnchor.constraint(greaterThanOrEqualToConstant: 46).isActive = true
@@ -627,7 +700,17 @@ final class DetailVC: NSViewController {
             await MainActor.run {
                 self?.trPackLabel?.stringValue = ok ? L10n.t("tr.installed") : L10n.t("tr.notInstalled")
                 self?.trPackLabel?.textColor = ok ? DS.coral : .secondaryLabelColor
+                self?.trDownloadBtn?.isHidden = ok            // установлен → кнопка «Скачать» не нужна
             }
+        }
+    }
+
+    /// Скачать языковой пакет RU↔EN прямо из приложения (без ухода в Системные настройки).
+    /// Готовим оба направления сразу. Системный лист скачивания Apple покажется поверх нашего окна.
+    @objc private func downloadTrPack() {
+        guard #available(macOS 15.0, *) else { return }
+        TranslationEngine.shared.presentDownload(pairs: [("ru", "en"), ("en", "ru")]) { [weak self] _ in
+            self?.refreshTrPackStatus()
         }
     }
 
@@ -800,14 +883,35 @@ final class DetailVC: NSViewController {
     private func buildSnippets() -> NSView {
         let editor = SnippetsEditor(frame: .zero)
         editor.translatesAutoresizingMaskIntoConstraints = false
+
+        // Мультивыбор клавиш разворота автозамены (пробел/Enter/Tab). Все сняты → автозамена выключена.
+        let cSpace = check("key.space", settings.snippetExpandSpace, #selector(toggleSnipSpace))
+        let cEnter = check("key.enter", settings.snippetExpandEnter, #selector(toggleSnipEnter))
+        let cTab   = check("key.tab",   settings.snippetExpandTab,   #selector(toggleSnipTab))
+        let keys = NSStackView(views: [cSpace, cEnter, cTab])
+        keys.orientation = .horizontal; keys.spacing = 12
+
+        let disabled = hint(L10n.t("snip.disabled"))
+        disabled.isHidden = !settings.snippetsDisabled
+        snipDisabledLabel = disabled
+
         return vstack([
             title(L10n.t("snip.title")),
             sub(L10n.t("snip.sub")),
             group(DS.itemGap - 6),
-            editor,                      // таблица: «что заменять | на что», редактирование в ячейках + кнопки + / −
+            editor,                      // список «что заменять | на что | корзина», правка по клику
+            group(8),
+            sectionTitle(L10n.t("snip.expandOn")),
+            keys,                        // [Пробел] [Enter] [Tab]
+            disabled,                    // «Автозамена отключена…» — видна, когда все галочки сняты
             hint(L10n.t("snip.hint"))    // раскладка/регистр не учитываются + пример
         ])
     }
+    private weak var snipDisabledLabel: NSTextField?
+    private func refreshSnipDisabled() { snipDisabledLabel?.isHidden = !settings.snippetsDisabled }
+    @objc private func toggleSnipSpace(_ s: NSButton) { settings.snippetExpandSpace = (s.state == .on); refreshSnipDisabled() }
+    @objc private func toggleSnipEnter(_ s: NSButton) { settings.snippetExpandEnter = (s.state == .on); refreshSnipDisabled() }
+    @objc private func toggleSnipTab(_ s: NSButton)   { settings.snippetExpandTab   = (s.state == .on); refreshSnipDisabled() }
 
     /// Приватность — чистая страница доверия (только манифест, без посторонних контролов).
     private func buildPrivacy() -> NSView {
@@ -836,7 +940,35 @@ final class DetailVC: NSViewController {
                            target: self, action: #selector(requestMic))
         mic.bezelStyle = .rounded; mic.controlSize = .regular
 
-        return vstack([
+        // Вид ЗНАЧКА — визуальный выбор квадратными сегментами с реальными значками (автор 23.07).
+        // Порядок сегментов = iconStyleKeys. Язык рядом — отдельная галка (работает со всеми).
+        let iconSeg = NSSegmentedControl()
+        iconSeg.segmentStyle = .texturedRounded
+        iconSeg.segmentCount = iconStyleKeys.count
+        iconSeg.trackingMode = .selectOne
+        let brandSeg: NSImage? = {
+            guard let url = Bundle.main.url(forResource: "menubar-mark", withExtension: "png"),
+                  let img = NSImage(contentsOf: url) else { return nil }
+            let sq = NSImage(size: NSSize(width: 17, height: 17))
+            sq.lockFocus(); img.draw(in: NSRect(x: 0, y: 1, width: 17, height: 15)); sq.unlockFocus()
+            sq.isTemplate = true; return sq
+        }()
+        let segImgs: [NSImage?] = [
+            brandSeg ?? NSImage(systemSymbolName: "k.square", accessibilityDescription: nil),
+            NSImage(systemSymbolName: "keyboard", accessibilityDescription: nil),
+            NSImage(systemSymbolName: "nosign", accessibilityDescription: nil),
+        ]
+        let segTips = [L10n.t("gen.icon.brand"), L10n.t("gen.icon.keyboard"), L10n.t("gen.icon.hidden")]
+        for (i, img) in segImgs.enumerated() {
+            iconSeg.setImage(img, forSegment: i)
+            iconSeg.setImageScaling(.scaleProportionallyDown, forSegment: i)
+            iconSeg.setWidth(52, forSegment: i)
+            iconSeg.setToolTip(segTips[i], forSegment: i)
+        }
+        iconSeg.selectedSegment = iconStyleKeys.firstIndex(of: settings.menuBarStyle) ?? 1
+        iconSeg.target = self; iconSeg.action = #selector(iconStyleSegChanged(_:))
+
+        var general: [NSView] = [
             title(L10n.t("gen.title")),
             sub(L10n.t("gen.sub")),
             group(8),
@@ -845,6 +977,21 @@ final class DetailVC: NSViewController {
                 switchRow(L10n.t("switch.login"), nil, settings.launchAtLogin, #selector(toggleLogin))
             ]),
             group(6),
+            sectionTitle(L10n.t("gen.icon")),
+            card([
+                controlRow(L10n.t("gen.iconPick"), iconSeg),
+                switchRow(L10n.t("gen.iconLang"), nil, settings.menuBarShowLanguage, #selector(toggleIconLang))
+            ]),
+            group(2),
+            hint(L10n.t("gen.iconHint")),
+        ]
+        if settings.menuBarStyle == "hidden" {
+            // Значок скрыт — всегда объясняем, как добраться до приложения. Текст зависит от языка:
+            // виден язык → по клику на RU/EN открывается меню; ничего не видно → перезапуск из «Программ».
+            general.append(hint(L10n.t(settings.menuBarShowLanguage ? "gen.iconHiddenLang" : "gen.iconHidden")))
+        }
+        general.append(contentsOf: [
+            group(6),
             sectionTitle(L10n.t("gen.access")),
             card([ buttonRow([perm, mic]) ]),
             group(2),
@@ -852,6 +999,64 @@ final class DetailVC: NSViewController {
             group(2),
             hint(L10n.t("gen.micHint"))
         ])
+        return vstack(general)
+    }
+
+    /// Ключи стилей значка в порядке сегментов (см. AppSettings.menuBarStyle).
+    private let iconStyleKeys = ["brand", "keyboard", "hidden"]
+
+    @objc private func iconStyleSegChanged(_ s: NSSegmentedControl) {
+        settings.menuBarStyle = iconStyleKeys[max(0, min(s.selectedSegment, iconStyleKeys.count - 1))]
+        MenuBarController.shared?.applyIconStyle()
+        reshow()   // показать/скрыть предупреждение про пустую строку меню
+    }
+    /// Контрол выбора комбинации (перерисовывает предупреждение при смене).
+    private func instantSwitchControl() -> NSView {
+        let c = InstantSwitchControl()
+        c.onChange = { [weak self] in
+            CapsRemap.reconcile()   // сменили комбинацию (на/с Caps) — ремап должен догнать выбор
+            GlobeKey.reconcile()    // …и системная роль 🌐 тоже (забрать/вернуть)
+            DispatchQueue.main.async { self?.reshow() }
+        }
+        return c
+    }
+
+    /// Честно пишем, ЧТО перестанет работать с выбранной комбинацией (Spotlight и т.п.) — и что
+    /// это обратимо: выключил тумблер, системное действие вернулось само (мы просто перестаём
+    /// глотать событие, системные настройки не трогаем).
+    private func instantSwitchStatusView() -> NSView {
+        guard settings.instantSwitchEnabled else { return hint(L10n.t("is.offHint")) }
+        let shadowed = InstantSwitchControl.shadows(mode: settings.instantSwitchMode,
+                                                    keyCode: settings.instantSwitchKeyCode,
+                                                    mods: settings.instantSwitchMods)
+        guard let shadowed else { return hint(L10n.t("is.onClean")) }
+        return hint(String(format: L10n.t("is.onShadow"), shadowed))
+    }
+
+    @objc private func toggleInstantSwitch(_ s: NSSwitch) {
+        if s.state == .on {
+            let shadowed = InstantSwitchControl.shadows(mode: settings.instantSwitchMode,
+                                                        keyCode: settings.instantSwitchKeyCode,
+                                                        mods: settings.instantSwitchMods)
+            if let shadowed {
+                let a = NSAlert()
+                a.messageText = L10n.t("is.warn.title")
+                a.informativeText = String(format: L10n.t("is.warn.body"), shadowed)
+                a.addButton(withTitle: L10n.t("is.warn.ok"))
+                a.addButton(withTitle: L10n.t("common.cancel"))
+                guard a.runModal() == .alertFirstButtonReturn else { s.state = .off; return }
+            }
+        }
+        settings.instantSwitchEnabled = (s.state == .on)
+        CapsRemap.reconcile()   // Caps-режим живёт через hidutil-ремап — синхронизируем с тумблером
+        GlobeKey.reconcile()    // 🌐-режим: забрать клавишу у системы живьём / вернуть как было
+        reshow()
+    }
+
+    @objc private func toggleIconLang(_ s: NSSwitch) {
+        settings.menuBarShowLanguage = (s.state == .on)
+        MenuBarController.shared?.applyIconStyle()
+        reshow()
     }
 
     /// Обновления — ОТДЕЛЬНЫЙ раздел (раньше тонули в «Общих» → реальный пользователь не нашёл, где
@@ -883,7 +1088,9 @@ final class DetailVC: NSViewController {
         // silent требует проверки → при включении форсим её ВКЛ; reshow перерисует раздел, и тумблер
         // «Проверять обновления» станет вкл+серым (а при выключении silent — снова доступным).
         if settings.silentAutoUpdate { UpdaterController.shared.automaticChecks = true }
-        reshow()
+        // Откладываем на такт: reshow() сносит contentStack вместе с ЭТИМ ЖЕ NSSwitch, а на macOS 26
+        // это teardown его SwiftUI-графа изнутри собственного sendAction/анимации (см. RowMetrics).
+        DispatchQueue.main.async { [weak self] in self?.reshow() }
     }
     @objc private func checkForUpdates() { UpdaterController.shared.checkNow() }
 
@@ -892,10 +1099,11 @@ final class DetailVC: NSViewController {
         let ver = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.0.1"
         let fb = NSButton(title: L10n.t("about.fbBtn"), target: self, action: #selector(openFeedback))
         fb.bezelStyle = .rounded; fb.controlSize = .regular
+        // Лог относится ко ВСЕМУ приложению (не только к диктовке) — живёт рядом с «Написать разработчику».
+        let logBtn = NSButton(title: L10n.t("voice.log"), target: self, action: #selector(openLog))
+        logBtn.bezelStyle = .rounded; logBtn.controlSize = .regular
         let tg = NSButton(title: L10n.t("about.updTg"), target: self, action: #selector(openTelegram))
         tg.bezelStyle = .rounded; tg.controlSize = .regular
-        let updMail = NSButton(title: L10n.t("about.updMail"), target: self, action: #selector(openUpdates))
-        updMail.bezelStyle = .rounded; updMail.controlSize = .regular
         let whatsNew = NSButton(title: L10n.t("about.whatsNew"), target: self, action: #selector(showWhatsNew))
         whatsNew.bezelStyle = .rounded; whatsNew.controlSize = .regular
         let welBtn = NSButton(title: L10n.t("about.welcome"), target: self, action: #selector(showWelcomeTour))
@@ -917,17 +1125,20 @@ final class DetailVC: NSViewController {
             sectionTitle(L10n.t("about.fbTitle")),
             sub(L10n.t("about.fbBody")),
             group(4),
-            card([ buttonRow([fb]) ]),
+            card([ buttonRow([fb, logBtn]) ]),
+            group(2),
+            hint(L10n.t("about.logHint")),
             group(10),
             sectionTitle(L10n.t("about.updTitle")),
             sub(L10n.t("about.updBody")),
             group(4),
-            card([ buttonRow([tg, updMail]) ]),
+            card([ buttonRow([tg]) ]),
             group(10),
             card([
                 controlRow(L10n.t("about.version"), versionValue(ver)),
                 controlRow(L10n.t("about.license"), valueText(L10n.t("about.licenseVal"))),
                 controlRow(L10n.t("about.rescued"), valueText(rescuedDisplay())),
+                controlRow(L10n.t("about.dictated"), valueText(dictatedDisplay())),
                 buttonRow([whatsNew, welBtn])
             ]),
             group(6),
@@ -946,8 +1157,30 @@ final class DetailVC: NSViewController {
     private func rescuedDisplay() -> String {
         let n = settings.rescuedCount
         guard n > 0 else { return L10n.current == .ru ? "пока ни одной 🥚" : "none yet 🥚" }
+        return Self.grouped(n)
+    }
+    /// Счётчик надиктованного голосом: «12 480 символов · 1 903 слова». Пока 0 — тёплая заглушка.
+    private func dictatedDisplay() -> String {
+        let c = settings.voiceChars, w = settings.voiceWords
+        guard c > 0 else { return L10n.current == .ru ? "пока ни слова 🎙" : "not a word yet 🎙" }
+        if L10n.current == .ru {
+            return "\(Self.grouped(c)) \(Self.pluralRu(c, "символ", "символа", "символов"))"
+                 + " · \(Self.grouped(w)) \(Self.pluralRu(w, "слово", "слова", "слов"))"
+        }
+        return "\(Self.grouped(c)) chars · \(Self.grouped(w)) \(w == 1 ? "word" : "words")"
+    }
+    /// Число с пробелами-разделителями тысяч («1 247»).
+    private static func grouped(_ n: Int) -> String {
         let fmt = NumberFormatter(); fmt.numberStyle = .decimal; fmt.groupingSeparator = " "
         return fmt.string(from: NSNumber(value: n)) ?? "\(n)"
+    }
+    /// Русское склонение по числу: 1 символ / 2 символа / 5 символов (11–14 — всегда «многих»).
+    private static func pluralRu(_ n: Int, _ one: String, _ few: String, _ many: String) -> String {
+        let n100 = n % 100, n10 = n % 10
+        if n100 >= 11 && n100 <= 14 { return many }
+        if n10 == 1 { return one }
+        if (2...4).contains(n10) { return few }
+        return many
     }
     /// Версия как кликабельный текст — пасхалка: клик = «мяу».
     private func versionValue(_ s: String) -> NSView {
@@ -1017,8 +1250,11 @@ final class DetailVC: NSViewController {
 
     private func buildVoice() -> NSView {
         voiceModelStatus.removeAll()
+        // Раздел собран по ТЕКУЩЕМУ состоянию диска → запоминаем сигнатуру, чтобы ближайший
+        // revalidateVoiceIfShown (активация окна) не делал лишнюю пересборку впустую.
+        lastModelsSignature = modelsSignature()
         // Единый список моделей (Parakeet + whisper) — без тумблера движка: движок выводится из
-        // активной модели. Любую можно скачать / активировать / удалить (по просьбе Ивана 2026-06-14).
+        // активной модели. Любую можно скачать / активировать / удалить (по просьбе автора 2026-06-14).
         unifiedCatalog = unifiedModels()
         let modelCard = card(unifiedCatalog.enumerated().map { unifiedModelRow($1, index: $0) })
 
@@ -1026,15 +1262,13 @@ final class DetailVC: NSViewController {
         histClear.bezelStyle = .rounded; histClear.controlSize = .regular
         let histShow = NSButton(title: L10n.t("voice.showHistory"), target: self, action: #selector(showVoiceHistory))
         histShow.bezelStyle = .rounded; histShow.controlSize = .regular
-        let logBtn = NSButton(title: L10n.t("voice.log"), target: self, action: #selector(openLog))
-        logBtn.bezelStyle = .rounded; logBtn.controlSize = .regular
 
         var views: [NSView] = [
             title(L10n.t("voice.title")),
             group(8),
             card([
                 switchRow(L10n.t("voice.on"), nil, settings.voiceEnabled, #selector(toggleVoice)),
-                controlRow(L10n.t("voice.hotkey"), VoiceHotkeyControl()),
+                controlRow(L10n.t("voice.hotkey"), voiceHotkeyRow()),
                 controlRow(L10n.t("voice.mode"), voiceModeControl()),
                 controlRow(L10n.t("voice.lang"), voiceLangControl()),
                 controlRow(L10n.t("voice.mic"), micSelectorControl()),
@@ -1043,7 +1277,8 @@ final class DetailVC: NSViewController {
                 switchRow(L10n.t("voice.warm"), L10n.t("voice.warmSub"), settings.voiceWarmWindow, #selector(toggleWarmWindow)),
                 controlRow(L10n.t("voice.warmDur"), warmDurationControl()),
                 switchRow(L10n.t("voice.sound"), nil, settings.voiceSoundEnabled, #selector(toggleVoiceSound)),
-                controlRow(L10n.t("voice.soundVol"), voiceVolumeSlider())
+                controlRow(L10n.t("voice.soundVol"), voiceVolumeSlider()),
+                switchRow(L10n.t("voice.streaming"), L10n.t("voice.streamingSub"), settings.voiceStreaming, #selector(toggleVoiceStreaming))
             ]),
             group(6),
             sectionTitle(L10n.t("voice.modelsTitle")),
@@ -1054,13 +1289,17 @@ final class DetailVC: NSViewController {
             group(2),
             hint(L10n.t("voice.modelsNote")),
             group(6),
+        ])
+        #if !arch(arm64)
+        views.append(contentsOf: [hint(L10n.t("voice.intelNote")), group(6)])
+        #endif
+        views.append(contentsOf: [
             card([
                 switchRow(L10n.t("voice.history"), L10n.t("voice.historySub"), settings.voiceHistoryEnabled, #selector(toggleVoiceHistory)),
+                switchRow(L10n.t("hist.lock.toggle"), L10n.t("hist.lock.toggleSub"), HistoryGate.enabled, #selector(toggleHistoryLock)),
                 controlRow(L10n.t("voice.retention"), historyRetentionControl()),
-                buttonRow([histShow, histClear, logBtn])
+                buttonRow([histShow, histClear])
             ]),
-            group(2),
-            hint(L10n.t("voice.logHint")),
             group(2),
             hint(L10n.t("voice.foot"))
         ])
@@ -1072,6 +1311,11 @@ final class DetailVC: NSViewController {
     private var unifiedCatalog: [UnifiedModel] = []
     private var downloadingModelId: String?      // какая модель качается сейчас (одна за раз)
     private var downloadProgress = 0.0
+    // Сторож застревания загрузки (репорт 23.07.2026: Parakeet «завис на 2%» — HF-CDN из RU
+    // капризен, а прогресс FluidAudio при затыке честно замирает; UI молчал и выглядел сломанным).
+    private var dlLastChangeAt = Date()
+    private var dlLoggedDecile = -1
+    private var dlStallTimer: Timer?
 
     /// Одна запись каталога моделей. Движок выводится из активной модели (тумблер Whisper/Parakeet убран).
     struct UnifiedModel {
@@ -1087,12 +1331,13 @@ final class DetailVC: NSViewController {
 
     /// Полный каталог: Parakeet (рекомендуемый, по умолчанию) первым, затем whisper по возрастанию размера.
     private func unifiedModels() -> [UnifiedModel] {
-        var list: [UnifiedModel] = [
-            UnifiedModel(engine: "parakeet", id: "parakeet",
-                         display: L10n.t("voice.pkName"), size: "~465 МБ", note: L10n.t("voice.pkDesc"))
-        ]
+        var list: [UnifiedModel] = []
+        #if arch(arm64) && !KEYBOOP_NO_PARAKEET   // Intel: Parakeet физически отсутствует в сборке (нет Neural Engine) — не дразним
+        list.append(UnifiedModel(engine: "parakeet", id: "parakeet",
+                                 display: L10n.t("voice.pkName"), size: L10n.size("~465 MB"), note: L10n.t("voice.pkDesc")))
+        #endif
         list += ModelDownloader.catalog.map {
-            UnifiedModel(engine: "whisper", id: $0.name, display: $0.name, size: $0.size, note: $0.note)
+            UnifiedModel(engine: "whisper", id: $0.name, display: $0.name, size: L10n.size($0.size), note: L10n.t($0.note))
         }
         return list
     }
@@ -1174,6 +1419,96 @@ final class DetailVC: NSViewController {
         return row
     }
 
+    /// Строка хоткея диктовки: селектор + кнопка «Проверить».
+    private func voiceHotkeyRow() -> NSView {
+        let picker = VoiceHotkeyControl()
+        let testBtn = NSButton(title: L10n.t("voice.hkTest"), target: self, action: #selector(testVoiceHotkey))
+        testBtn.bezelStyle = .rounded
+        let row = NSStackView(views: [picker, testBtn])
+        row.orientation = .horizontal; row.spacing = 8; row.alignment = .centerY
+        return row
+    }
+
+    /// Диагностика: перехватываем следующий keyDown через локальный монитор и сравниваем
+    /// с сохранёнными настройками голосового хоткея. Помогает понять, почему «не срабатывает».
+    @objc private func testVoiceHotkey() {
+        guard settings.voiceEnabled else {
+            let a = NSAlert()
+            a.messageText = L10n.t("voice.hkTestDisabled")
+            a.alertStyle = .informational
+            a.addButton(withTitle: L10n.t("voice.hkTestCancel"))
+            a.runModal()
+            return
+        }
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 90),
+                            styleMask: [.titled, .nonactivatingPanel],
+                            backing: .buffered, defer: false)
+        panel.title = "Keyboop"
+        let lbl = NSTextField(labelWithString: L10n.t("voice.hkTestPrompt"))
+        lbl.font = .systemFont(ofSize: 14)
+        lbl.translatesAutoresizingMaskIntoConstraints = false
+        panel.contentView?.addSubview(lbl)
+        NSLayoutConstraint.activate([
+            lbl.centerXAnchor.constraint(equalTo: panel.contentView!.centerXAnchor),
+            lbl.centerYAnchor.constraint(equalTo: panel.contentView!.centerYAnchor)
+        ])
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        var monitor: Any?
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak panel] ev in
+            guard let panel = panel else { return ev }
+            NSEvent.removeMonitor(monitor!)
+            monitor = nil
+            panel.orderOut(nil)
+            // Что нажато
+            let pressedKC = Int(ev.keyCode)
+            var pressedMod: CGEventFlags = []
+            if ev.modifierFlags.contains(.option)  { pressedMod.insert(.maskAlternate) }
+            if ev.modifierFlags.contains(.shift)   { pressedMod.insert(.maskShift) }
+            if ev.modifierFlags.contains(.command) { pressedMod.insert(.maskCommand) }
+            if ev.modifierFlags.contains(.control) { pressedMod.insert(.maskControl) }
+            // Что сохранено
+            let savedMode = self.settings.voiceHotkeyMode
+            let savedKC   = self.settings.voiceHotkeyKeyCode
+            let savedMod  = CGEventFlags(rawValue: self.settings.voiceHotkeyModifiers)
+            let kcOK  = (savedMode == "key") && (pressedKC == savedKC)
+            let modOK = pressedMod == savedMod
+            let match = kcOK && modOK
+            let pressedLabel = ev.charactersIgnoringModifiers?.uppercased() ?? "?"
+            func modStr(_ f: CGEventFlags) -> String {
+                var s = ""
+                if f.contains(.maskControl)  { s += "⌃" }
+                if f.contains(.maskAlternate){ s += "⌥" }
+                if f.contains(.maskShift)    { s += "⇧" }
+                if f.contains(.maskCommand)  { s += "⌘" }
+                return s
+            }
+            let pressedDisp = modStr(pressedMod) + pressedLabel
+            let savedDisp   = savedMode == "key"
+                ? modStr(savedMod) + (self.settings.voiceHotkeyKeyLabel.isEmpty ? "·" : self.settings.voiceHotkeyKeyLabel)
+                : (savedMode == "modkey" ? "одиночный модификатор" : savedMode)
+            let a = NSAlert()
+            a.messageText = match ? L10n.t("voice.hkTestOk") : L10n.t("voice.hkTestFail")
+            var info = "Нажато:   \(pressedDisp)  (kc=\(pressedKC), mod=0x\(String(pressedMod.rawValue, radix: 16)))\n"
+            info     += "Сохранено: \(savedDisp)"
+            if savedMode == "key" { info += "  (kc=\(savedKC), mod=0x\(String(savedMod.rawValue, radix: 16)))" }
+            if !match {
+                if savedMode != "key" { info += "\n\nРежим «\(savedMode)» — хоткей-клавиша не задана (нужна запись)." }
+                else if !kcOK  { info += "\n\nkeyCode не совпадает: нажата кнопка kc=\(pressedKC), сохранена kc=\(savedKC)." }
+                else if !modOK { info += "\n\nМодификатор не совпадает: нажато 0x\(String(pressedMod.rawValue, radix: 16)), сохранено 0x\(String(savedMod.rawValue, radix: 16))." }
+            }
+            a.informativeText = info
+            a.alertStyle = match ? .informational : .warning
+            a.addButton(withTitle: "OK")
+            a.runModal()
+            return nil  // не пускаем в поле
+        }
+        // Если пользователь просто закрыл панель мышью — чистим монитор через 30 сек
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+            if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+        }
+    }
+
     private func voiceModeControl() -> NSView {
         let seg = NSSegmentedControl(labels: [L10n.t("voice.modeHold"), L10n.t("voice.modeToggle")],
                                      trackingMode: .selectOne, target: self, action: #selector(voiceModeChanged(_:)))
@@ -1228,6 +1563,31 @@ final class DetailVC: NSViewController {
     }
     @objc private func toggleEscCancel(_ s: NSSwitch) { settings.escCancelsDictation = (s.state == .on) }
     @objc private func toggleWarmWindow(_ s: NSSwitch) { settings.voiceWarmWindow = (s.state == .on) }
+    @objc private func toggleVoiceStreaming(_ s: NSSwitch) {
+        let on = (s.state == .on)
+        settings.voiceStreaming = on
+        // Включили, а потоковой модели нет → честно спрашиваем и качаем (~120 МБ).
+        guard on, !StreamingEouEngine.modelInstalled, downloadingModelId == nil else { return }
+        let a = NSAlert()
+        a.messageText = L10n.t("voice.streamDlTitle")
+        a.informativeText = L10n.t("voice.streamDlSub")
+        a.addButton(withTitle: L10n.t("voice.streamDlGo"))
+        a.addButton(withTitle: L10n.t("common.cancel"))
+        guard a.runModal() == .alertFirstButtonReturn else {
+            settings.voiceStreaming = false; s.state = .off; return   // отказались — выключаем тумблер
+        }
+        downloadingModelId = "eou-streaming"
+        Task {
+            let ok = await StreamingEouEngine.shared.download(progress: { _ in })
+            await MainActor.run {
+                self.downloadingModelId = nil
+                let r = NSAlert()
+                r.messageText = ok ? L10n.t("voice.streamDlOk") : L10n.t("voice.streamDlFail")
+                r.runModal()
+                if !ok { self.settings.voiceStreaming = false; s.state = .off }
+            }
+        }
+    }
     private var cuePreview: NSSound?   // удерживаем превью, иначе звук оборвётся
     @objc private func voiceVolChanged(_ s: NSSlider) {
         settings.voiceSoundVolume = s.doubleValue
@@ -1320,13 +1680,33 @@ final class DetailVC: NSViewController {
         control.setContentCompressionResistancePriority(.required, for: .horizontal)
         return settingRow(title, nil, trailing: control)
     }
+    /// Ширины правых контролов — КОНСТАНТЫ, без обращения к AppKit-раскладке.
+    ///
+    /// macOS 26: NSSwitch / NSSlider / NSSegmentedControl / NSPopUpButton внутри рисуются SwiftUI
+    /// (AppKit линкует SwiftUICore + PrivateFrameworks/DesignLibrary — WWDC26 session 272). Любой
+    /// запрос intrinsicContentSize/fittingSize у такого контрола (и у NSStackView, который их
+    /// содержит) прогоняет SwiftUI-ViewGraph через AttributeGraph и делает Swift-Concurrency-проверку
+    /// изоляции. Именно там поймали EXC_BREAKPOINT (аппаратный PAC-trap) на машине пользователя в
+    /// 0.2.57. Значение нужно ТОЛЬКО чтобы решить, вешать ли tooltip, — меряем «на бумаге».
+    /// Белый список «безопасных» вью не годится: правые контролы часто NSStackView-контейнеры,
+    /// их intrinsicContentSize рекурсивно меряет вложенные слайдеры/сегменты.
+    /// Замеры на macOS 26.3.1 (25D771280a): NSSwitch 54×24, NSPopUpButton 58×24, NSSegmentedControl
+    /// 57×24, NSSlider width = NSView.noIntrinsicMetric (-1).
+    private enum RowMetrics {
+        /// NSSwitch — контрол фиксированного размера (замеры 2026-06-09 и 2026-07-20 совпали).
+        static let nsSwitch: CGFloat = 54
+        /// Всё остальное справа (popup, слайдер, hotkey-контрол, сегменты, контейнеры-стеки) —
+        /// консервативная оценка. Ошибка в бо́льшую сторону безопасна: лишь лишний tooltip там,
+        /// где текст и так влезал. Раньше здесь был баг: у NSSlider ширина -1 → ветка `tw > 1`
+        /// молча подставляла ширину переключателя строке громкости.
+        static let wideControl: CGFloat = 200
+    }
+
     /// Доступная ширина текстовой колонки строки = ширина блока − отступы − контрол справа − зазор.
-    /// Замер (2026-06-09): contentWidth 480, insets 14+14, NSSwitch 54, spacing 10 → ≈388pt под
-    /// подпись с переключателем. tooltip ставим ТОЛЬКО когда текст в неё не влезает (короткие
-    /// подписи читаются целиком — лишний tooltip не нужен).
+    /// contentWidth 480, insets 14+14, spacing 10 → под переключателем ≈388pt.
+    /// tooltip ставим ТОЛЬКО когда текст в неё не влезает.
     private func availTextWidth(trailing: NSView) -> CGFloat {
-        let tw = trailing.intrinsicContentSize.width
-        let trailingW = tw > 1 ? tw : 54   // fallback: ширина NSSwitch
+        let trailingW = (trailing is NSSwitch) ? RowMetrics.nsSwitch : RowMetrics.wideControl
         return DS.contentWidth - 28 - trailingW - 10
     }
     private func truncates(_ text: String, font: NSFont, within avail: CGFloat) -> Bool {
@@ -1467,7 +1847,10 @@ final class DetailVC: NSViewController {
 
     @objc private func toggleAuto(_ s: NSSwitch) {
         settings.autoEnabled = (s.state == .on)
-        reshow()   // обновить доступность тумблера «несколько слов» (серый при авто вкл)
+        // reshow обновляет доступность тумблера «несколько слов» (серый при авто вкл), но сносит
+        // contentStack вместе с этим же NSSwitch — на macOS 26 нельзя делать это изнутри его
+        // собственного action (teardown SwiftUI-графа из его же диспатча). Откладываем на такт.
+        DispatchQueue.main.async { [weak self] in self?.reshow() }
     }
     @objc private func toggleLive(_ s: NSSwitch) { settings.liveFixEnabled = (s.state == .on) }
     @objc private func toggleTranslate(_ s: NSSwitch) { settings.translateEnabled = (s.state == .on) }
@@ -1478,9 +1861,10 @@ final class DetailVC: NSViewController {
     @objc private func toggleTEnter(_ s: NSButton) { settings.triggerEnter = (s.state == .on) }
     @objc private func toggleTTab(_ s: NSButton) { settings.triggerTab = (s.state == .on) }
     @objc private func toggleArrows(_ s: NSSwitch) { settings.arrowsCancel = (s.state == .on) }
-    @objc private func openUpdates() { Permissions.openUpdatesPage() }
-    @objc private func openFeedback() { Permissions.openFeedbackMail() }
-    @objc private func openTelegram() { Permissions.openTelegramBot() }
+    /// «Написать разработчику» — теперь наша форма (mailto хрупок: у многих Mail.app не настроен,
+    /// кнопка открывала пустоту, и фидбэк умирал молча). Почта осталась фолбэком ВНУТРИ формы.
+    @objc private func openFeedback() { FeedbackWindowController.shared.show() }
+    @objc private func openTelegram() { Permissions.openTelegramChannel() }
     @objc private func openLog() { Permissions.openDiagnosticLog() }
     @objc private func openPerms() { Permissions.openAccessibilitySettings() }
     /// Ручной доступ к микрофону: не спрашивали → системный промпт; иначе — открыть
@@ -1505,11 +1889,20 @@ final class DetailVC: NSViewController {
     @objc private func toggleVoice(_ s: NSSwitch) { settings.voiceEnabled = (s.state == .on) }
     @objc private func voiceModeChanged(_ s: NSSegmentedControl) { settings.voiceHoldMode = s.selectedSegment == 1 ? "toggle" : "hold" }
     @objc private func toggleVoiceHistory(_ s: NSSwitch) { settings.voiceHistoryEnabled = (s.state == .on) }
+    /// Пароль на историю: включение — задать пароль, выключение — подтвердить текущим.
+    /// Тумблер откатывается, если пользователь передумал в диалоге.
+    @objc private func toggleHistoryLock(_ s: NSSwitch) {
+        if s.state == .on {
+            HistoryGate.promptSetPassword { ok in s.state = ok ? .on : .off }
+        } else {
+            HistoryGate.promptDisable { ok in s.state = ok ? .off : .on }
+        }
+    }
     // Значения в МИНУТАХ: 30, 60, 120, 240, 480, 0 (без удаления)
     private let retentionMins = [30, 60, 120, 240, 480, 0]
     private func historyRetentionControl() -> NSView {
         let pop = NSPopUpButton()
-        pop.addItems(withTitles: ["30 минут", "1 час", "2 часа", "4 часа", "8 часов", "Не удалять"])
+        pop.addItems(withTitles: [L10n.t("ret.30m"), L10n.t("ret.1h"), L10n.t("ret.2h"), L10n.t("ret.4h"), L10n.t("ret.8h"), L10n.t("ret.never")])
         let cur = settings.voiceHistoryMinutes
         pop.selectItem(at: retentionMins.firstIndex(of: cur) ?? 1)
         pop.target = self; pop.action = #selector(retentionChanged(_:))
@@ -1583,12 +1976,32 @@ final class DetailVC: NSViewController {
         guard downloadingModelId == nil else { return }   // одна загрузка за раз
         downloadingModelId = m.id; downloadProgress = 0
         s.isEnabled = false; s.title = "0%"
+        dlLastChangeAt = Date(); dlLoggedDecile = -1
+        dlStallTimer?.invalidate()
+        dlStallTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+            guard let self, let id = self.downloadingModelId else { return }
+            let quiet = Date().timeIntervalSince(self.dlLastChangeAt)
+            guard quiet > 45 else { return }
+            let pct = Int(self.downloadProgress * 100)
+            self.voiceModelStatus[id]?.stringValue = L10n.t("voice.dlStalledShort")
+            self.voiceModelStatus[id]?.toolTip = String(format: L10n.t("voice.dlStalledTip"), pct)
+            kbLog("модель \(id): скачивание застряло на \(pct)% (без прогресса \(Int(quiet))с) — вероятно, сеть до Hugging Face")
+        }
         let onProgress: (Double) -> Void = { [weak self, weak s] p in
-            self?.downloadProgress = p
-            self?.voiceModelStatus[m.id]?.stringValue = "\(Int(p * 100)) %"
+            guard let self else { return }
+            if p != self.downloadProgress { self.dlLastChangeAt = Date() }
+            let dec = Int(p * 10)
+            if dec > self.dlLoggedDecile {   // журналим каждые ~10% — репорты «зависло» станут диагностируемыми
+                self.dlLoggedDecile = dec
+                kbLog("модель \(m.id): скачано \(Int(p * 100))%")
+            }
+            self.downloadProgress = p
+            self.voiceModelStatus[m.id]?.stringValue = "\(Int(p * 100)) %"
+            self.voiceModelStatus[m.id]?.toolTip = nil
             s?.title = "\(Int(p * 100))%"
         }
         let onDone: (Bool) -> Void = { [weak self] ok in
+            self?.dlStallTimer?.invalidate(); self?.dlStallTimer = nil
             self?.downloadingModelId = nil
             if ok { self?.activateModel(m) }   // скачал → сразу активна (reshow внутри)
             else { self?.reshow() }
@@ -1619,16 +2032,23 @@ final class DetailVC: NSViewController {
         guard a.runModal() == .alertFirstButtonReturn else { return }
 
         let wasActive = isActiveModel(m)
-        if m.engine == "whisper" { ModelDownloader.shared.delete(m.id) }
-        else { ParakeetEngine.shared.deleteModel() }
-
-        // Удалили активную → переключиться на другую установленную, если есть (иначе диктовка
-        // честно попросит скачать модель при следующем использовании — onNeedModel).
-        if wasActive, let fallback = unifiedModels().first(where: { $0.id != m.id && $0.isInstalled() }) {
-            activateModel(fallback)   // reshow внутри
-        } else {
-            reshow()
+        // Удаление тяжёлое (освобождение CoreML-менеджера + removeItem ~465 МБ) и раньше шло на
+        // main-потоке → окно морозилось намертво (репорт 03.07.2026, Force Quit). Теперь операция
+        // в фоне; кнопку гасим (без двойных кликов), а по завершении на main обновляем список.
+        s.isEnabled = false
+        s.toolTip = L10n.t("voice.deleting")
+        let finish: (Bool) -> Void = { [weak self] _ in
+            guard let self = self else { return }
+            // Удалили активную → переключиться на другую установленную, если есть (иначе диктовка
+            // честно попросит скачать модель при следующем использовании — onNeedModel).
+            if wasActive, let fallback = self.unifiedModels().first(where: { $0.id != m.id && $0.isInstalled() }) {
+                self.activateModel(fallback)   // reshow внутри
+            } else {
+                self.reshow()
+            }
         }
+        if m.engine == "whisper" { ModelDownloader.shared.delete(m.id, completion: finish) }
+        else { ParakeetEngine.shared.deleteModel(completion: finish) }
     }
 }
 
@@ -1738,7 +2158,7 @@ final class ChipFlowView: NSView {
         let x = NSButton()
         x.target = self; x.action = #selector(deleteTapped(_:))
         x.bezelStyle = .regularSquare; x.isBordered = false; x.imagePosition = .imageOnly
-        x.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "удалить")
+        x.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: L10n.t("act.delete"))
         x.contentTintColor = .tertiaryLabelColor
         x.identifier = NSUserInterfaceItemIdentifier(word)
         x.translatesAutoresizingMaskIntoConstraints = false

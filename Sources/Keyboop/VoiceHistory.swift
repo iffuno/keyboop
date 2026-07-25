@@ -1,8 +1,9 @@
 import Foundation
 import CryptoKit
+import Security
 
-/// Небольшая история диктовок, зашифрованная AES-GCM (ключ — в локальном файле .histkey, 0600).
-/// Никогда не покидает Mac (принцип №2). Можно выключить (voiceHistoryEnabled).
+/// Небольшая история диктовок, зашифрованная AES-GCM (ключ — в Keychain). Никогда не покидает Mac
+/// (принцип №2). Можно выключить (voiceHistoryEnabled).
 final class VoiceHistory {
     static let shared = VoiceHistory()
     private let settings = AppSettings.shared
@@ -85,24 +86,119 @@ final class VoiceHistory {
         return entries
     }
 
-    /// Ключ AES-256 в защищённом файле (0600) рядом с данными.
-    /// Почему НЕ Keychain: самоподписанное приложение (пока без Developer ID) → Keychain
-    /// спрашивает пароль при КАЖДОМ доступе (cdhash меняется между сборками, «Always Allow»
-    /// не держится). Это пугает пользователя. Файл с правами 0600 доступен только владельцу;
-    /// шифрование защищает историю от случайного просмотра.
-    /// TODO: при релизе с Developer ID вернуть Keychain (стабильная identity → без запросов).
+    // Ключ AES-256 живёт в Keychain (kSecAttrAccessibleWhenUnlockedThisDeviceOnly). Раньше лежал в
+    // файле .histkey РЯДОМ с шифртекстом — при self-signed сборке Keychain переспрашивал пароль
+    // (нестабильный cdhash), поэтому был выбран файл. Теперь приложение подписано Developer ID →
+    // identity стабильна, ключ переехал в Keychain: локальный атакующий (тот же uid) больше НЕ читает
+    // ключ вместе с шифртекстом (security-аудит M1, 01.07). Ключ per-bundle (service = bundle id).
+    //
+    // ⚠️ Два железных правила ПОСЛЕ инцидента 23.07.2026 (диалог «введи пароль связки» в конце
+    // диктовки; он же включает secure input → guard в TextReplacer съедает распознанный текст):
+    //  1. DEV-сборки (self-signed, подпись меняется каждой пересборкой) в связку НЕ ходят вообще —
+    //     ключ в файле 0600. Иначе ACL перестаёт узнавать бинарь после КАЖДОЙ сборки.
+    //  2. Любое чтение связки — БЕЗ ПРАВА НА ДИАЛОГ. Не узнала подпись (переезд на новый Mac,
+    //     смена сертификата) — молча перевыпускаем ключ: история — журнал удобства на 50 записей,
+    //     свежая пустая лучше пароля посреди диктовки («пользователь подумает, что вирус»).
+    private static let keychainService = (Bundle.main.bundleIdentifier ?? "ru.keyboop.app") + ".voicehistory"
+    private static let keychainAccount = "history-aes-key"
+    private static var cachedKey: SymmetricKey?
+    private static let devBuild = (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
+
     private static func key() -> SymmetricKey? {
+        if let k = cachedKey { return k }
+        let k = resolveKey(); cachedKey = k; return k
+    }
+
+    /// Достаём ключ. Prod: Keychain → миграция старого файлового ключа → генерация нового (фолбэк
+    /// на файл, только если Keychain недоступен). Dev: файл → одноразовый переезд ИЗ связки → генерация.
+    private static func resolveKey() -> SymmetricKey? {
+        let keyURL = supportDir().appendingPathComponent(".histkey")
+
+        if devBuild {
+            if let data = try? Data(contentsOf: keyURL), data.count == 32 { return SymmetricKey(data: data) }
+            if let data = keychainRead(), data.count == 32 {              // одноразовый переезд связка → файл
+                writeKeyFile(data, to: keyURL)
+                SecItemDelete(keychainBase as CFDictionary)
+                kbLog("voice history key: dev — ключ перенесён из Keychain в файл (пересборки меняют подпись)")
+                return SymmetricKey(data: data)
+            }
+            let key = SymmetricKey(size: .bits256)
+            writeKeyFile(key.withUnsafeBytes { Data(Array($0)) }, to: keyURL)
+            kbLog("voice history key: dev — новый файловый ключ")
+            return key
+        }
+
+        if let data = keychainRead(), data.count == 32 { return SymmetricKey(data: data) }
+
+        if let data = try? Data(contentsOf: keyURL), data.count == 32 {   // миграция файл → Keychain
+            if keychainWrite(data) {
+                try? FileManager.default.removeItem(at: keyURL)
+                kbLog("voice history key: перенесён .histkey → Keychain")
+            }
+            return SymmetricKey(data: data)
+        }
+
+        let key = SymmetricKey(size: .bits256)                            // новый ключ
+        let data = key.withUnsafeBytes { Data(Array($0)) }
+        if !keychainWrite(data) {                                         // Keychain недоступен → файловый фолбэк 0600
+            writeKeyFile(data, to: keyURL)
+            kbLog("voice history key: Keychain недоступен → файловый фолбэк")
+        }
+        return key
+    }
+
+    private static func writeKeyFile(_ data: Data, to url: URL) {
+        try? data.write(to: url, options: [.atomic])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    /// Форсировать миграцию файлового ключа в Keychain при запуске (после обновления) — БЕЗ загрузки
+    /// записей. No-op, если старого `.histkey` нет (мигрировать нечего) или ключ уже в Keychain.
+    static func migrateKeyIfNeeded() {
+        guard FileManager.default.fileExists(atPath: supportDir().appendingPathComponent(".histkey").path) else { return }
+        _ = key()   // резолвит: перенесёт .histkey → Keychain и удалит файл
+    }
+
+    private static func supportDir() -> URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Keyboop", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let keyURL = dir.appendingPathComponent(".histkey")
-        if let data = try? Data(contentsOf: keyURL), data.count == 32 {
-            return SymmetricKey(data: data)
+        return dir
+    }
+
+    private static var keychainBase: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword,
+         kSecAttrService as String: keychainService,
+         kSecAttrAccount as String: keychainAccount]
+    }
+
+    /// Чтение строго БЕЗ диалога: SecKeychainSetUserInteractionAllowed(false) на время запроса.
+    /// errSecInteractionNotAllowed = связка узнала item, но не узнала НАС → это тот самый диалог;
+    /// возвращаем nil, выше по стеку ключ молча перевыпустится (см. правило №2 в комменте у service).
+    private static func keychainRead() -> Data? {
+        var wasAllowed: DarwinBoolean = true
+        SecKeychainGetUserInteractionAllowed(&wasAllowed)
+        SecKeychainSetUserInteractionAllowed(false)
+        defer { SecKeychainSetUserInteractionAllowed(wasAllowed.boolValue) }
+        var q = keychainBase
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var out: CFTypeRef?
+        let st = SecItemCopyMatching(q as CFDictionary, &out)
+        if st == errSecInteractionNotAllowed {
+            kbLog("voice history key: связка требует диалог (identity сменилась) — перевыпускаю ключ молча")
+            return nil
         }
-        let key = SymmetricKey(size: .bits256)
-        let keyData = key.withUnsafeBytes { Data(Array($0)) }
-        try? keyData.write(to: keyURL, options: [.atomic])
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: keyURL.path)
-        return key
+        guard st == errSecSuccess, let d = out as? Data else { return nil }
+        return d
+    }
+
+    @discardableResult
+    private static func keychainWrite(_ data: Data) -> Bool {
+        SecItemDelete(keychainBase as CFDictionary)
+        var add = keychainBase
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
     }
 }

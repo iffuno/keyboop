@@ -1,17 +1,26 @@
 import Foundation
 
 /// Автозамена сниппетов: триггер → раскрытие (`!ee` → e-mail, `итд` → «и так далее»).
-/// Хранится в UserDefaults. Срабатывает на границе слова (пробел/таб/Enter).
+/// Хранится в UserDefaults УПОРЯДОЧЕННО (массив пар) — порядок = как пользователь добавлял,
+/// без сортировки по алфавиту. Срабатывает на границе слова (пробел/таб/Enter).
 final class SnippetStore {
     static let shared = SnippetStore()
     private let d = UserDefaults.standard
-    private let key = "snippets"
+    private let key = "snippetsOrdered"     // [[trigger, expansion]] — порядок сохраняется
+    private let legacyKey = "snippets"      // старый словарь (для миграции)
 
-    private(set) var map: [String: String]            // оригинальные триггеры (как ввёл юзер — для редактора)
-    private var byCanonical: [String: String] = [:]    // канон-триггер → раскрытие (для матча)
+    /// Пары (триггер, раскрытие) в порядке добавления — источник для редактора и матча.
+    private(set) var orderedPairs: [(String, String)] = []
+    private var byCanonical: [String: String] = [:]    // канон-триггер → раскрытие (для матча, порядок неважен)
 
     private init() {
-        map = (d.dictionary(forKey: key) as? [String: String]) ?? [:]
+        if let arr = d.array(forKey: key) as? [[String]] {
+            orderedPairs = arr.compactMap { $0.count >= 2 ? ($0[0], $0[1]) : nil }
+        } else if let legacy = d.dictionary(forKey: legacyKey) as? [String: String] {
+            // Миграция: словарь не упорядочен → один раз берём по алфавиту, дальше порядок ручной.
+            orderedPairs = legacy.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
+            persist()
+        }
         rebuildIndex()
     }
 
@@ -23,42 +32,38 @@ final class SnippetStore {
 
     private func rebuildIndex() {
         byCanonical = [:]
-        for (t, e) in map {
+        for (t, e) in orderedPairs {
             let c = Self.canonical(t)
             if !c.isEmpty { byCanonical[c] = e }
         }
     }
 
-    /// Точное совпадение (как сохранён триггер) — оставлено на всякий случай.
-    func expansion(for trigger: String) -> String? { map[trigger] }
+    private func persist() {
+        d.set(orderedPairs.map { [$0.0, $0.1] }, forKey: key)
+    }
 
     /// Совпадение для НАБРАННОГО слова — игнорирует раскладку и регистр.
     func expansion(forTyped word: String) -> String? { byCanonical[Self.canonical(word)] }
 
-    func setAll(_ m: [String: String]) {
-        map = m
-        d.set(map, forKey: key)
-        rebuildIndex()
-    }
+    /// Пары для табличного редактора — В ПОРЯДКЕ ДОБАВЛЕНИЯ (без сортировки).
+    func pairs() -> [(String, String)] { orderedPairs }
 
-    /// Парсинг из текста вида «триггер = раскрытие» по строке.
-    static func parse(_ text: String) -> [String: String] {
-        var result: [String: String] = [:]
-        for line in text.components(separatedBy: .newlines) {
-            guard let eq = line.firstIndex(of: "=") else { continue }
-            let trigger = String(line[..<eq]).trimmingCharacters(in: .whitespaces)
-            let expansion = String(line[line.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
-            if !trigger.isEmpty && !expansion.isEmpty { result[trigger] = expansion }
+    /// Сохранить В ТОМ ПОРЯДКЕ, как передал редактор. Пустые триггеры отбрасываем; дубликаты
+    /// триггера (раскладко-независимо) схлопываем — позиция первого, значение последнего.
+    func setAll(_ pairs: [(String, String)]) {
+        var out: [(String, String)] = []
+        for (t, e) in pairs {
+            let trig = t.trimmingCharacters(in: .whitespaces)
+            if trig.isEmpty { continue }
+            let c = Self.canonical(trig)
+            if let idx = out.firstIndex(where: { Self.canonical($0.0) == c }) {
+                out[idx].1 = e                       // тот же триггер → обновляем значение, позицию сохраняем
+            } else {
+                out.append((trig, e))
+            }
         }
-        return result
-    }
-
-    func asText() -> String {
-        map.sorted { $0.key < $1.key }.map { "\($0.key) = \($0.value)" }.joined(separator: "\n")
-    }
-
-    /// Пары (триггер, раскрытие), отсортированы — для табличного редактора.
-    func pairs() -> [(String, String)] {
-        map.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
+        orderedPairs = out
+        persist()
+        rebuildIndex()
     }
 }

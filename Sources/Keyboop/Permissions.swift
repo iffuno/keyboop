@@ -77,14 +77,21 @@ enum Permissions {
         open("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")
     }
 
-    /// Страница подписки на обновления (секция на сайте; браузер — по явному клику, не фоном).
-    static func openUpdatesPage() {
-        open("https://keyboop.com/#updates")
+    /// Объекты входа (Login Items) — чтобы убрать чужой автозапуск (напр. Punto Switcher).
+    /// Отключить автозапуск ДРУГОГО приложения программно нельзя — ведём пользователя в панель.
+    static func openLoginItemsSettings() {
+        open("x-apple.systempreferences:com.apple.LoginItems-Settings.extension")
     }
 
-    /// Telegram-бот уведомлений об обновлениях.
-    static func openTelegramBot() {
-        open("https://t.me/keyboop_bot")
+    /// Панель «Клавиатура» в Настройках системы — там живёт «При нажатии 🌐» (фича 24.07).
+    static func openKeyboardSettings() {
+        open("x-apple.systempreferences:com.apple.Keyboard-Settings.extension")
+    }
+
+    /// Телеграм-канал с новостями релизов (@keyboop; анонсы публикуются автоматически).
+    /// Бот @keyboop_bot с личными уведомлениями больше не рекламируем — все новости в канале.
+    static func openTelegramChannel() {
+        open("https://t.me/keyboop")
     }
 
     /// Диагностический лог (~/Library/Logs/Keyboop.log) — открыть для отлова багов.

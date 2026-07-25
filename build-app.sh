@@ -14,19 +14,50 @@ if [ -f "$SWIFTDIR/module.modulemap" ] && [ -f "$SWIFTDIR/bridging.modulemap" ];
 fi
 
 APP="Keyboop.app"
+
+# ⚠️ Пересборка бандла под РАБОТАЮЩИМ из него процессом запрещена: macOS перестаёт доверять
+# клиенту, чей бандл изменился на диске, и coreaudiod МОЛЧА глушит ему микрофон — TCC отвечает
+# authorized, буферы идут, но в них битовый ноль (инцидент 23.07.2026).
+if pgrep -f "$(pwd)/$APP/Contents/MacOS/Keyboop" >/dev/null 2>&1; then
+  echo "✗ Keyboop сейчас запущен из $(pwd)/$APP — собирать под ним нельзя."
+  echo "  Сначала:  pkill -x Keyboop        затем собери и:  open \"$APP\""
+  exit 1
+fi
+# ПРОВЕРКА ДУБЛЕЙ В L10n (25.07): Swift-словарь-литерал с повторяющимся ключом компилируется молча,
+# но падает SIGTRAP при ПЕРВОМ обращении — то есть приложение не запускается вообще (Dictionary.init →
+# one-time initialization function for strings). Ловим на сборке, а не по краш-репорту.
+DUPES=$(python3 - <<'PYEOF'
+import re, collections
+src = open('Sources/Keyboop/L10n.swift', encoding='utf-8').read()
+keys = re.findall(r'^\s*"([^"]+)":\s*\[', src, re.M)
+print(",".join(k for k, c in collections.Counter(keys).items() if c > 1))
+PYEOF
+)
+if [ -n "$DUPES" ]; then
+  echo "✗ Дубликаты ключей в L10n.swift: $DUPES"
+  echo "  Swift упадёт при запуске (SIGTRAP в Dictionary.init). Переименуй ключ и собери снова."
+  exit 1
+fi
+
 echo "▸ swiftc compile…"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-WHISPER="vendor/whisper.cpp"
-if [ ! -f "$WHISPER/build/src/libwhisper.a" ]; then
+# ⚠️ КРИТИЧНО (24.07): arm64-сборка whisper.cpp ДОЛЖНА быть с CMAKE_OSX_DEPLOYMENT_TARGET=14.0.
+# Без него cmake берёт таргет текущей системы (собирали на macOS 26) → ggml-metal делает STRONG-ссылку
+# на MTLResidencySetDescriptor (класс есть только с macOS 15) → на Sonoma/14 dyld убивает процесс ДО
+# main() с "Symbol not found", приложение молча не запускается (репорт M1/Sonoma, 0.2.66). С таргетом
+# 14.0 ссылка становится weak (@available(macOS 15) в ggml отрабатывает как задумано).
+WHISPER="vendor/whisper.cpp/build-macos14/.."
+WHISPER_BUILD="vendor/whisper.cpp/build-macos14"
+if [ ! -f "$WHISPER_BUILD/src/libwhisper.a" ]; then
   echo "⚠️  whisper.cpp не собран. Собери один раз:"
-  echo "    cd $WHISPER && cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \\"
-  echo "      -DWHISPER_BUILD_EXAMPLES=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF && cmake --build build -j"
+  echo "    cd $WHISPER && cmake -B build-macos14 -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \\"
+  echo "      -DWHISPER_BUILD_EXAMPLES=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF && cmake --build build-macos14 -j"
   exit 1
 fi
 
-# FluidAudio (Parakeet/CoreML/ANE) — предсобранная статика, см. docs/PARAKEET_BUILD.md.
+# FluidAudio (Parakeet/CoreML/ANE) — предсобранная статика, предсобранная статика.
 # Требует macOS 14 (поэтому таргет подняли 13→14).
 FA="vendor/fluidaudio-prebuilt"
 # Sparkle (автообновления): динамический фреймворк. Линкуем + rpath на Contents/Frameworks,
@@ -38,8 +69,8 @@ swiftc -O Sources/Keyboop/*.swift \
   -import-objc-header Sources/Keyboop/whisper-bridging.h \
   -I "$WHISPER/include" -I "$WHISPER/ggml/include" \
   -I "$FA/Modules" -I "$FA/include/FastClusterWrapper" -I "$FA/include/MachTaskSelfWrapper" \
-  -L "$WHISPER/build/src" -L "$WHISPER/build/ggml/src" \
-  -L "$WHISPER/build/ggml/src/ggml-metal" -L "$WHISPER/build/ggml/src/ggml-blas" \
+  -L "$WHISPER_BUILD/src" -L "$WHISPER_BUILD/ggml/src" \
+  -L "$WHISPER_BUILD/ggml/src/ggml-metal" -L "$WHISPER_BUILD/ggml/src/ggml-blas" \
   -L "$FA" -lFluidAudio \
   -lwhisper -lggml -lggml-cpu -lggml-metal -lggml-blas -lggml-base -lc++ \
   -framework AppKit -framework Carbon -framework ServiceManagement -framework ApplicationServices \
@@ -48,8 +79,43 @@ swiftc -O Sources/Keyboop/*.swift \
   -F "$SPARKLE" -framework Sparkle \
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks
 
+# ── Universal (Intel): второй проход под x86_64 + lipo. Включается KEYBOOP_UNIVERSAL=1
+#    (release.sh включает всегда; dev-сборки по умолчанию arm64-only — вдвое быстрее).
+#    x86-срез: whisper из build-x86 (GGML_NATIVE=OFF + AVX2-бейзлайн, БЕЗ Metal — CPU/Accelerate),
+#    БЕЗ FluidAudio (arm64-only статика; Swift-код компилирует Intel-заглушки по #if arch).
+if [ "${KEYBOOP_UNIVERSAL:-}" = "1" ]; then
+  WX="$WHISPER/build-x86"
+  if [ ! -f "$WX/src/libwhisper.a" ]; then
+    echo "✗ Нет x86-сборки whisper. Один раз собери:"
+    echo "  cd $WHISPER && cmake -B build-x86 -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64 \\"
+    echo "    -DBUILD_SHARED_LIBS=OFF -DGGML_METAL=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON \\"
+    echo "    -DWHISPER_BUILD_EXAMPLES=OFF -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_SERVER=OFF && cmake --build build-x86 -j"
+    exit 1
+  fi
+  echo "▸ swiftc compile (x86_64 для universal)…"
+  mv "$APP/Contents/MacOS/Keyboop" "$APP/Contents/MacOS/.Keyboop-arm64"
+  swiftc -O Sources/Keyboop/*.swift \
+    -o "$APP/Contents/MacOS/.Keyboop-x86" \
+    -swift-version 5 -target x86_64-apple-macos13.0 \
+    -import-objc-header Sources/Keyboop/whisper-bridging.h \
+    -I "$WHISPER/include" -I "$WHISPER/ggml/include" \
+    -L "$WX/src" -L "$WX/ggml/src" -L "$WX/ggml/src/ggml-blas" \
+    -lwhisper -lggml -lggml-cpu -lggml-blas -lggml-base -lc++ \
+    -framework AppKit -framework Carbon -framework ServiceManagement -framework ApplicationServices \
+    -framework AVFoundation -framework CoreAudio -framework AudioToolbox -framework Accelerate -framework CoreML \
+    -framework SwiftUI -Xlinker -weak_framework -Xlinker Translation \
+    -F "$SPARKLE" -framework Sparkle \
+    -Xlinker -rpath -Xlinker @executable_path/../Frameworks
+  lipo -create "$APP/Contents/MacOS/.Keyboop-arm64" "$APP/Contents/MacOS/.Keyboop-x86" \
+       -output "$APP/Contents/MacOS/Keyboop"
+  rm -f "$APP/Contents/MacOS/.Keyboop-arm64" "$APP/Contents/MacOS/.Keyboop-x86"
+  echo "  universal: $(lipo -archs "$APP/Contents/MacOS/Keyboop")"
+fi
+
 # Языковые данные (триграммы/словари) в bundle Resources
 cp Sources/Keyboop/Resources/*.json "$APP/Contents/Resources/" 2>/dev/null || echo "  (нет Resources/*.json — детектор будет без данных)"
+# Знак Keyboop (template) для waveform в строке меню
+cp Sources/Keyboop/Resources/menubar-mark.png "$APP/Contents/Resources/" 2>/dev/null || echo "  (нет menubar-mark.png — значок будет вектором-фолбэком)"
 
 # Анимированный логотип (онбординг-герой). 59 КБ, без звука, h264.
 cp Sources/Keyboop/Resources/keyboop-logo-anim.mp4 "$APP/Contents/Resources/" 2>/dev/null \
@@ -78,12 +144,32 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key>            <string>Keyboop</string>
     <key>CFBundleDisplayName</key>     <string>Keyboop</string>
     <key>CFBundleIdentifier</key>      <string>ru.keyboop.app</string>
-    <key>CFBundleVersion</key>         <string>0.2.12</string>
-    <key>CFBundleShortVersionString</key> <string>0.2.12</string>
+    <key>CFBundleVersion</key>         <string>0.2.68</string>
+    <key>CFBundleShortVersionString</key> <string>0.2.68</string>
+    <!-- Штамп сборки: подставляется ниже (sed по __BUILD_STAMP__). Логируется при запуске, чтобы по
+         логу было ВИДНО, какую именно сборку гоняем. Прецедент 21.07: диагностировали баг по логу
+         процесса, стартовавшего на 11 минут РАНЬШЕ пересборки, — то есть по коду без свежих правок. -->
+    <key>KeyboopBuildStamp</key>       <string>__BUILD_STAMP__</string>
     <key>CFBundleExecutable</key>      <string>Keyboop</string>
     <key>CFBundleIconFile</key>        <string>AppIcon</string>
     <key>CFBundlePackageType</key>     <string>APPL</string>
-    <key>LSMinimumSystemVersion</key>  <string>14.0</string>
+    <!-- Sparkle по-русски (баг-репорт: «You're up to date» в русском интерфейсе).
+         У приложения НЕТ .lproj-папок (своя L10n) → macOS фиксирует язык процесса = en, и строки
+         Sparkle.framework резолвятся в английский, хотя ru.lproj внутри фреймворка ЕСТЬ. Этот ключ —
+         штатное решение Apple ровно для такого случая: каждый бандл (фреймворк) локализуется
+         независимо от главного. Явный выбор языка в настройках синхронизируется через AppleLanguages
+         (AppDelegate), так что диалоги Sparkle слушаются переключателя в приложении. -->
+    <key>CFBundleAllowMixedLocalizations</key> <true/>
+    <key>LSMinimumSystemVersion</key>  <string>13.0</string>
+    <!-- Пер-архитектурные минимумы (задача «старые системы», 23.07.2026): arm64 требует 14
+         (FluidAudio/ANE статически влинкован), x86_64 живёт с 13 — в этом срезе FluidAudio нет,
+         а интелы 2017 года выше Ventura не обновляются. Ключ подтверждён в актуальной
+         документации Apple (bundleresources → LSMinimumSystemVersionByArchitecture). -->
+    <key>LSMinimumSystemVersionByArchitecture</key>
+    <dict>
+        <key>arm64</key>  <string>14.0</string>
+        <key>x86_64</key> <string>13.0</string>
+    </dict>
     <key>LSUIElement</key>             <true/>
     <key>NSAccentColorName</key>       <string>AccentColor</string>
     <key>NSMicrophoneUsageDescription</key> <string>Keyboop распознаёт надиктованный текст локально, на вашем Mac. Аудио никуда не отправляется.</string>
@@ -112,6 +198,12 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </dict>
 </plist>
 PLIST
+
+# Штамп сборки — реальные дата+время сборки в Info.plist (heredoc single-quoted, переменные там не
+# раскрываются, поэтому подставляем sed'ом после). Логируется при запуске: по логу сразу видно,
+# какую сборку гоняем (прецедент 21.07 — диагностика шла по процессу старше пересборки на 11 минут).
+BUILD_STAMP="$(date '+%Y-%m-%d %H:%M')"
+sed -i '' "s/__BUILD_STAMP__/$BUILD_STAMP/" "$APP/Contents/Info.plist"
 
 # M4 (фикс инцидента 14.06): dev-сборкам — ОТДЕЛЬНЫЙ bundle id и имя, чтобы они физически НЕ могли
 # перехватить TCC/Accessibility у боевой ru.keyboop.app (две сборки с одним id, но разной подписью →

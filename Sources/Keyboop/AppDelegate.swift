@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Carbon   // AppleEvent-константы (kAEOpenApplication / keyAELaunchedAsLogInItem) для детекта ручного запуска
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var engine: Engine!
@@ -16,8 +17,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var axObserver: NSObjectProtocol?   // подписка на com.apple.accessibility.api (держать ссылку)
     private var updatedFrom: String?      // версия, с которой обновились (nil если первый запуск/та же)
     private var currentVersion = ""
+    // true пока WelcomeWindow ведёт пользователя через разрешения (первый запуск).
+    // showPermissionAlertOnce() НЕ вмешивается в этот сценарий — иначе 3+ диалога подряд:
+    // нативный AX prompt + наш NSAlert + микрофон + кнопка Allow в Welcome = хаос.
+    private var welcomePending = false
+    private var singleInstanceFD: Int32 = -1   // держим fd открытым → flock жив до выхода процесса
+    // РУЧНОЙ ли это запуск (двойной клик в Finder / Spotlight / Dock), а НЕ старт из автозагрузки при
+    // логине. Ловим в applicationWillFinishLaunching, где `currentAppleEvent` ещё достоверен.
+    private var launchedManually = false
+
+    /// Кросс-процессный сигнал «открой Настройки»: вторая копия (двойной клик по уже запущенному
+    /// Keyboop, если Launch Services всё же породил процесс) шлёт его работающему экземпляру и выходит.
+    static let openSettingsNotification = Notification.Name("ru.keyboop.app.openSettings")
+
+    /// РУЧНОЙ запуск ⇔ система прислала Apple-event `kAEOpenApplication` БЕЗ маркера login-item.
+    /// Запуск из автозагрузки (`SMAppService.mainApp`, launchd) либо не шлёт Apple-event вовсе
+    /// (`currentAppleEvent == nil`), либо помечает его `keyAELaunchedAsLogInItem`. Дефолт безопасный:
+    /// нет события → НЕ ручной → на логине настройки НЕ всплывают (главное требование). Проверять надо
+    /// РАНО (willFinishLaunching) — позже `currentAppleEvent` уже не тот. Источник: hisaac.net + Apple AE.
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        guard let event = NSAppleEventManager.shared().currentAppleEvent,
+              event.eventID == kAEOpenApplication else { launchedManually = false; return }
+        let isLoginItem = event.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
+        launchedManually = !isLoginItem
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // SINGLE-INSTANCE: две копии Keyboop = два CGEventTap'а = каждое нажатие чинится ДВАЖДЫ
+        // (дубли префиксов, латинские огрызки — прецедент 19.06.2026: dev `ru.keyboop.app.dev` рядом с
+        // прод `ru.keyboop.app`). Замок КРОСС-БАНДЛОВЫЙ (flock по фикс-пути), иначе разные bundle id
+        // расходятся. Если занят другим Keyboop — мы вторая копия: тихо уходим ДО установки тапа.
+        guard acquireSingleInstanceLock() else {
+            // Уже запущена другая копия Keyboop. НЕ показываем модальный «уже запущено» (лишний клик —
+            // жалоба пользователя) и не дублируем ввод: просто просим РАБОТАЮЩИЙ экземпляр открыть
+            // Настройки (человек запустил Keyboop именно чтобы туда попасть) и тихо выходим.
+            kbLog("single-instance: Keyboop уже запущен — прошу его открыть Настройки и выхожу")
+            DistributedNotificationCenter.default().postNotificationName(
+                Self.openSettingsNotification, object: nil, userInfo: nil, deliverImmediately: true)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { NSApp.terminate(nil) }
+            return
+        }
+        installMainMenu()   // меню Edit (Cmd+V/C/X/A/Z) — иначе в текстовых полях не работает вставка
+        syncProcessLanguage()   // Sparkle и системные диалоги — на языке приложения (репорт 24.07)
+        CapsRemap.reconcile()   // Caps-ремап не переживает перезагрузку (переприменить) и не должен
+                                // переживать выключенный тумблер (снять после падения без restore)
+        GlobeKey.reconcile()    // роль 🌐: забрать при включённом режиме / вернуть после падения
         engine = Engine()
         menuBar = MenuBarController(layout: engine.layout)
         menuBar.onOpenSettings = { [weak self] in self?.openSettings() }
@@ -25,18 +69,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBar.onCheckUpdates = { UpdaterController.shared.checkNow() }
         menuBar.onQuit = { NSApp.terminate(nil) }
         menuBar.onToggleAuto = { _ in }
-        engine.onLayoutMaybeChanged = { [weak self] in self?.menuBar.refresh() }
+        // Через main: колбэк зовётся СИНХРОННО из обработчика события (Enter-pre конверсия), а
+        // menuBar.refresh() трогает NSStatusItem.button (NSView) — AppKit не для колбэка тапа.
+        // Соседние колбэки ниже уже так делают; этот был единственным без хопа.
+        engine.onLayoutMaybeChanged = { [weak self] in
+            DispatchQueue.main.async { self?.menuBar.refresh() }
+        }
+        // Вторая копия (двойной клик по уже запущенному Keyboop) просит нас открыть Настройки.
+        DistributedNotificationCenter.default().addObserver(
+            forName: Self.openSettingsNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            NSApp.activate(ignoringOtherApps: true)
+            self?.openSettings()
+        }
         // Обучение на отмене: нативное уведомление macOS (баннер вверху справа, у часов — «от значка»)
         // + обновляем список «Выученные» в открытых настройках.
         UndoLearner.shared.onLearned = { [weak self] word in
             self?.notifyLearned(word)
             DispatchQueue.main.async { self?.settingsWC?.reload() }
         }
+        // Откат авто-конверсии → баннер-вопрос «добавить в исключения?» (решает пользователь).
+        UndoLearner.shared.onSuggestLearn = { [weak self] word in
+            DispatchQueue.main.async { self?.suggestLearnBanner(word) }
+        }
         VoiceController.shared.onStateChange = { [weak self] s in
             DispatchQueue.main.async { self?.menuBar.setVoiceState(s) }
         }
-        VoiceController.shared.onNeedModel = { [weak self] in self?.promptModelDownload() }
+        // ВАЖНО (20.07): promptModelDownload делает alert.runModal(), а зовётся этот колбэк изнутри
+        // `Task { @MainActor }` (VoiceController.begin). Вложенный модальный рунлуп ВНУТРИ Swift-job
+        // диспатчит обычные AppKit-события, пока в TLS главного потока живёт ExecutorTrackingInfo —
+        // ровно то состояние, при котором на macOS 26 сизинг SwiftUI-бэкед контролов ловит PAC-trap
+        // (разбор краша 0.2.57). Выходим из job'а до показа алерта.
+        VoiceController.shared.onNeedModel = { [weak self] in
+            DispatchQueue.main.async { self?.promptModelDownload() }
+        }
         VoiceController.shared.preload()   // прогрев модели в фоне → первое нажатие диктовки без задержки
+        VoiceHistory.migrateKeyIfNeeded()  // ключ истории: старый .histkey → Keychain (security-аудит M1, 01.07)
+
+        // Dev-помощник: запуск с --settings[=snippets] сразу открывает Настройки (на нужном разделе).
+        if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--settings") }) {
+            let sec = arg.contains("snippets") ? SettingsSection.snippets : nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.openSettings(section: sec) }
+        }
 
         // Версия прошлого запуска → текущая. Если это ОБНОВЛЕНИЕ и доступ off → вероятно протухший
         // grant после смены подписи (показываем спец-подсказку «убери и добавь заново», см.
@@ -47,13 +121,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updatedFrom = (!prevVer.isEmpty && prevVer != curVer) ? prevVer : nil
         currentVersion = curVer
 
-        kbLog("launched; v\(curVer) (prev \(prevVer.isEmpty ? "—" : prevVer)); AX=\(Permissions.isTrusted()) InputMon=\(Permissions.inputMonitoringGranted())")
+        // Штамп сборки в логе — чтобы при разборе репортов было ВИДНО, какую именно сборку гоняли
+        // (прецедент 21.07: анализировали баг по логу процесса, стартовавшего раньше пересборки).
+        let stamp = Bundle.main.infoDictionary?["KeyboopBuildStamp"] as? String ?? "?"
+        let isDev = (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
+        kbLog("launched; v\(curVer)\(isDev ? "-dev" : "") [build \(stamp)] (prev \(prevVer.isEmpty ? "—" : prevVer)); manual=\(launchedManually) AX=\(Permissions.isTrusted()) InputMon=\(Permissions.inputMonitoringGranted())")
 
         // Самый первый запуск: включаем автозапуск при входе в систему (дефолт-вкл).
         if !AppSettings.shared.didInitialSetup {
             AppSettings.shared.didInitialSetup = true
             AppSettings.shared.launchAtLogin = true
-            kbLog("first run: launchAtLogin=\(AppSettings.shared.launchAtLogin)")
+            // Дефолт диктовки для НОВЫХ пользователей — «переключение» (нажал-старт / нажал-стоп),
+            // выставляем ЯВНО только на первом запуске. Существующих юзеров не трогаем: read-дефолт
+            // voiceHoldMode остаётся "hold", так что у тех, кто его не менял, поведение не меняется.
+            AppSettings.shared.voiceHoldMode = "toggle"
+            kbLog("first run: launchAtLogin=\(AppSettings.shared.launchAtLogin), voice=toggle")
         }
 
         // Первый запуск: окно-приветствие (онбординг) — один раз.
@@ -62,13 +144,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             && ProcessInfo.processInfo.environment["KEYBOOP_WINSHOT"] != "1"
             && ProcessInfo.processInfo.environment["KEYBOOP_WELCOMESHOT"] != "1" {
             AppSettings.shared.didShowWelcome = true
+            welcomePending = true   // WelcomeWindow берёт управление разрешениями на себя
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.showWelcome() }
+        }
+
+        // Открываем Настройки при запуске + иконку в Доке (значок у часов легко потерять в тесной
+        // строке меню), но ТОЛЬКО если запуск РУЧНОЙ (человек сам открыл Keyboop из Finder/Spotlight/
+        // Dock). Старт из автозагрузки при логине (главное требование автора 05.07) — тихо садимся в
+        // строку меню, окно НЕ показываем. Различаем по Apple-event запуска (launchedManually,
+        // см. applicationWillFinishLaunching): ручной = kAEOpenApplication без login-item-маркера;
+        // логин = нет события / есть маркер. Это надёжнее прежнего прокси `launchAtLogin` (тот скрывал
+        // настройки на РУЧНОМ запуске, если автозапуск включён — а именно там юзер, потерявший значок,
+        // и открывает приложение). Повторный «запуск» уже работающего Keyboop всё равно откроет
+        // Настройки через applicationShouldHandleReopen / single-instance-сигнал. Закрытие окна → снова
+        // чистый агент (windowWillClose → .accessory). Не лезем поверх онбординга, авто-обновления
+        // (Sparkle перезапускает сам), скриншот-режимов и dev-флага --settings.
+        let screenshotMode = ["KEYBOOP_DUMP", "KEYBOOP_WINSHOT", "KEYBOOP_WELCOMESHOT"]
+            .contains { ProcessInfo.processInfo.environment[$0] == "1" }
+        let settingsArg = CommandLine.arguments.contains { $0.hasPrefix("--settings") }
+        if launchedManually, !welcomePending, updatedFrom == nil, !screenshotMode, !settingsArg {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                NSApp.activate(ignoringOtherApps: true)
+                self?.openSettings()
+            }
         }
 
         // Новый пользователь: заранее (один раз) просим доступ к микрофону, чтобы диктовка
         // сразу работала, а не «молчала». Раньше доступ спрашивался лениво — только при
         // первом нажатии хоткея И при установленной модели, поэтому промпт часто не появлялся.
-        if AppSettings.shared.voiceEnabled,
+        // НО НЕ во время онбординга (welcomePending): системный TCC-диалог микрофона всплывал бы
+        // поверх welcome-анимации (юзер не видел логотип/онбординг). На первом запуске микрофоном
+        // руководит сам WelcomeWindow (кнопка «разрешить») — там промпт уместен по шагу.
+        if AppSettings.shared.voiceEnabled, !welcomePending,
            AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 Task { _ = await AudioRecorder.requestAccess() }
@@ -99,10 +206,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // не стартуем (без сетевых проверок).
         UpdaterController.shared.onUpdateReady = { [weak self] v in self?.notifyUpdateReady(v) }
         let env = ProcessInfo.processInfo.environment
-        if env["KEYBOOP_DUMP"] != "1", env["KEYBOOP_WINSHOT"] != "1",
+        if (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev") {
+            // Dev-сборка НЕ проверяет прод-апкаст: Sparkle иначе может «обновить» dev-бандл
+            // прод-DMG — подмена под ногами + диалог с паролем посреди работы (23.07.2026).
+            // Прод-поведение Sparkle тестируем на прод-бандле из /Applications.
+            kbLog("updater: dev-сборка — автопроверка обновлений выключена")
+        } else if env["KEYBOOP_DUMP"] != "1", env["KEYBOOP_WINSHOT"] != "1",
            env["KEYBOOP_LIVEDIAG"] != "1", env["KEYBOOP_HISTDUMP"] != "1" {
             UpdaterController.shared.start()
         }
+
+        // Конфликт с Punto Switcher — проверяем чуть позже старта (и не во время онбординга).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in self?.checkPuntoConflictOnce() }
 
         // Dev-хук: открыть окно настроек сразу (для скриншотов/отладки дизайна).
         if ProcessInfo.processInfo.environment["KEYBOOP_OPEN_SETTINGS"] == "1" {
@@ -209,6 +324,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func tryStart() {
         guard !engineRunning else { return }
 
+        // ПЕРВЫЙ ЗАПУСК: пока открыт онбординг — НЕ дёргаем tapCreate вслепую. Он сам поднимает
+        // системный TCC-промпт «Keyboop хочет управлять этим компьютером», причём МГНОВЕННО (мы
+        // зовём tryStart сразу в didFinishLaunching, а окно онбординга показывается через 0.8с) —
+        // и наше окно всплывало ПОВЕРХ системного запроса, перекрывая его (баг-репорт).
+        // Ретрай-таймер 0.5с делал то же самое по кругу.
+        // Теперь во время онбординга стартуем ТОЛЬКО если доступ уже реально выдан (переустановка,
+        // апдейт) — тогда промпта не будет вовсе. Если доступа нет, ждём: кнопка «Разрешить» в самом
+        // онбординге вызовет промпт в нужный момент, когда человек к нему готов и анимация отыграла.
+        if welcomePending && !Permissions.isTrusted() {
+            menuBar.needsPermission = true
+            menuBar.refresh()
+            return
+        }
+
         // App Translocation: .app запущен из эфемерного рандомизированного пути (DMG/Downloads).
         // Грант Accessibility к нему не привяжется (путь исчезнет при перезапуске) — стартовать
         // бессмысленно. Просим переехать в /Applications, а не долбим Accessibility у нестабильного
@@ -225,6 +354,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // вернёт не-nil РОВНО когда Accessibility реально выдан СЕЙЧАС — это живой детектор без TCC-кэша.
         if engine.start() {
             engineRunning = true
+            welcomePending = false
             retryTicks = 0
             menuBar.needsPermission = false
             menuBar.refresh()
@@ -250,7 +380,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showPermissionAlertOnce() {
-        guard !alertShown else { return }
+        // Во время первого запуска WelcomeWindow сам ведёт пользователя через AX-разрешение
+        // (кнопка Allow → requestTrust + openSettings). Вмешиваться не нужно — иначе пользователь
+        // получает: нативный AX prompt + наш NSAlert + кнопку в Welcome + микрофон = 4 диалога.
+        guard !alertShown, !welcomePending else { return }
         // При dev-хуках (дамп/открытие настроек) не блокируем main runloop модальным алертом.
         let env = ProcessInfo.processInfo.environment
         if env["KEYBOOP_DUMP"] == "1" || env["KEYBOOP_OPEN_SETTINGS"] == "1" { return }
@@ -267,27 +400,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let from = self.updatedFrom {
                 // ОБНОВЛЕНИЕ + доступа нет → почти наверняка протухший grant после смены подписи
                 // (доступ показан включённым, но не действует). Нужно ПЕРЕсоздать запись.
-                alert.messageText = "После обновления переразреши Keyboop"
-                alert.informativeText = """
-                Похоже, ты обновил Keyboop (\(from) → \(self.currentVersion)). Из-за смены подписи доступ к \
-                Accessibility мог «протухнуть»: в списке он показан включённым, но не действует.
-
-                Почини один раз: System Settings → Privacy & Security → Accessibility → выдели Keyboop, \
-                нажми «−» (убрать), затем добавь заново «+» (или перетащи Keyboop в список).
-
-                Это разовое — дальнейшие обновления доступ сохранят.
-                """
+                alert.messageText = L10n.t("alert.regrant.title")
+                alert.informativeText = String(format: L10n.t("alert.regrant.body"), from, self.currentVersion)
             } else {
-                alert.messageText = "Keyboop нужен доступ к Accessibility"
-                alert.informativeText = """
-                Включи Keyboop в System Settings → Privacy & Security → Accessibility.
-                Как включишь — переключение раскладки заработает сразу, перезапускать не нужно.
-                """
+                alert.messageText = L10n.t("alert.ax.title")
+                alert.informativeText = L10n.t("alert.ax.body")
             }
-            alert.addButton(withTitle: "Открыть Accessibility")
-            alert.addButton(withTitle: "Позже")
+            alert.addButton(withTitle: L10n.t("alert.ax.open"))
+            alert.addButton(withTitle: L10n.t("alert.later"))
             if alert.runModal() == .alertFirstButtonReturn {
                 Permissions.openAccessibilitySettings()
+            }
+        }
+    }
+
+    /// Конфликт с Punto Switcher: он, как и Keyboop, переключает раскладку — вместе дерутся. Если он
+    /// запущен, предлагаем закрыть его (мы МОЖЕМ — terminate) и ведём в «Объекты входа», чтобы убрать
+    /// автозапуск (его за другое приложение программно не отключить). Показываем один раз за сессию,
+    /// НЕ во время онбординга (чтобы не сыпать диалогами поверх welcome).
+    private var puntoAlertShown = false
+    private func runningPunto() -> NSRunningApplication? {
+        NSWorkspace.shared.runningApplications.first {
+            let bid = ($0.bundleIdentifier ?? "").lowercased()
+            let name = ($0.localizedName ?? "").lowercased()
+            return bid.contains("punto") || name.contains("punto")
+        }
+    }
+    private func checkPuntoConflictOnce() {
+        guard !puntoAlertShown, !welcomePending, let punto = runningPunto() else { return }
+        let env = ProcessInfo.processInfo.environment
+        if env["KEYBOOP_DUMP"] == "1" || env["KEYBOOP_OPEN_SETTINGS"] == "1" { return }
+        puntoAlertShown = true
+        DispatchQueue.main.async {
+            NSApp.activate(ignoringOtherApps: true)
+            let a = NSAlert()
+            a.messageText = L10n.t("alert.punto.title")
+            a.informativeText = L10n.t("alert.punto.body")
+            a.addButton(withTitle: L10n.t("alert.punto.quit"))
+            a.addButton(withTitle: L10n.t("alert.punto.login"))
+            a.addButton(withTitle: L10n.t("alert.later"))
+            switch a.runModal() {
+            case .alertFirstButtonReturn: punto.terminate()
+            case .alertSecondButtonReturn: Permissions.openLoginItemsSettings()
+            default: break
             }
         }
     }
@@ -302,15 +457,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async {
             NSApp.activate(ignoringOtherApps: true)
             let a = NSAlert()
-            a.messageText = "Перенеси Keyboop в «Программы»"
-            a.informativeText = """
-            Keyboop запущен из временной папки (образа .dmg или «Загрузок»), поэтому macOS не сохранит \
-            за ним доступ к Accessibility, и переключение раскладки работать не будет.
-
-            Перетащи Keyboop.app в «Программы» и запусти уже оттуда — тогда всё заработает и не слетит.
-            """
-            a.addButton(withTitle: "Показать в Finder")
-            a.addButton(withTitle: "Позже")
+            a.messageText = L10n.t("alert.move.title")
+            a.informativeText = L10n.t("alert.move.body")
+            a.addButton(withTitle: L10n.t("alert.move.reveal"))
+            a.addButton(withTitle: L10n.t("alert.later"))
             if a.runModal() == .alertFirstButtonReturn {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: Bundle.main.bundlePath)])
             }
@@ -323,14 +473,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.async {
             NSApp.activate(ignoringOtherApps: true)
             let a = NSAlert()
-            a.messageText = "Перезапустить Keyboop?"
-            a.informativeText = """
-            Доступ к Accessibility выдан, но macOS не подхватил его для текущего сеанса \
-            (известная особенность системы). Один перезапуск Keyboop это чинит — \
-            перезагружать компьютер не нужно.
-            """
-            a.addButton(withTitle: "Перезапустить")
-            a.addButton(withTitle: "Не сейчас")
+            a.messageText = L10n.t("alert.relaunch.title")
+            a.informativeText = L10n.t("alert.relaunch.body")
+            a.addButton(withTitle: L10n.t("alert.relaunch.ok"))
+            a.addButton(withTitle: L10n.t("alert.relaunch.no"))
             if a.runModal() == .alertFirstButtonReturn {
                 let url = URL(fileURLWithPath: Bundle.main.bundlePath)
                 let cfg = NSWorkspace.OpenConfiguration()
@@ -356,11 +502,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// промптом. Локально, без сети (принцип №2). Если запрещено — тихо (слово и так в «Выученных»).
     /// «Выучил слово» — НАШ баннер (не системное уведомление), сам скрывается через 4с.
     private func notifyLearned(_ word: String) {
-        AppBanner.shared.show(title: "Keyboop", body: String(format: L10n.t("learn.toast"), word), autoDismiss: 4)
+        AppBanner.shared.show(title: "Keyboop", body: String(format: L10n.t("learn.toast"), word), autoDismiss: 5)
+    }
+
+    /// Откат авто-конверсии → баннер вверху справа с вопросом. «Добавить» → слово в исключения;
+    /// «Не надо» → по этому слову больше не спрашиваем. Висит до решения (без авто-скрытия).
+    private func suggestLearnBanner(_ word: String) {
+        AppBanner.shared.show(
+            title: String(format: L10n.t("learn.askTitle"), word),
+            body: L10n.t("learn.askBody"),
+            actions: [
+                .init(title: L10n.t("learn.add"), coral: true) { [weak self] in
+                    UndoLearner.shared.confirmLearn(word)
+                    DispatchQueue.main.async { self?.settingsWC?.reload() }
+                },
+                .init(title: L10n.t("learn.no"), coral: false) {
+                    UndoLearner.shared.declineLearn(word)
+                }
+            ]
+        )
     }
 
     /// Готов апдейт → НАШ баннер вверху справа с двумя кнопками (без системных уведомлений и их
-    /// запроса разрешений — по просьбе Ивана). Ждёт решения; «Обновить» ставит, «Авто» включает тихий
+    /// запроса разрешений — по просьбе автора). Ждёт решения; «Обновить» ставит, «Авто» включает тихий
     /// режим. Закрыл/проигнорировал — переспросит на следующей проверке (или поставится при выходе).
     private func notifyUpdateReady(_ version: String) {
         AppBanner.shared.show(
@@ -387,8 +551,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if welcomeWC == nil {
             welcomeWC = WelcomeWindowController()
             welcomeWC?.onOpenSettings = { [weak self] in self?.openSettings() }
+            welcomeWC?.onClose = { [weak self] in
+                // Welcome закрыт — разрешаем showPermissionAlertOnce() работать нормально,
+                // если AX всё ещё не выдан (пользователь пропустил онбординг).
+                self?.welcomePending = false
+            }
         }
         welcomeWC?.show()
+    }
+
+    /// Минимальное главное меню. У LSUIElement-агента его нет по умолчанию, из-за чего стандартные
+    /// сочетания (Cmd+V/C/X/A/Z) НЕ доходят до текстовых полей — без пункта Paste в меню key-equivalent
+    /// не срабатывает. App-меню даёт Cmd+Q / Cmd+W; Edit-меню — нативный буфер обмена в наших полях.
+    /// Кросс-бандловый single-instance замок (flock по фикс-пути в Application Support). true — МЫ его
+    /// взяли (единственная копия); false — уже держит другой Keyboop (ЛЮБОГО билда: dev и прод тоже).
+    /// fd держим открытым весь процесс → замок жив до выхода (и авто-снимается при крэше — ядро закроет fd).
+    /// Короткий ретрай: при Sparkle-перезапуске новая копия может стартовать на миг раньше, чем старая
+    /// отпустит замок — даём ~2с освободиться, иначе ложно решим «уже запущен».
+    private func acquireSingleInstanceLock() -> Bool {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Keyboop", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let path = dir.appendingPathComponent("singleton.lock").path
+        let fd = open(path, O_CREAT | O_RDWR, 0o644)
+        guard fd >= 0 else { return true }   // не смогли создать замок — НЕ блокируем запуск (fail-open)
+        for attempt in 0..<10 {
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 { singleInstanceFD = fd; return true }
+            if attempt < 9 { usleep(200_000) }   // 200мс × 10 ≈ 2с на отпускание старой копией (Sparkle relaunch)
+        }
+        close(fd)
+        return false
+    }
+
+    private func installMainMenu() {
+        let main = NSMenu()
+
+        let appItem = NSMenuItem()
+        main.addItem(appItem)
+        let appMenu = NSMenu()
+        appItem.submenu = appMenu
+        appMenu.addItem(withTitle: L10n.t("menu.quit"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let closeItem = NSMenuItem(title: L10n.t("menu.close"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        appMenu.addItem(closeItem)
+
+        let editItem = NSMenuItem()
+        main.addItem(editItem)
+        let edit = NSMenu(title: L10n.t("menu.edit"))
+        editItem.submenu = edit
+        edit.addItem(withTitle: L10n.t("menu.undo"), action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = NSMenuItem(title: L10n.t("menu.redo"), action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(redo)
+        edit.addItem(.separator())
+        edit.addItem(withTitle: L10n.t("menu.cut"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: L10n.t("menu.copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: L10n.t("menu.paste"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: L10n.t("menu.selectAll"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+        NSApp.mainMenu = main
     }
 
     private func openSettings(section: SettingsSection? = nil) {
@@ -401,5 +621,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             historyWC?.onOpenVoiceSettings = { [weak self] in self?.openSettings(section: .voice) }
         }
         historyWC?.show()
+    }
+
+    /// Перед exit() освобождаем модель Whisper (whisper_free): Swift не зовёт deinit при выходе
+    /// процесса, Metal-буферы «утекали» за exit, и статический деструктор ggml бил ассерт → SIGABRT
+    /// при квите (краш-репорт 20.07, llama.cpp #19137 «not a bug — free your context before exit»).
+    /// Первый слой защиты — GGML_METAL_NO_RESIDENCY=1 в main.swift; этот — второй, канонический.
+    func applicationWillTerminate(_ notification: Notification) {
+        VoiceController.shared.unloadForTermination()
+        // Caps-ремап и забранная 🌐 без нас жить не должны: выходим — возвращаем всё системе.
+        // (Синхронно: терминация не ждёт GCD; hidutil отрабатывает за ~50мс.)
+        CapsRemap.removeIfOurs()
+        GlobeKey.release()
+    }
+
+    /// Sparkle и прочие системные диалоги — на языке ПРИЛОЖЕНИЯ, а не только системы.
+    /// У нас нет .lproj-папок (своя L10n) → без этого процесс запускается английским, и строки
+    /// Sparkle.framework резолвятся в en, хотя ru.lproj в нём есть (баг-репорт:
+    /// «You're up to date» в русском интерфейсе). CFBundleAllowMixedLocalizations в Info.plist
+    /// разрешает фреймворкам локализоваться независимо; здесь досинхронизируем ЯВНЫЙ выбор языка
+    /// в настройках (вступает в силу со следующего запуска — Sparkle-диалоги не горят).
+    private func syncProcessLanguage() {
+        let d = UserDefaults.standard
+        switch AppSettings.shared.language {
+        case "ru", "en":
+            if d.stringArray(forKey: "AppleLanguages")?.first != AppSettings.shared.language {
+                d.set([AppSettings.shared.language], forKey: "AppleLanguages")
+            }
+        default:
+            d.removeObject(forKey: "AppleLanguages")   // «авто» — язык системы
+        }
     }
 }

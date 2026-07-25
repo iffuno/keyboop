@@ -2,10 +2,20 @@ import AppKit
 
 /// Иконка в статус-баре рядом с часами + меню.
 final class MenuBarController: NSObject {
+    /// Единственный экземпляр (для уровня микрофона из VoiceController в живой waveform статус-бара).
+    static weak var shared: MenuBarController?
+
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let layout: LayoutManager
     private let settings = AppSettings.shared
     private var pollTimer: Timer?
+
+    // Живой waveform в строке меню во время записи: «K» + столбики по громкости.
+    private let waveBars = 5
+    private var waveTargets: [CGFloat]
+    private var waveShown: [CGFloat]
+    private var wavePeak: Float = 0.03
+    private var waveTimer: Timer?
 
     var onOpenSettings: (() -> Void)?
     var onShowVoiceHistory: (() -> Void)?
@@ -15,9 +25,19 @@ final class MenuBarController: NSObject {
     var needsPermission = false
     private var voiceState: VoiceController.State = .idle
 
+    /// Настоящий логотип Keyboop (белая фигура + альфа) для waveform в строке меню. Грузим один раз.
+    private static let markImage: NSImage? = {
+        guard let url = Bundle.main.url(forResource: "menubar-mark", withExtension: "png"),
+              let img = NSImage(contentsOf: url) else { return nil }
+        return img
+    }()
+
     init(layout: LayoutManager) {
         self.layout = layout
+        waveTargets = Array(repeating: 0.08, count: waveBars)
+        waveShown = waveTargets
         super.init()
+        Self.shared = self
         configureButton()
         buildMenu()
         startPolling()
@@ -37,16 +57,54 @@ final class MenuBarController: NSObject {
     @objc private func languageChanged() { buildMenu() }
 
     private func configureButton() {
-        if let button = statusItem.button {
+        applyIconStyle()
+    }
+
+    /// «Фирменный знак» для покоя строки меню: тот же логотип (template), что и в waveform.
+    /// Масштабируем под высоту строки меню (~16pt), рендерим как template → системная тонировка.
+    private static let brandStatusImage: NSImage? = {
+        guard let src = markImage else { return nil }
+        let h: CGFloat = 15, w = h * (src.size.width / max(src.size.height, 1))
+        let img = NSImage(size: NSSize(width: w, height: h))
+        img.lockFocus()
+        src.draw(in: NSRect(x: 0, y: 0, width: w, height: h),
+                 from: .zero, operation: .sourceOver, fraction: 1)
+        img.unlockFocus()
+        img.isTemplate = true
+        return img
+    }()
+
+    /// Применить выбранный стиль значка (brand/letter/layout/keyboard/hidden). Зовётся из init,
+    /// при смене настройки и при языке/раскладке. Во время диктовки не трогаем — иконку держит
+    /// voice-индикатор (setVoiceState).
+    func applyIconStyle() {
+        let style = settings.menuBarStyle
+        let showLang = settings.menuBarShowLanguage
+        // Пункт исчезает из строки меню, только если НЕТ и значка, и языка.
+        statusItem.isVisible = !(style == "hidden" && !showLang)
+        guard statusItem.isVisible, voiceState == .idle, let button = statusItem.button else { return }
+        switch style {
+        case "brand":
+            button.image = Self.brandStatusImage ?? NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Keyboop")
+            button.imagePosition = .imageLeading
+        case "hidden":
+            button.image = nil
+            button.imagePosition = .noImage       // значка нет — остаётся только язык (см. updateTitle)
+        default:   // "keyboard"
             button.image = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Keyboop")
             button.imagePosition = .imageLeading
-            updateTitle()
         }
+        updateTitle()
     }
 
     private func updateTitle() {
         if voiceState != .idle { return }   // во время диктовки иконку держит voice-индикатор
-        statusItem.button?.title = needsPermission ? " ⚠︎" : " \(layout.currentCode())"
+        guard let button = statusItem.button else { return }
+        if needsPermission { button.title = " ⚠︎"; return }
+        guard settings.menuBarShowLanguage else { button.title = ""; return }   // язык скрыт
+        let code = layout.currentCode()
+        // Без значка (hidden) язык без ведущего пробела; со значком — с отступом от него.
+        button.title = settings.menuBarStyle == "hidden" ? code : " \(code)"
     }
 
     /// Индикатор диктовки в статус-баре: запись / распознавание / покой.
@@ -55,21 +113,105 @@ final class MenuBarController: NSObject {
         guard let button = statusItem.button else { return }
         switch s {
         case .idle:
-            button.image = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Keyboop")
-            updateTitle()
+            stopWave()
+            applyIconStyle()                              // вернуть выбранный пользователем значок (не хардкод)
         case .recording:
-            button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Запись")
-            button.title = " ●"
+            // Живой waveform «K + столбики по громкости» вместо «микрофон + точка».
+            button.title = ""
+            button.imagePosition = .imageOnly
+            button.image?.accessibilityDescription = L10n.t("a11y.recording")
+            startWave()
         case .processing:
-            button.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Распознаю")
+            stopWave()
+            button.imagePosition = .imageLeading
+            button.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: L10n.t("voice.recognizing"))
             button.title = " …"
         }
+    }
+
+    /// Уровень микрофона (RMS) → правый край ленты столбиков. Зовётся из VoiceController-хука; вне
+    /// записи молча игнорируем.
+    func pushLevel(_ rms: Float) {
+        DispatchQueue.main.async {
+            guard self.voiceState == .recording else { return }
+            self.wavePeak = Swift.max(rms, self.wavePeak * 0.92)           // следящий пик → авто-гейн
+            let n = Swift.min(1, rms / Swift.max(self.wavePeak, 0.02))
+            let v = CGFloat(0.10 + 0.90 * pow(n, 0.65))
+            self.waveTargets.removeFirst(); self.waveTargets.append(v)
+        }
+    }
+
+    private func startWave() {
+        wavePeak = 0.03
+        for i in 0..<waveBars { waveTargets[i] = 0.10; waveShown[i] = 0.10 }
+        guard waveTimer == nil else { return }
+        let t = Timer(timeInterval: 1.0 / 24.0, repeats: true) { [weak self] _ in self?.waveTick() }
+        RunLoop.main.add(t, forMode: .common)
+        waveTimer = t
+        renderWave()
+    }
+    private func stopWave() {
+        waveTimer?.invalidate(); waveTimer = nil
+    }
+    private func waveTick() {
+        var changed = false
+        for i in 0..<waveBars {
+            let d = waveTargets[i] - waveShown[i]
+            if abs(d) > 0.003 { waveShown[i] += d * 0.4; changed = true }
+        }
+        if changed { renderWave() }
+    }
+
+    /// Рисуем фирменный знак (клавиша-K по логотипу) + столбики-waveform в template-картинку →
+    /// строка меню сама адаптирует под свет/тьму и подсветку при клике.
+    private func renderWave() {
+        guard let button = statusItem.button else { return }
+        let H: CGFloat = 18
+        let markS: CGFloat = 17                                   // знак почти во всю высоту строки меню (поля PNG срезаны → крупный, читаемый)
+        let bw: CGFloat = 1.5, gap: CGFloat = 1.5, markGap: CGFloat = 3.5   // waveform ~15% у́же — освобождаем место знаку
+        let barsW = CGFloat(waveBars) * bw + CGFloat(waveBars - 1) * gap
+        let W = markS + markGap + barsW
+
+        let img = NSImage(size: NSSize(width: ceil(W), height: H))
+        img.lockFocus()
+        // Фирменный знак — НАСТОЯЩИЙ логотип (Resources/menubar-mark.png, template); вектор — фолбэк.
+        let markRect = NSRect(x: 0, y: (H - markS) / 2, width: markS, height: markS)
+        if let mark = Self.markImage {
+            mark.draw(in: markRect, from: .zero, operation: .sourceOver, fraction: 1)
+        } else {
+            KeyboopMark.draw(in: markRect, color: .black)
+        }
+        NSColor.black.setFill()
+        for i in 0..<waveBars {
+            let bh = Swift.max(bw, waveShown[i] * (H - 4))
+            let x = markS + markGap + CGFloat(i) * (bw + gap)
+            let y = (H - bh) / 2
+            NSBezierPath(roundedRect: NSRect(x: x, y: y, width: bw, height: bh), xRadius: bw / 2, yRadius: bw / 2).fill()
+        }
+        img.unlockFocus()
+        img.isTemplate = true   // монохром + авто-адаптация к строке меню
+        button.image = img
+        button.imagePosition = .imageOnly
     }
 
     private func buildMenu() {
         let menu = NSMenu()
 
-        let header = NSMenuItem(title: L10n.t("menu.header"), action: nil, keyEquivalent: "")
+        // Заголовок меню = ВЕРСИЯ, а не слоган (просьба автора 21.07: «раскладка под контролем» —
+        // приятно, но бесполезно; версию хочется видеть сразу). Плюс два по-настоящему полезных
+        // индикатора: «-dev» (чтобы никогда больше не диагностировать не ту сборку — инцидент 21.07)
+        // и «авто выкл» — состояние, из-за которого человек решает, что программа сломалась.
+        let ver = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "—"
+        let isDev = (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
+        var headerTitle = "Keyboop \(ver)" + (isDev ? "-dev" : "")
+        // В dev-сборке показываем ВРЕМЯ СБОРКИ прямо в шапке меню (просьба автора 24.07): за вечер
+        // мы оба дважды путались, какую именно сборку тестируем. Дата не нужна — за день их много,
+        // различает время. В релизе не показываем: пользователю штамп ни о чём не говорит.
+        if isDev, let stamp = Bundle.main.infoDictionary?["KeyboopBuildStamp"] as? String {
+            headerTitle += " · \(stamp.split(separator: " ").last.map(String.init) ?? stamp)"
+        }
+        if !settings.autoEnabled { headerTitle += " · " + L10n.t("menu.autoOff") }
+        let header = NSMenuItem(title: headerTitle, action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
@@ -100,14 +242,21 @@ final class MenuBarController: NSObject {
         vh.target = self
         menu.addItem(vh)
 
-        menu.addItem(.separator())
-
-        // Проверить обновления вручную (помимо фоновой проверки) — перед настройками.
+        // Проверить обновления — в ОДНОЙ группе с разделами выше (там иконок нет → пункт флешем влево),
+        // а НЕ рядом с «Настройки»: у «Настройки» macOS 26 рисует системную шестерёнку, и в её группе
+        // резервируется колонка под иконку → безиконочный сосед уезжал вправо (автор 16.06).
         let upd = NSMenuItem(title: L10n.t("menu.checkUpdates"), action: #selector(checkUpdatesItem), keyEquivalent: "")
         upd.target = self
         menu.addItem(upd)
 
-        // Настройки — предпоследним, Выйти — последним.
+        // Фидбэк — в один клик из места, где юзер живёт (та же безиконочная группа).
+        let report = NSMenuItem(title: L10n.t("menu.report"), action: #selector(reportProblem), keyEquivalent: "")
+        report.target = self
+        menu.addItem(report)
+
+        menu.addItem(.separator())
+
+        // Настройки — отдельной группой между двумя разделителями: системная шестерёнка не задевает соседей.
         let prefs = NSMenuItem(title: L10n.t("menu.settings"), action: #selector(openSettings), keyEquivalent: ",")
         prefs.target = self
         menu.addItem(prefs)
@@ -181,6 +330,7 @@ final class MenuBarController: NSObject {
     @objc private func openSettings() { onOpenSettings?() }
     @objc private func showVoiceHistory() { onShowVoiceHistory?() }
     @objc private func checkUpdatesItem() { onCheckUpdates?() }
+    @objc private func reportProblem() { FeedbackWindowController.shared.show() }
     @objc private func openPermissions() { Permissions.openAccessibilitySettings() }
     @objc private func quit() {
         let alert = NSAlert()

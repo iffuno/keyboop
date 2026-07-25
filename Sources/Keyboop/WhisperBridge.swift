@@ -18,7 +18,7 @@ final class WhisperBridge {
     deinit { if let ctx { whisper_free(ctx) } }
 
     /// Транскрибировать аудио. language: "ru" / "en" / "auto".
-    /// initialPrompt с примером пунктуации стабилизирует знаки (см. docs/VOICE.md §4).
+    /// initialPrompt с примером пунктуации стабилизирует знаки.
     func transcribe(samples: [Float], language: String) -> String {
         guard let ctx, !samples.isEmpty else { return "" }
 
@@ -35,7 +35,15 @@ final class WhisperBridge {
         // иначе хвост речи терялся (раньше стояло true → частичное распознавание длинных реплик).
         params.single_segment = false
         params.temperature = 0.0
-        params.temperature_inc = 0.0     // выключить temperature-fallback — главный источник «фантазий»
+        // temperature-fallback ВКЛЮЧЁН (temp_inc>0): при детекте ВЫРОЖДЕННОГО сегмента (entropy_thold —
+        // повтор/гиббериш; logprob_thold — низкая уверенность) whisper.cpp ПЕРЕдекодирует его на чуть
+        // большей температуре. Это ШТАТНЫЙ механизм РАЗРЫВА repetition-loop — Whisper на длинной диктовке
+        // повторял одно слово/фразу много раз (баг-репорт, подтверждён исследованием моделей).
+        // Раньше стоял 0.0 (fallback ВЫКЛ ради «без фантазий») — но это и ОСТАВЛЯЛО петли. Срабатывает
+        // ТОЛЬКО на вырожденных сегментах; чистую речь греедичный проход (temp 0) проходит как раньше.
+        // Системно петли решает Parakeet v3 (transducer, без авторегрессии) — для RU/EU он и дефолт.
+        params.temperature_inc = 0.2
+        params.entropy_thold = 2.4       // повтор/гиббериш в сегменте → перезапуск (порог whisper.cpp по умолч.)
         params.no_speech_thold = 0.6
         params.n_threads = Int32(max(1, min(8, ProcessInfo.processInfo.activeProcessorCount - 2)))
 
@@ -44,23 +52,70 @@ final class WhisperBridge {
         let lang = strdup(language)
         defer { free(lang) }
         params.language = UnsafePointer(lang)        // "auto" → авто-детект; "ru"/"en" → явный язык
-        // initial_prompt НАМЕРЕННО не задаём: content-промпт («Привет! Вот пример текста…») смещал
-        // whisper к «фантазиям» — на сложном/тихом сегменте он «продолжал» промпт обобщённой фразой
-        // вместо речи (например 19.5с речи → «Я не знаю, как это сделать…»). Пунктуацию medium/large
-        // ставит и без подсказки. Если пунктуация просядет — вернём короткий промпт ТОЛЬКО из знаков.
+
+        // initial_prompt: НАТУРАЛЬНАЯ фраза со знаками препинания смещает авторегрессионный whisper
+        // к «режиму С пунктуацией». Без неё на ХОЛОДНОМ декоде (no_context=true) whisper ~в трети
+        // случаев залипал в «no-punctuation mode» — реальная телеметрия: 3/9 диктовок сплошняком,
+        // аудио ЧИСТОЕ (noSpeechMax=0.00), длина ни при чём (сплошняк и на 526 симв.). Корень —
+        // openai/whisper#194 (jongwook: «nudge к with-punctuation mode»); фикс подтверждён adversarial-
+        // ресёрчем по форумам/исходникам whisper.cpp (Habr Соколов: ~1/3 → 99%+ на RU large-v3/turbo).
+        // ВАЖНО (всё проверено ресёрчем 11.07):
+        //  — промпт = НАТУРАЛЬНАЯ фраза, НЕ «мешок знаков» ., ? ! (короткие/атипичные промпты — самый
+        //    ненадёжный случай, могут искажать слова; OpenAI cookbook whisper_prompting_guide);
+        //  — промпт ПОД ЯЗЫК: RU-промпт на EN-речи смещает вывод к русскому на пограничном аудио;
+        //  — БЕЗ ёлочек « » и без : ; — модель принимает « » за маркер прямой речи и заворачивает в неё
+        //    не-речь (Соколов), а turbo эти знаки всё равно теряет;
+        //  — no_context=true СОВМЕСТИМ с initial_prompt (no_context чистит ПРОШЛУЮ расшифровку, а промпт
+        //    присваивается ПОСЛЕ этой чистки, src/whisper.cpp) — анти-залипание сохраняем;
+        //  — carry_initial_prompt=true: на длинной диктовке (>30с = несколько окон) знаки не теряются на
+        //    2-м+ окне; для коротких реплик это no-op, downside нет.
+        let prompt = Self.punctuationPrompt(for: language)
+        let promptC = strdup(prompt)
+        defer { free(promptC) }
+        params.initial_prompt = UnsafePointer(promptC)
+        params.carry_initial_prompt = true
 
         var out = ""
         samples.withUnsafeBufferPointer { buf in
             let rc = whisper_full(ctx, params, buf.baseAddress, Int32(buf.count))
             let n = rc == 0 ? whisper_full_n_segments(ctx) : -1
-            kbLog("whisper: rc=\(rc) segments=\(n) lang=\(language) samples=\(buf.count)")
-            guard rc == 0 else { return }
-            for i in 0..<whisper_full_n_segments(ctx) {
+            guard rc == 0 else {
+                kbLog("whisper: rc=\(rc) segments=\(n) lang=\(language) samples=\(buf.count)")
+                return
+            }
+            // noSpeechMax — макс. вероятность «тишины» по сегментам (диагностика). Реальная телеметрия
+            // 10–11.07 ОПРОВЕРГЛА гипотезу «тихий хвост → пропажа знаков»: у ВСЕХ сплошняков noSpeechMax=0.00
+            // (аудио чистое). Корень пунктуации — не тишина, а холодный no-punctuation-mode, лечится
+            // initial_prompt выше. Метрику оставляем: полезна для repetition-loop / тихого аудио.
+            var noSpeechMax: Float = 0
+            for i in 0..<n {
+                noSpeechMax = max(noSpeechMax, whisper_full_get_segment_no_speech_prob(ctx, i))
                 if let cstr = whisper_full_get_segment_text(ctx, i) {
                     out += String(cString: cstr)
                 }
             }
+            kbLog("whisper: rc=\(rc) segments=\(n) lang=\(language) samples=\(buf.count) noSpeechMax=\(String(format: "%.2f", noSpeechMax))")
         }
-        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Защита от эха промпта: whisper изредка (на почти-тишине) «продолжает» затравку и выдаёт её
+        // началом расшифровки. Наши провалы — чистое аудио (риск низкий), но срезаем ТОЧНОЕ ведущее
+        // совпадение с промптом — дёшево и безопасно (реальная речь так дословно не начинается).
+        var result = out.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !prompt.isEmpty, result.hasPrefix(prompt) {
+            result = String(result.dropFirst(prompt.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            kbLog("whisper: срезано эхо initial_prompt")
+        }
+        return result
+    }
+
+    /// Короткая натуральная фраза-«затравка» со всеми ключевыми знаками ( , . ! ? — ) под язык речи.
+    /// Демонстрирует whisper «стиль с пунктуацией», не неся смысла (→ ~0 риск утечки/галлюцинаций).
+    /// Намеренно БЕЗ « » : ; (см. коммент в transcribe). Для "auto" — русская: аудитория Keyboop
+    /// RU-first, дефект пунктуации проявлялся на RU, а на чистом аудио языковой сдвиг от промпта
+    /// минимален. Reference: openai/whisper#194 · cookbook whisper_prompting_guide · Habr Соколов 1024634.
+    private static func punctuationPrompt(for language: String) -> String {
+        if language == "en" {
+            return "Hi! How are you? The weather is nice today, but it looks like it might rain. Well, let's wait — there's still time."
+        }
+        return "Привет! Как дела? Сегодня хорошая погода, но, кажется, скоро пойдёт дождь. Ну что ж, подождём — время ещё есть."
     }
 }

@@ -4,6 +4,7 @@ import AppKit
 /// для тренировки. Тон — наш (сухо-тёпло, бупаем клавиши). Показывается один раз.
 final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
     var onOpenSettings: (() -> Void)?
+    var onClose: (() -> Void)?
     private var fullWidth: [NSView] = []   // элементы, чья ширина пинится к ширине стека
     private weak var voiceBtn: NSButton?
     private weak var introOverlay: NSView?
@@ -14,6 +15,7 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
     private weak var axBtn: NSButton?
     private weak var micStatus: NSTextField?
     private weak var micBtn: NSButton?
+    private weak var trPackStatus: NSTextField?   // статус языкового пакета перевода RU↔EN (async)
 
     convenience init() {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 640),
@@ -104,13 +106,41 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
         } else {
             let b = NSButton(title: L10n.t("wel.voiceDownload"), target: self, action: #selector(downloadVoice))
             b.bezelStyle = .rounded
+            b.bezelColor = DS.coral            // акцент: рекомендуемое действие в онбординге (заметный дефолт-движок)
+            b.contentTintColor = .white
             voiceBtn = b
             stack.addArrangedSubview(b)
+        }
+        addWrap(stack, L10n.t("wel.histSafety"), size: 11.5, color: .tertiaryLabelColor)
+        addGap(stack, 8)
+
+        // Перевод выделенного: третья фича по хоткею. Translation framework — macOS 15+, поэтому всё
+        // зависящее от движка (хоткей-контрол, карточка пакета, приглашение в песочницу) под #available.
+        addSection(stack, L10n.t("wel.trTitle"))
+        addWrap(stack, L10n.t("wel.trBody"), size: 12.5, color: .secondaryLabelColor)
+        if #available(macOS 15.0, *) {
+            addControlRow(stack, L10n.t("wel.trKeyShort"), TranslateHotkeyControl())
+            addWrap(stack, L10n.t("wel.trPackNote"), size: 11.5, color: .tertiaryLabelColor)
+            addTrPackRow(stack)                                   // статус пакета RU↔EN + переход в Системные настройки
+            addWrap(stack, String(format: L10n.t("wel.trSandbox"), translateHotkeyDisplayString()),
+                    size: 11.5, color: .tertiaryLabelColor)
+        } else {
+            addWrap(stack, L10n.t("wel.trNeedOS"), size: 12, color: .tertiaryLabelColor)
         }
         addGap(stack, 8)
 
         addSection(stack, L10n.t("wel.practiceTitle"))
         addWrap(stack, L10n.t("wel.practiceHint"), size: 12.5, color: .secondaryLabelColor)
+        // В песочнице пробуется НЕ только автозамена раскладки — голос сюда же (просьба автора 21.07).
+        // Показываем только когда голос реально доступен: иначе это приглашение в никуда.
+        if AppSettings.shared.voiceEnabled, VoiceController.shared.hasUsableModel {
+            addWrap(stack, String(format: L10n.t("wel.practiceVoice"), voiceHotkeyDisplayString()),
+                    size: 11.5, color: .tertiaryLabelColor)
+        }
+        if #available(macOS 15.0, *) {
+            addWrap(stack, String(format: L10n.t("wel.practiceTr"), translateHotkeyDisplayString()),
+                    size: 11.5, color: .tertiaryLabelColor)
+        }
         let field = NSTextField()
         field.placeholderString = "ghbdtn привет…"
         field.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
@@ -126,13 +156,26 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(field); fullWidth.append(field)
         addGap(stack, 12)
 
-        // Кнопки
+        // Кнопки — прижаты ВПРАВО, «Поехали» последняя и фирменно-коралловая: из длинного онбординга
+        // должно быть сразу видно, где выход «всё понял, поехали» (просьба автора 21.07). Правый край —
+        // привычное место главного действия в macOS-диалогах, взгляд идёт туда сам.
         let setBtn = NSButton(title: L10n.t("wel.settings"), target: self, action: #selector(openSettings))
         setBtn.bezelStyle = .rounded
         let goBtn = NSButton(title: L10n.t("wel.go"), target: self, action: #selector(goClose))
-        goBtn.bezelStyle = .rounded; goBtn.keyEquivalent = "\r"
-        let btns = NSStackView(views: [setBtn, goBtn]); btns.orientation = .horizontal; btns.spacing = 10
+        goBtn.bezelStyle = .rounded; goBtn.keyEquivalent = "\r"   // Enter — тоже «Поехали»
+        // Коралловый = наш AccentColor из ассетов; contentTintColor даёт читаемый белый текст поверх.
+        if let coral = NSColor(named: "AccentColor") {
+            goBtn.bezelColor = coral
+            goBtn.contentTintColor = .white
+        }
+        // Растяжка слева съедает всё свободное место → обе кнопки уезжают к правому краю.
+        let btnSpacer = NSView()
+        btnSpacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        btnSpacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let btns = NSStackView(views: [btnSpacer, setBtn, goBtn])
+        btns.orientation = .horizontal; btns.spacing = 10
         stack.addArrangedSubview(btns)
+        fullWidth.append(btns)   // строка кнопок — во всю ширину колонки, иначе прижимать некуда
         addGap(stack, 8)
         // Вскользь, не отдельным шагом: приложение самообновляется.
         addWrap(stack, L10n.t("upd.onboard"), size: 12, color: .secondaryLabelColor)
@@ -209,7 +252,18 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func openSettings() { permTimer?.invalidate(); onOpenSettings?(); window?.close() }
     @objc private func goClose() { permTimer?.invalidate(); window?.close() }
-    func windowWillClose(_ n: Notification) { permTimer?.invalidate() }
+    func windowWillClose(_ n: Notification) { permTimer?.invalidate(); onClose?() }
+
+    // Фикс «окно уползает вправо при ресайзе высоты»: ширина фиксирована (min.width == max.width == 480),
+    // и AppKit при изменении высоты иногда дрейфит origin.x мелкими шажками. Держим x неизменным на время
+    // живого ресайза. setFrameOrigin меняет ТОЛЬКО позицию (не размер) → не рекурсит в windowDidResize.
+    private var liveResizeX: CGFloat?
+    func windowWillStartLiveResize(_ n: Notification) { liveResizeX = window?.frame.origin.x }
+    func windowDidEndLiveResize(_ n: Notification) { liveResizeX = nil }
+    func windowDidResize(_ n: Notification) {
+        guard let w = window, let x = liveResizeX, abs(w.frame.origin.x - x) > 0.5 else { return }
+        w.setFrameOrigin(NSPoint(x: x, y: w.frame.origin.y))
+    }
 
     // MARK: доступы (онбординг)
     @objc private func grantAX() {
@@ -255,6 +309,53 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
         stack.addArrangedSubview(row); fullWidth.append(row)
         return (status, btn)
     }
+
+    /// Карточка языкового пакета RU↔EN для онбординга: статус (async) + кнопка в системный менеджер
+    /// языков (там реальная загрузка с прогрессом — своё окно докачки виснет, не делаем). Зеркало
+    /// SettingsWindow.trPackCard в стиле онбординга.
+    @available(macOS 15.0, *)
+    private func addTrPackRow(_ stack: NSStackView) {
+        let name = NSTextField(labelWithString: L10n.t("tr.packName"))
+        name.font = .systemFont(ofSize: 13); name.textColor = .labelColor
+        name.setContentCompressionResistancePriority(.required, for: .horizontal)
+        let meta = NSTextField(labelWithString: L10n.t("tr.checking"))
+        meta.font = .systemFont(ofSize: 11); meta.textColor = .secondaryLabelColor
+        trPackStatus = meta
+        let nameCol = NSStackView(views: [name, meta])
+        nameCol.orientation = .vertical; nameCol.alignment = .leading; nameCol.spacing = 1
+        nameCol.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+
+        let sys = NSButton(title: L10n.t("tr.openSys"), target: self, action: #selector(openLangSettings))
+        sys.bezelStyle = .rounded; sys.controlSize = .regular
+        sys.setContentHuggingPriority(.required, for: .horizontal)
+
+        let spacer = NSView(); spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
+        let row = NSStackView(views: [nameCol, spacer, sys])
+        row.orientation = .horizontal; row.spacing = 10; row.alignment = .centerY
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 40).isActive = true
+        stack.addArrangedSubview(row); fullWidth.append(row)
+        refreshTrPackStatus()
+    }
+
+    /// Async-проверка наличия пакета RU↔EN (мирроr SettingsWindow.refreshTrPackStatus).
+    private func refreshTrPackStatus() {
+        guard #available(macOS 15.0, *) else { return }
+        Task { [weak self] in
+            let ok = await TranslationEngine.shared.isInstalled(from: "ru", to: "en")
+            await MainActor.run {
+                self?.trPackStatus?.stringValue = ok ? L10n.t("tr.installed") : L10n.t("tr.notInstalled")
+                self?.trPackStatus?.textColor = ok ? DS.coral : .secondaryLabelColor
+            }
+        }
+    }
+
+    /// Системные настройки → «Язык и регион» (менеджер языков перевода с реальным прогрессом).
+    @objc private func openLangSettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Localization-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
     /// Строка «подпись слева — контрол справа» (для хоткей-контролов в онбординге).
     private func addControlRow(_ s: NSStackView, _ label: String, _ control: NSView) {
         let l = NSTextField(labelWithString: label); l.font = .systemFont(ofSize: 13); l.textColor = .labelColor
@@ -263,7 +364,7 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
         control.setContentHuggingPriority(.required, for: .horizontal)
         let spacer = NSView(); spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         let row = NSStackView(views: [l, spacer, control]); row.orientation = .horizontal; row.spacing = 14; row.alignment = .centerY
-        // Вертикальное «дыхание» — иначе ряды с popup'ами слипаются (заметил Иван на скрине онбординга).
+        // Вертикальное «дыхание» — иначе ряды с popup'ами слипаются (заметил автор на скрине онбординга).
         row.heightAnchor.constraint(greaterThanOrEqualToConstant: 34).isActive = true
         s.addArrangedSubview(row); fullWidth.append(row)
     }

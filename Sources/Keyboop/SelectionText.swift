@@ -59,7 +59,12 @@ enum SelectionText {
             pb.clearContents()
             if !snapshot.isEmpty {
                 pb.writeObjects(snapshot.map { dict -> NSPasteboardItem in
-                    let it = NSPasteboardItem(); for (t, data) in dict { it.setData(data, forType: t) }; return it
+                    let it = NSPasteboardItem(); for (t, data) in dict { it.setData(data, forType: t) }
+                    // Помечаем ВОССТАНОВЛЕНИЕ transient — менеджеры буфера (Paste/Maccy/…) игнорируют
+                    // нашу служебную запись: не плодят дубликат и не «подсматривают» (анти-Punto чеклист,
+                    // security-аудит L2, 01.07). Данные в item реальные → пользователь вставляет как обычно.
+                    it.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
+                    return it
                 })
             }
         }
@@ -72,6 +77,12 @@ enum SelectionText {
         let down = CGEvent(keyboardEventSource: src, virtualKey: 8, keyDown: true)   // 'c' = 8
         let up   = CGEvent(keyboardEventSource: src, virtualKey: 8, keyDown: false)
         down?.flags = .maskCommand; up?.flags = .maskCommand
+        // КРИТИЧНО (репорт пользователя 25.07): без маркера наш собственный ⌘C выглядит для нашего
+        // же tap'а РЕАЛЬНЫМ нажатием. Если хоткей перевода оказался ⌘C (а записать его раньше было
+        // можно), получался бесконечный цикл: перевод → ⌘C → снова перевод → «ритмичный звук», пока
+        // человек не сменит хоткей. Маркер разрывает петлю в принципе — для любого нашего хоткея.
+        down?.setIntegerValueField(.eventSourceUserData, value: kbSyntheticMarker)
+        up?.setIntegerValueField(.eventSourceUserData, value: kbSyntheticMarker)
         down?.post(tap: .cghidEventTap); up?.post(tap: .cghidEventTap)
     }
 

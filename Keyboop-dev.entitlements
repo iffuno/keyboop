@@ -5,7 +5,7 @@
     <!-- DEV-ONLY entitlements. Идентичны Keyboop.entitlements, но с disable-library-validation:
          dev-сборка подписана self-signed «Keyboop Dev», а встроенный Sparkle.framework тем же
          self-signed → Library Validation (часть hardened runtime) их бы не подружила. В RELEASE
-         этот файл НЕ используется: там всё подписано одним Developer ID (Q9244KA2SS) → LV проходит
+         этот файл НЕ используется: там всё подписано одним Developer ID → LV проходит
          сама, и ослаблять её не нужно. -->
     <key>com.apple.security.app-sandbox</key>
     <false/>

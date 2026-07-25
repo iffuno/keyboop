@@ -1,6 +1,13 @@
 #!/bin/bash
-# Локальный цикл тестирования: собрать → положить в /Applications → перезапустить.
-# НЕ трогает сайт. Для быстрой проверки правок Иваном.
+# Локальный цикл тестирования: собрать DEV-сборку → положить в /Applications → перезапустить.
+# НЕ трогает сайт. Для быстрой проверки правок автором.
+#
+# ⚠️ Это ставит DEV (ru.keyboop.app.dev): свой домен настроек, СВОЙ лог (Keyboop-dev.log),
+# Sparkle ВЫКЛЮЧЕН — такая копия никогда не обновится. Прецедент 23.07.2026: этим скриптом
+# дважды «ставили прод» — версия совпадала, подмена прошла незаметно.
+# Настоящий прод (как у пользователей) ставится из нотаризованного DMG:
+#   hdiutil attach Keyboop.dmg && rm -rf /Applications/Keyboop.app && \
+#   cp -R /Volumes/Keyboop/Keyboop.app /Applications/ && hdiutil detach /Volumes/Keyboop
 set -e
 cd "$(dirname "$0")"
 
@@ -34,4 +41,6 @@ fi
 
 # Запустить свежую версию.
 open /Applications/Keyboop.app
-echo "✓ Установлено и запущено: /Applications/Keyboop.app  (v$VER)"
+BID=$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" /Applications/Keyboop.app/Contents/Info.plist)
+echo "✓ Установлено и запущено: /Applications/Keyboop.app  (v$VER, $BID)"
+echo "  ⚠️ Это DEV-сборка: без автообновлений, настройки/лог — свои. Прод — из Keyboop.dmg (см. шапку)."

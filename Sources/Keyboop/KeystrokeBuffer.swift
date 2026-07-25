@@ -35,8 +35,26 @@ final class KeystrokeBuffer {
                 // и групповая история ненадёжна (стёрли через границу) — рвём её, single-word живёт
                 sessionWords.removeAll()
             }
+        } else if !lastTail.isEmpty {
+            // Курсор стои́т ЗА завершённым словом: стираем его концевой пробел/таб — ужимаем хвост,
+            // само слово ещё помним (держим консистентность с группой).
+            lastTail.removeLast()
+            if !sessionWords.isEmpty { sessionWords[sessionWords.count - 1].tail = lastTail }
+        } else if !lastWord.isEmpty {
+            // Хвост исчерпан → Backspace вошёл В само завершённое слово. «Раз-граничиваем» его обратно
+            // в currentWord, чтобы дальнейшая правка шла по ВСЕМУ слову, а не теряла префикс. Раньше тут
+            // был clear() (буфер забывал слово) → на границе конвертилось ЛИШЬ дописанное окончание —
+            // баг «переключается только окончание» (workflow-диагностика 2026-06-28).
+            currentWord = lastWord
+            if !sessionWords.isEmpty { sessionWords.removeLast() }
+            lastWord = sessionWords.last?.word ?? ""
+            lastTail = sessionWords.last?.tail ?? ""
+            currentWord.removeLast()
+            if currentWord.isEmpty {
+                lastWord = ""; lastTail = ""; sessionWords.removeAll()
+            }
         } else {
-            // редактируем что-то раньше — безопаснее забыть контекст
+            // редактируем что-то раньше (буфер пуст) — безопаснее забыть контекст
             clear()
         }
     }
@@ -58,6 +76,17 @@ final class KeystrokeBuffer {
 
     func clear() {
         currentWord = ""
+        lastWord = ""
+        lastTail = ""
+        sessionWords.removeAll()
+    }
+
+    /// Мягкий сброс контекста: забываем ЗАВЕРШЁННОЕ слово + группу, но НЕ трогаем currentWord —
+    /// пользователь продолжает ТО ЖЕ слово на том же месте. Для «фокус мигнул» (активация другого
+    /// приложения уведомлением/баннером — каретка НЕ двигалась). Полный clear() здесь «сиротил»
+    /// набираемое окончание (буфер забывал префикс → на пробеле конвертилось лишь дописанное, баг
+    /// «переключается только окончание» / «ть»→«nm», workflow-диагностика 2026-06-29).
+    func softContextReset() {
         lastWord = ""
         lastTail = ""
         sessionWords.removeAll()
@@ -93,7 +122,16 @@ final class KeystrokeBuffer {
 
     /// Что конвертировать по запросу: текущее слово (без хвоста), иначе последнее (с хвостом).
     /// Возвращает (слово, сколько символов удалить, хвост).
-    func wordForConversion() -> (word: String, deleteCount: Int, tail: String)? {
+    /// completedOnly (аудит C2, 24.07): boundary-конверсия стартует через +30мс, и если юзер успел
+    /// начать СЛЕДУЮЩЕЕ слово, обычный порядок вернул бы его огрызок («x»), а завершённое слово
+    /// осиротело бы и молча не сконвертировалось («иногда не переключается» у быстрых печатающих).
+    /// completedOnly целится строго в завершённое слово; начатый огрызок уходит в tail — замена
+    /// считается от каретки, поэтому удаляем и перепечатываем ОБА куска: «ghbdtn x» → «привет x».
+    func wordForConversion(completedOnly: Bool = false) -> (word: String, deleteCount: Int, tail: String)? {
+        if completedOnly {
+            guard !lastWord.isEmpty else { return nil }
+            return (lastWord, lastWord.count + lastTail.count + currentWord.count, lastTail + currentWord)
+        }
         if !currentWord.isEmpty {
             return (currentWord, currentWord.count, "")
         }
@@ -103,9 +141,24 @@ final class KeystrokeBuffer {
         return nil
     }
 
+    /// Пара к completedOnly-конверсии: обновить именно ЗАВЕРШЁННОЕ слово, не трогая начатое следующее.
+    func applyCompletedConversion(converted: String) {
+        guard !lastWord.isEmpty else { return }
+        lastWord = converted
+        if !sessionWords.isEmpty { sessionWords[sessionWords.count - 1].word = converted }
+    }
+
+    /// Зафиксировать раскрытие сниппета: текущее слово (триггер) превратилось в раскрытие, затем —
+    /// граница (проглоченный пробел/таб/Enter печатается нами). На экране: раскрытие + разделитель,
+    /// курсор в начале нового слова. Зовётся синхронно, чтобы дальнейший ввод видел верный буфер.
+    func commitSnippet(expansion: String, whitespace: String) {
+        currentWord = expansion
+        boundary(whitespace)
+    }
+
     /// После замены обновляем внутреннее состояние, чтобы дальнейший ввод был корректным.
     /// ВАЖНО: синхронизируем и sessionWords — история должна отражать ЭКРАН, а не оригинал
-    /// набора (корень G1 из docs/GROUP_CONVERT_EDGECASES.md; на этом же стоит контекстный
+    /// набора (корень G1 групповой конвертации; на этом же стоит контекстный
     /// приор детектора — язык предыдущего слова берётся отсюда).
     func applyConversion(converted: String) {
         if !currentWord.isEmpty {

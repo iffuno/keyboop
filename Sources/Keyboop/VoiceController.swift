@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 
 /// Оркестратор голосового ввода (диктовка): hold-хоткей → запись → whisper.cpp →
 /// вставка БЕЗ буфера (принцип №1). Всё локально, без сети (принцип №2).
@@ -12,20 +13,129 @@ final class VoiceController {
     private var abortStart = false // end()/cancel() пришёл во время async-старта → прервать его
     /// СИНХРОННЫЙ флаг намерения: true с момента begin() и до остановки записи. Источник истины
     /// для toggle (EventTap), т.к. begin() асинхронный и recorder.isRecording в момент toggle ещё false.
-    private(set) var isActive = false
+    /// Прокси к атомарному VoiceGate: колбэк CGEventTap читает это СИНХРОННО, а сам begin/end
+    /// уезжает на main (см. VoiceGate — там причина). Семантика прежняя: «намерение записывать».
+    var isActive: Bool { VoiceGate.isActive }
     /// Сериализация транскрипции: новая ЗАПИСЬ может начаться, пока прошлая транскрибируется
     /// (запись и whisper независимы), но сами whisper-вызовы — строго по одному (не реентерабельно).
     private let transcribeQueue = DispatchQueue(label: "ru.keyboop.voice.transcribe")
     private var transcribing = 0   // сколько клипов сейчас в транскрипции (для индикатора)
+    private var transcribeGen = 0              // генерации задач транскрипции (main-only)
+    private var liveTranscriptions = Set<Int>()  // ещё не завершившиеся генерации (main-only)
+
+    // ── ЭКСПЕРИМЕНТАЛЬНО: потоковая диктовка (EOU) ──
+    private var streamingActive = false
+    private var typedTail = ""                          // что мы УЖЕ напечатали в поле (для диффа)
+    private var eouChunks: AsyncStream<[Float]>.Continuation?   // очередь чанков (сохраняет порядок аудио)
+    private var eouTask: Task<Void, Never>?            // единый потребитель: кормит движок по порядку
+    private var streamFinalize: Task<Void, Never>?     // финализация прошлой сессии (finish/reset) — новая ждёт её
+    /// Использовать потоковый путь: фича ВКЛ + движок parakeet + EOU-модель скачана.
+    private var useStreaming: Bool {
+        settings.voiceStreaming && settings.voiceEngine == "parakeet" && StreamingEouEngine.modelInstalled
+    }
 
     enum State { case idle, recording, processing }
     var onStateChange: ((State) -> Void)?
 
+    private init() {
+        // Живой уровень микрофона → waveform индикатора «Слушаю». pushLevel сам игнорирует всё,
+        // что приходит не в состоянии записи, поэтому хук безопасно держать постоянно.
+        recorder.setLevelHook { rms in
+            VoiceIndicator.shared.pushLevel(rms)      // плашка «Слушаю»
+            MenuBarController.shared?.pushLevel(rms)  // живой waveform в строке меню
+        }
+        // Запись умерла безвозвратно (вход пропал, аварийная пересборка не удалась) — сворачиваем
+        // диктовку ШТАТНО, а не оставляем вечное «Слушаю». Уже напечатанные стрим-партиалы НЕ стираем
+        // (текст на экране ценнее); finish() очереди чанков даёт стриму финализироваться как обычно.
+        recorder.onNotice = { msg in VoiceIndicator.shared.showToast(msg) }
+        recorder.onDied = { [weak self] in
+            guard let self else { return }
+            kbLog("voice: запись оборвалась (вход недоступен) — диктовка завершена")
+            VoiceGate.set(false)
+            self.recorder.setChunkHook(nil)
+            self.eouChunks?.finish(); self.eouChunks = nil
+            // Стрим-конвейер гасим ЦЕЛИКОМ (ревью 21.07, №3): иначе streamingActive оставался true →
+            // (а) дренируемые чанки продолжали ПЕЧАТАТЬ в поле после fail-cue (streamStep жив),
+            // (б) следующий батч-end() мис-роутился в streamEnd(), (в) осиротевший eouTask
+            // интерливился с новой сессией на общем singleton-акторе. Уже напечатанный текст
+            // НЕ стираем (ценнее конвейера); финализацию сериализуем через streamFinalize,
+            // чтобы следующий streamBegin дождался чистого reset движка.
+            if self.streamingActive {
+                self.streamingActive = false
+                self.typedTail = ""
+                let task = self.eouTask; self.eouTask = nil
+                self.streamFinalize = Task { await task?.value; await StreamingEouEngine.shared.cancelSession() }
+            }
+            self.playCue(self.failSound)
+            self.setState(.idle)
+        }
+        setupMemoryPressureUnload()
+    }
+
+    /// ОСНОВНОЙ триггер выгрузки модели (~1.5 ГБ): системный memory pressure, а не таймер.
+    /// Урок регрессии 0.2.58 (баг-репорт): выгрузка по 5-минутному будильнику заставляла
+    /// перегружать модель почти на каждую диктовку (750–1550мс + всплеск аллокации 1.5 ГБ + циклы
+    /// init/free Metal-контекста ggml) — «стало дольше и подтормаживает». Правильная семантика:
+    /// пока памяти хватает — модель живёт (мгновенная диктовка); система прижала память (.warning/
+    /// .critical) и мы простаиваем — отдаём немедленно. Таймер остаётся страховкой на долгий простой.
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+    private var lastVoiceUseAt = Date.distantPast   // последняя диктовка (main-only) — для анти-карусели
+    private func setupMemoryPressureUnload() {
+        let src = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        src.setEventHandler { [weak self] in
+            guard let self else { return }
+            guard self.whisper != nil, self.transcribing == 0, !self.isActive, !self.recorder.isRecording
+            else { return }   // заняты диктовкой — не дёргаем; таймер/следующее событие доберёт
+            // КАРУСЕЛЬ ПЕРЕЗАГРУЗОК (баг-репорт): крупная модель (turbo, 1.6 ГБ) сама создаёт
+            // warning-давление → мы выгружаем → следующая диктовка платит ~1.2с за перезагрузку →
+            // снова давление, по кругу каждые полчаса. Warning в течение 10 минут после последней
+            // диктовки игнорируем — пользователь РАБОТАЕТ; по warning выгружаем только в простое.
+            // Critical уважаем всегда: системе реально плохо — отдаём немедленно.
+            let ev = DispatchSource.MemoryPressureEvent(rawValue: self.memoryPressureSource?.data ?? 0)
+            if !ev.contains(.critical), Date().timeIntervalSince(self.lastVoiceUseAt) < 600 {
+                kbLog("voice: memory warning в активной сессии диктовок — модель НЕ выгружаю")
+                return
+            }
+            self.modelIdleRelease?.cancel(); self.modelIdleRelease = nil
+            self.transcribeQueue.async { [weak self] in
+                self?.whisper = nil
+                kbLog("voice: системе не хватает памяти (pressure) — модель Whisper выгружена")
+            }
+        }
+        src.resume()
+        memoryPressureSource = src
+    }
+
     /// Предзагрузка модели в фоне (на старте приложения, если голос включён и модель есть) — чтобы
     /// ПЕРВОЕ нажатие диктовки не платило за загрузку (частая причина «не сработало с первого раза»).
     func preload() {
+        StreamingEouEngine.enforceRuntimeOffline()   // рантайм-офлайн со старта (принцип №2): сеть только при явной докачке
         guard settings.voiceEnabled, hasUsableModel else { return }
-        transcribeQueue.async { [weak self] in self?.loadModelIfNeeded() }
+        // Прогрев device-discovery AVFoundation в фоне (ревью 21.07, №6): первый AVCaptureDevice-lookup
+        // в процессе лениво поднимает инфраструктуру захвата (с BT — заметно), и без прогрева это
+        // платил бы ПЕРВЫЙ buildEngine на main. Только lookup — capture-объектов не создаёт, TCC-промпт
+        // не триггерит (инвариант «ничего до requestAccess» цел).
+        DispatchQueue.global(qos: .utility).async { _ = AVCaptureDevice.default(for: .audio) }
+        // Греем ТОТ движок, которым реально пойдёт диктовка.
+        // Parakeet раньше не грелся вообще, хотя он движок ПО УМОЛЧАНИЮ: его CoreML-модель грузится
+        // и компилируется под ANE лениво, при первой транскрипции — замер 21.07 на чистом контейнере:
+        // запись кончилась в 15:16:14, текст пришёл в 15:16:57 (+43с!). Пользователь видит «первая
+        // диктовка думает полминуты», дальше всё быстро. Теперь греем в фоне со старта.
+        if willUseParakeet {
+            Task { _ = await ParakeetEngine.shared.loadIfNeeded() }
+        } else {
+            transcribeQueue.async { [weak self] in self?.loadModelIfNeeded() }
+        }
+        // Потоковая модель (если фича вкл и скачана) — прогреть, чтобы первая диктовка не лагала.
+        if settings.voiceStreaming && StreamingEouEngine.modelInstalled {
+            Task { _ = await StreamingEouEngine.shared.loadIfNeeded() }
+        }
+    }
+
+    /// Каким движком пойдёт СЛЕДУЮЩАЯ диктовка — та же формула, что в transcribe().
+    /// Нужна, чтобы не грузить впустую чужую модель (whisper — это 1.5 ГБ и секунды).
+    private var willUseParakeet: Bool {
+        settings.voiceEngine == "parakeet" && ParakeetEngine.modelInstalled
     }
 
     // MARK: - Модель
@@ -56,32 +166,58 @@ final class VoiceController {
         guard settings.voiceEnabled else { return }
         if starting { kbLog("voice: begin пропущен — старт уже идёт"); return }
         if recorder.isRecording { kbLog("voice: begin пропущен — запись уже идёт"); return }
-        isActive = true            // СИНХРОННО: намерение записывать — toggle сразу видит активность
+        VoiceGate.set(true)            // СИНХРОННО: намерение записывать — toggle сразу видит активность
         starting = true
         abortStart = false
+        lastVoiceUseAt = Date()        // маркер «пользователь диктует» для анти-карусели pressure-выгрузки
         Task { @MainActor in
             defer { starting = false }
             // Доступ к микрофону — ПЕРВЫМ (даже без модели), чтобы новый юзер увидел системный промпт.
             guard await AudioRecorder.requestAccess() else {
-                kbLog("voice: нет доступа к микрофону"); NSSound.beep(); isActive = false; return
+                kbLog("voice: нет доступа к микрофону"); NSSound.beep(); VoiceGate.set(false); return
             }
-            if abortStart { kbLog("voice: старт прерван (отпустили до начала записи)"); isActive = false; setState(.idle); return }
+            if abortStart { kbLog("voice: старт прерван (отпустили до начала записи)"); VoiceGate.set(false); setState(.idle); return }
             guard hasUsableModel else {
                 kbLog("voice: нет модели распознавания — предлагаем скачать")
-                isActive = false; onNeedModel?(); return
+                VoiceGate.set(false); onNeedModel?(); return
             }
-            loadModelIfNeeded()
-            if abortStart { isActive = false; setState(.idle); return }
+            // Загрузка модели — строго на transcribeQueue, НЕ на @MainActor.
+            // whisper_init_from_file_with_params() читает модель с диска (75–1500+ МБ) несколько секунд.
+            // Вызов на main thread замораживал RunLoop: CGEventTap переставал отвечать → весь ввод
+            // (мышь, клавиатура) зависал до конца загрузки. Serializes с preload() — оба на одной очереди.
+            // ТОЛЬКО если диктовать будет whisper. Раньше грузили безусловно — при движке Parakeet
+            // (дефолт!) это впустую тянуло с диска 1.5 ГБ и задерживало старт записи на секунды,
+            // а в dev-домене (модель `small` не скачана) давало «модель не загрузилась» на каждой
+            // диктовке. Parakeet свою модель грузит сам в transcribe() и греется в preload().
+            //
+            // БЕЗ ОЖИДАНИЯ (баг-репорт: «старт диктовки стал дольше»): раньше begin() ждал
+            // загрузку ЦЕЛИКОМ (large-v3-turbo ~1.2с) и только потом включал микрофон. Записи модель
+            // не нужна, а транскрипция встаёт на transcribeQueue ПОЗАДИ загрузки — порядок гарантирует
+            // сама очередь. Параллельно: старт мгновенный, загрузка прячется под время речи.
+            if !willUseParakeet {
+                transcribeQueue.async { [weak self] in self?.loadModelIfNeeded() }
+            }
+            if abortStart { VoiceGate.set(false); setState(.idle); return }
             do {
                 try recorder.start()
                 if abortStart {        // отпустили ровно в момент старта — стоп немедленно
-                    _ = recorder.stop(); isActive = false; setState(.idle); return
+                    _ = recorder.stop(); VoiceGate.set(false); setState(.idle); return
+                }
+                if useStreaming {
+                    await streamBegin()   // потоковый путь: текст пойдёт по мере речи
+                    // РЕ-ЧЕК после await (ревью 21.07, №4): за время streamBegin (loadIfNeeded /
+                    // streamFinalize / actor-hop) юзер мог отпустить хоткей (end() уже отработал
+                    // батч-путём) или запись могла умереть (onDied уже поставил .idle). Безусловные
+                    // .recording+cue тут воскрешали индикатор на мёртвой записи — «Слушаю» навсегда.
+                    // В else СОСТОЯНИЕ НЕ трогаем: его уже корректно выставили end()/cancel()/onDied
+                    // (например .processing от батч-финала — .idle затёр бы его).
+                    guard recorder.isRecording, !abortStart else { return }
                 }
                 setState(.recording)
                 playCue(startSound)    // восходящее «тук-тук» — пошла запись
             } catch {
                 kbLog("voice: старт записи не удался: \(error)")
-                isActive = false; setState(.idle)
+                VoiceGate.set(false); setState(.idle)
             }
         }
     }
@@ -90,13 +226,14 @@ final class VoiceController {
     func end() {
         // Отпустили/нажали стоп ДО того как async-begin реально завёл запись — прерываем старт.
         if starting && !recorder.isRecording {
-            abortStart = true; isActive = false
+            abortStart = true; VoiceGate.set(false)
             kbLog("voice: end во время старта — прерываю запуск (запись ещё не пошла)")
             return
         }
-        guard recorder.isRecording else { isActive = false; return }
+        guard recorder.isRecording else { VoiceGate.set(false); return }
+        if streamingActive { streamEnd(); return }   // потоковый путь: финализируем стрим
         let samples = recorder.stop()
-        isActive = false      // ЗАПИСЬ окончена → можно сразу начинать НОВУЮ (транскрипция идёт в фоне)
+        VoiceGate.set(false)      // ЗАПИСЬ окончена → можно сразу начинать НОВУЮ (транскрипция идёт в фоне)
         playCue(stopSound)    // нисходящее «тук-тук» — запись остановлена (до транскрипции)
         let rms = samples.isEmpty ? 0 : (samples.map { $0 * $0 }.reduce(0, +) / Float(samples.count)).squareRoot()
         kbLog("voice: \(samples.count) сэмплов, \(String(format: "%.1f", recorder.duration))с, RMS=\(String(format: "%.4f", rms))")
@@ -108,17 +245,26 @@ final class VoiceController {
             refreshIndicator(); playCue(failSound)
             return
         }
-        transcribing += 1
-        setState(.processing)
         let lang = languageForWhisper()
         let useParakeet = settings.voiceEngine == "parakeet" && ParakeetEngine.modelInstalled
+        // Холодный whisper (модели нет в памяти): загрузка крупной модели с незакэшированного
+        // диска — секунды-десятки секунд, и она не должна съедать бюджет сторожа транскрипции.
+        let gen = beginTranscription(duration: recorder.duration, coldLoad: !useParakeet && whisper == nil)
+        setState(.processing)
+        // Диагностика «почему медленно»: сразу видно, на каком движке распознаём и почему НЕ Parakeet
+        // (whisper на CPU/Metal растёт с длиной аудио; Parakeet на ANE — почти мгновенный). Если тут
+        // whisper при voiceEngine=parakeet — значит модель Parakeet не скачана (parakeetInstalled=false).
+        kbLog("voice: движок=\(useParakeet ? "parakeet/ANE" : "whisper/CPU") · выбран=\(settings.voiceEngine) parakeetInstalled=\(ParakeetEngine.modelInstalled) whisperModel=\(settings.voiceModel)")
         if useParakeet {
             Task { [weak self] in
                 guard let self else { return }
                 let ok = await ParakeetEngine.shared.loadIfNeeded()
                 let text = ok ? await ParakeetEngine.shared.transcribe(samples: samples) : ""
                 kbLog("voice: parakeet(готов=\(ok)) → \(text.count) симв.")
-                await MainActor.run { self.transcribing -= 1; self.deliver(text); self.refreshIndicator() }
+                await MainActor.run {
+                    guard self.endTranscription(gen) else { return }   // сторож уже бросил — поздний результат в топку
+                    self.deliver(text); self.refreshIndicator()
+                }
             }
             return
         }
@@ -129,11 +275,44 @@ final class VoiceController {
             let text = self.whisper?.transcribe(samples: samples, language: lang) ?? ""
             kbLog("voice: whisper(модель=\(modelReady ? "ок" : "НЕТ"), \(lang)) → \(text.count) симв.")
             DispatchQueue.main.async {
-                self.transcribing -= 1
+                guard self.endTranscription(gen) else { return }   // сторож уже бросил — поздний результат в топку
                 self.deliver(text)
                 self.refreshIndicator()
+                self.scheduleModelRelease()   // простаиваем → вернём ~1.5 ГБ системе
             }
         }
+    }
+
+    /// СТОРОЖ ТРАНСКРИПЦИИ (репорт пользователя 23.07.2026: «Распознаю» зависла навечно, Keyboop
+    /// не закрывался — пришлось перезагружать Мак). Инференс без таймаута = вечная плашка. По
+    /// таймауту задачу БРОСАЕМ: счётчик/индикатор чинятся, поздний результат отбрасывается по
+    /// генерации (гвард в completion), пользователю — честный тост вместо вечного «Распознаю».
+    private func beginTranscription(duration: Double, streaming: Bool = false, coldLoad: Bool = false) -> Int {
+        transcribing += 1
+        transcribeGen += 1
+        let gen = transcribeGen
+        liveTranscriptions.insert(gen)
+        var timeout = min(90, max(15, duration * 1.5))   // Parakeet/ANE — секунды; whisper растёт с длиной клипа
+        if coldLoad { timeout += 60 }                    // +бюджет на холодную загрузку модели с диска
+        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+            guard let self, self.liveTranscriptions.remove(gen) != nil else { return }
+            self.transcribing -= 1
+            kbLog("voice: транскрипция №\(gen) висит >\(Int(timeout))с — бросаю (поздний результат отброшу)")
+            if streaming { self.streamingActive = false; self.typedTail = "" }   // застрявший финал не должен блокировать новые стримы
+            VoiceIndicator.shared.showToast(L10n.t("voice.stuck"))
+            self.refreshIndicator()
+            // Попытка освободить возможно-отравленный движок. Если очередь реально висит —
+            // задание просто не выполнится; выходу это не мешает (bounded unloadForTermination).
+            self.transcribeQueue.async { [weak self] in self?.whisper = nil }
+        }
+        return gen
+    }
+
+    /// true = задача ещё живая (сторож не срабатывал) — результат можно доставлять.
+    private func endTranscription(_ gen: Int) -> Bool {
+        guard liveTranscriptions.remove(gen) != nil else { return false }
+        transcribing -= 1
+        return true
     }
 
     /// Индикатор после события: если сейчас пишем — recording; если ещё идёт транскрипция — processing;
@@ -161,16 +340,113 @@ final class VoiceController {
     /// Отмена текущей диктовки (Escape) — запись отбрасываем, ничего не вставляем.
     func cancel() {
         if starting && !recorder.isRecording {   // отмена во время async-старта — прерываем запуск
-            abortStart = true; isActive = false
+            abortStart = true; VoiceGate.set(false)
             kbLog("voice: отмена во время старта — прерываю запуск")
             return
         }
-        guard recorder.isRecording else { isActive = false; return }
+        guard recorder.isRecording else { VoiceGate.set(false); return }
+        if streamingActive { streamCancel(); return }   // потоковый путь: стереть напечатанное
         _ = recorder.stop()
-        isActive = false
+        VoiceGate.set(false)
         refreshIndicator()
         playCue(failSound)   // мягкий нисходящий «отменено»
         kbLog("voice: диктовка отменена (Escape)")
+    }
+
+    // MARK: - Потоковая диктовка (EOU, экспериментально)
+
+    /// Старт потоковой сессии: грузим/прогреваем EOU, заводим очередь чанков и единый потребитель.
+    /// ВАЖНО (анти-гонки, ревью 2026-06-19): streamingActive выставляем ПОСЛЕДНИМ (после wiring), и
+    /// после КАЖДОГО await пере-проверяем, что запись ещё идёт — иначе быстрый отпуск/тоггл оставит
+    /// orphan-eouTask на мёртвом рекордере. Новая сессия ЖДЁТ финализацию прошлой (анти reset-во-время-finish).
+    @MainActor private func streamBegin() async {
+        guard await StreamingEouEngine.shared.loadIfNeeded() else {
+            kbLog("voice: EOU не загрузилась → откат на батч"); return   // streamingActive=false → end() пойдёт батчем
+        }
+        guard recorder.isRecording, !abortStart else { await StreamingEouEngine.shared.cancelSession(); return }
+        await streamFinalize?.value          // дождаться finish/reset прошлой сессии (общий singleton-актор)
+        guard recorder.isRecording, !abortStart else { await StreamingEouEngine.shared.cancelSession(); return }
+        await StreamingEouEngine.shared.startSession(onPartial: { [weak self] full in
+            Task { @MainActor in self?.streamStep(full) }     // partial = ПОЛНЫЙ транскрипт → диффим
+        })
+        guard recorder.isRecording, !abortStart else { await StreamingEouEngine.shared.cancelSession(); return }
+        typedTail = ""
+        let (stream, cont) = AsyncStream<[Float]>.makeStream()
+        eouChunks = cont
+        recorder.setChunkHook { chunk in cont.yield(chunk) } // tap-поток → очередь (порядок сохраняется)
+        eouTask = Task { for await chunk in stream { await StreamingEouEngine.shared.feed(chunk) } }
+        streamingActive = true               // ПОСЛЕДНИМ: теперь end()/cancel() корректно увидят активный стрим
+    }
+
+    /// Применить новый полный транскрипт: стираем разошедшийся хвост, допечатываем новый.
+    /// Печать — нашей синтетикой (маркер kbSyntheticMarker) → live-fix её не трогает.
+    /// deleteCount ≤ typedTail.count (только наш текст) — дотекстовый ввод пользователя НЕ стираем.
+    @MainActor private func streamStep(_ full: String) {
+        guard streamingActive else { return }
+        let common = typedTail.commonPrefix(with: full).count
+        let deleteCount = typedTail.count - common
+        let toType = String(Array(full).suffix(full.count - common))
+        guard deleteCount > 0 || !toType.isEmpty else { return }
+        TextReplacer.replace(deleteCount: deleteCount, with: toType)
+        typedTail = full
+    }
+
+    /// Финал: дослать остаток, сверить с финальным текстом, закоммитить (пробел+история+уведомление ОДИН раз).
+    /// recorder.stop() делает end()/cancel() no-op'ами (не recording) → нет реентерабельного финала.
+    /// streamingActive держим true ДО конца финала (чтобы финальный streamStep напечатал), сбрасываем в самом конце.
+    private func streamEnd() {
+        recorder.setChunkHook(nil)
+        eouChunks?.finish(); eouChunks = nil
+        _ = recorder.stop()
+        VoiceGate.set(false)
+        playCue(stopSound)
+        let gen = beginTranscription(duration: recorder.duration, streaming: true)
+        setState(.processing)
+        let task = eouTask; eouTask = nil
+        streamFinalize = Task { [weak self] in
+            guard let self else { return }
+            await task?.value                                 // дождаться, пока скормятся все чанки
+            let final = await StreamingEouEngine.shared.finishSession()
+            await MainActor.run {
+                self.streamStep(final)                         // довести экран до финального текста (флаг ещё true)
+                let clean = self.typedTail.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !clean.isEmpty {
+                    if TextReplacer.secureInputActive {
+                        // Финал пришёлся на поле пароля: хвост не досылаем (streamStep выше уже
+                        // пропущен гвардом в TextReplacer), текст сохраняем и честно говорим.
+                        kbLog("voice: secure input на финале стриминга — текст в истории")
+                        VoiceIndicator.shared.showToast(L10n.t("voice.securePwd"))
+                    } else {
+                        TextReplacer.insert(" ") {                  // пробел в конце, как в батч-deliver()
+                            NotificationCenter.default.post(name: .keyboopVoiceInserted, object: nil)
+                        }
+                    }
+                    VoiceHistory.shared.add(clean)             // в историю — ОДИН раз, на финале
+                    kbLog("voice: стриминг завершён, \(clean.count) симв.")
+                    self.noteVoiceStats(clean)                 // статистика — тоже один раз, на финале
+                } else {
+                    playCue(failSound)
+                }
+                self.streamingActive = false; self.typedTail = ""
+                if self.endTranscription(gen) { self.refreshIndicator() }
+            }
+        }
+    }
+
+    /// Отмена потоковой диктовки (Escape): стереть уже напечатанное, ничего не коммитить.
+    private func streamCancel() {
+        recorder.setChunkHook(nil)
+        eouChunks?.finish(); eouChunks = nil
+        _ = recorder.stop()
+        VoiceGate.set(false)
+        streamingActive = false   // отмена: партиалы больше не принимаем (streamStep сразу выйдет)
+        if !typedTail.isEmpty { TextReplacer.replace(deleteCount: typedTail.count, with: "") }
+        let n = typedTail.count; typedTail = ""
+        let task = eouTask; eouTask = nil
+        streamFinalize = Task { await task?.value; await StreamingEouEngine.shared.cancelSession() }
+        refreshIndicator()
+        playCue(failSound)
+        kbLog("voice: стриминг отменён, стёрто \(n) симв.")
     }
 
     /// Текущее состояние записи (для кнопки в окне истории).
@@ -199,7 +475,22 @@ final class VoiceController {
             playCue(failSound)   // мягкий нисходящий сигнал «не вышло», чтобы не было тихо
             return
         }
-        kbLog("voice: распознано \(clean.count) симв.")
+        // Поле пароля/системный диалог украли фокус (инцидент 23.07.2026): печатать нельзя,
+        // но распознанное НЕ теряем — история + честный тост вместо молчаливой пропажи.
+        if TextReplacer.secureInputActive {
+            kbLog("voice: активен secure input — не печатаю \(clean.count) симв., текст в истории")
+            VoiceHistory.shared.add(clean)
+            noteVoiceStats(clean)
+            VoiceIndicator.shared.showToast(L10n.t("voice.securePwd"))
+            return
+        }
+        // Диагностика «пропадает пунктуация» (10.07): считаем ЗНАКИ ПРЕПИНАНИЯ в выводе (только счётчик,
+        // не контент). По логу видно, когда распознавание пришло «сплошняком» (пунктуация=0) — на любом
+        // движке. Корень исследован (whisper «no-punctuation mode» / Parakeet не эмитит знак-токены на
+        // тихих хвостах). Коррелировать с длительностью/noSpeechMax из строк выше.
+        let punct = clean.reduce(0) { $0 + (".,!?;:…—–".contains($1) ? 1 : 0) }
+        kbLog("voice: распознано \(clean.count) симв., пунктуация=\(punct)")
+        noteVoiceStats(clean)
         // Пробел в конце — чтобы следующая фраза не слиплась с этой (предложил пользователь).
         // insert — async на serial-очереди; notification шлём в completion (после постинга), чтобы Engine
         // очистил буфер не раньше времени: надиктованный текст не должен попасть в групповую конвертацию (G3).
@@ -209,13 +500,70 @@ final class VoiceController {
         VoiceHistory.shared.add(clean)
     }
 
+    /// Копим статистику «надиктовано» для счётчика в «О программе». Считаем ТОЛЬКО длину и число слов —
+    /// сам текст не сохраняем (принцип №2). Зовётся один раз на удачную вставку: из deliver() (батч)
+    /// и с финала стриминга (партиалы не считаем, иначе одна фраза учлась бы многократно).
+    private func noteVoiceStats(_ clean: String) {
+        settings.voiceChars += clean.count
+        settings.voiceWords += clean.split(whereSeparator: { $0 == " " || $0 == "\n" || $0 == "\t" }).count
+    }
+
+    /// Отложенная выгрузка модели Whisper из памяти (см. scheduleModelRelease).
+    private var modelIdleRelease: DispatchWorkItem?
+
     private func loadModelIfNeeded() {
+        DispatchQueue.main.async { self.modelIdleRelease?.cancel(); self.modelIdleRelease = nil }
         if whisper == nil {
+            let t0 = ProcessInfo.processInfo.systemUptime
             whisper = WhisperBridge(modelPath: Self.modelPath(settings.voiceModel))
             if whisper == nil { kbLog("voice: модель не загрузилась") }
+            else { kbLog("voice: модель Whisper загружена за \(Int((ProcessInfo.processInfo.systemUptime - t0) * 1000))мс") }
         }
+    }
+
+    /// СТРАХОВОЧНАЯ выгрузка модели после ДОЛГОГО простоя (осн. триггер — memory pressure, см. выше).
+    /// Модель large-v3-turbo — ~1.5 ГБ физической памяти, и до 0.2.58 она висела там ВЕЧНО (замер:
+    /// phys_footprint 1833 МБ у фоновой утилиты). Дефолт интервала — 60 мин (5 мин в 0.2.58 было
+    /// регрессией: перегрузка почти на каждую диктовку). 0 = держать всегда.
+    /// Выгружаем ТОЛЬКО когда реально простаиваем: идёт запись/транскрипция → откладываем.
+    private func scheduleModelRelease() {
+        modelIdleRelease?.cancel(); modelIdleRelease = nil
+        let minutes = settings.voiceModelIdleMinutes
+        guard minutes > 0, whisper != nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.transcribing == 0, !self.isActive, !self.recorder.isRecording else {
+                self.scheduleModelRelease(); return   // занят — отложим ещё на интервал
+            }
+            self.transcribeQueue.async { [weak self] in
+                self?.whisper = nil                   // deinit → whisper_free → ~1.5 ГБ обратно системе
+                kbLog("voice: модель Whisper выгружена после \(minutes) мин простоя — память освобождена")
+            }
+        }
+        modelIdleRelease = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Double(minutes) * 60, execute: work)
     }
 
     /// Язык для whisper — из настроек (по умолчанию язык ОС, НЕ раскладки). "auto" → whisper определит.
     private func languageForWhisper() -> String { settings.voiceLanguage }
+
+    /// Синхронно освободить модель ПЕРЕД выходом из процесса (applicationWillTerminate).
+    /// Swift не запускает deinit при exit(), поэтому без этого whisper_free не случался и Metal-буферы
+    /// «утекали» за exit — статический деструктор ggml бил ассерт → SIGABRT при квите (краш 20.07).
+    /// GGML_METAL_NO_RESIDENCY=1 (main.swift) уже делает ассерт невозможным; это — второй слой,
+    /// санкционированный апстримом путь (llama.cpp #19137: «free your context before exit»).
+    /// sync на transcribeQueue: дожидается in-flight транскрипции (редкий случай — квит прямо во
+    /// время распознавания добавит к выходу её хвост, приемлемо).
+    func unloadForTermination() {
+        modelIdleRelease?.cancel(); modelIdleRelease = nil
+        // ОГРАНИЧЕННОЕ ожидание: безусловный sync при зависшем инференсе вешал ВЫХОД навечно —
+        // плашка «Распознаю» оставалась, Док-квит молчал, пользователь перезагружал Мак (репорт
+        // 23.07.2026). Ждём выгрузку максимум 2с: GGML_METAL_NO_RESIDENCY уже прикрывает ggml-ассерт
+        // на выходе, а невозможность выйти строго хуже теоретического abort при exit.
+        let sem = DispatchSemaphore(value: 0)
+        transcribeQueue.async { [weak self] in self?.whisper = nil; sem.signal() }
+        if sem.wait(timeout: .now() + 2.0) == .timedOut {
+            kbLog("voice: транскрипция висит — выходим, не дожидаясь выгрузки модели")
+        }
+    }
 }

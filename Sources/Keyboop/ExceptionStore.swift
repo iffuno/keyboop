@@ -9,6 +9,11 @@ final class ExceptionStore {
     private let forceKey = "forceSwapWords"
     private let appModesKey = "appExceptionModes"
     private let learnedKey = "learnedWords"
+    private let seededAppsKey = "seededDefaultApps"   // bundle id, по которым уже применяли встроенный дефолт
+
+    /// Bundle id, для которых встроенный дефолт-режим УЖЕ применяли (один раз). Если юзер потом удалил
+    /// программу из списка — bid остаётся здесь, чтобы НЕ вернуть её при следующем запуске.
+    private var seededApps: Set<String>
 
     private(set) var ignored: Set<String>
     private(set) var forceSwap: Set<String>
@@ -23,6 +28,7 @@ final class ExceptionStore {
         forceSwap = Set((d.array(forKey: forceKey) as? [String]) ?? [])
         learned = Set((d.array(forKey: learnedKey) as? [String]) ?? [])
         appModes = (d.dictionary(forKey: appModesKey) as? [String: String]) ?? [:]
+        seededApps = Set((d.array(forKey: seededAppsKey) as? [String]) ?? [])
         // Пред-заполняем список исключений примерами «вк»/«тг» (один раз) — чтобы пользователь СРАЗУ
         // видел, как это работает. Конфликта с defaultKeep нет: decide проверяет ignored ПЕРВЫМ, оба
         // дают .keep. Если юзер удалит примеры — defaultKeep всё равно защитит бренды. Удалил — не
@@ -43,6 +49,21 @@ final class ExceptionStore {
         save()
     }
     func removeApp(_ bundleID: String) { appModes.removeValue(forKey: bundleID); save() }
+
+    /// Предзаполнить список исключений ВСТРОЕННЫМИ дефолтами для УСТАНОВЛЕННЫХ программ (видеоредакторы/
+    /// терминалы → off, код-редакторы → soft). Вызывает Engine со списком (bid, mode) найденных на машине.
+    /// Каждую программу добавляем ОДИН раз (seededApps) и НЕ перетираем то, что юзер настроил вручную;
+    /// удалённую юзером — не возвращаем. Возвращает true, если список изменился (для refresh настроек).
+    @discardableResult
+    func seedDefaultApps(_ pairs: [(bid: String, mode: String)]) -> Bool {
+        var changed = false
+        for (bid, mode) in pairs where !seededApps.contains(bid) {
+            seededApps.insert(bid); changed = true
+            if appModes[bid] == nil, !mode.isEmpty { appModes[bid] = mode }   // не трогаем ручной выбор
+        }
+        if changed { save() }
+        return changed
+    }
 
     func addIgnored(_ word: String) {
         let w = word.lowercased()
@@ -93,5 +114,6 @@ final class ExceptionStore {
         d.set(Array(forceSwap), forKey: forceKey)
         d.set(Array(learned), forKey: learnedKey)
         d.set(appModes, forKey: appModesKey)
+        d.set(Array(seededApps), forKey: seededAppsKey)
     }
 }

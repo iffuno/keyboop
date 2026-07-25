@@ -1,10 +1,11 @@
 import Foundation
+#if arch(arm64) && !KEYBOOP_NO_PARAKEET
 import FluidAudio
 
 /// Распознавание речи через Parakeet (FluidAudio · CoreML · Apple Neural Engine).
 /// Офлайн по принципу №2: модель грузится из локальной папки, сеть в рантайме запрещена
 /// (`DownloadUtils.enforceOffline`). Скачивание модели — только по явной кнопке пользователя.
-/// Требует macOS 14+. API сверен по исходникам FluidAudio (docs/PARAKEET_BUILD.md).
+/// Требует macOS 14+. API сверен по исходникам FluidAudio.
 final class ParakeetEngine {
     static let shared = ParakeetEngine()
     private var manager: AsrManager?
@@ -21,6 +22,7 @@ final class ParakeetEngine {
         if ready { return true }
         guard Self.modelInstalled else { kbLog("parakeet: модель не установлена"); return false }
         do {
+            let t0 = ProcessInfo.processInfo.systemUptime
             DownloadUtils.enforceOffline = true               // в рантайме — ноль сети (принцип №2)
             let models = try await AsrModels.load(from: Self.modelDir, version: .v3)
             let mgr = AsrManager()
@@ -28,7 +30,9 @@ final class ParakeetEngine {
             decoderLayers = await mgr.decoderLayerCount
             manager = mgr
             ready = true
-            kbLog("parakeet: модель загружена (layers=\(decoderLayers))")
+            // Время в лог: на чистом контейнере CoreML компилирует модель под ANE десятками секунд
+            // (замер 21.07: 43с), потом кэширует. Видно, окупается ли прогрев из preload().
+            kbLog("parakeet: модель загружена за \(Int((ProcessInfo.processInfo.systemUptime - t0) * 1000))мс (layers=\(decoderLayers))")
             return true
         } catch {
             kbLog("parakeet: загрузка не удалась: \(error)")
@@ -50,8 +54,11 @@ final class ParakeetEngine {
     }
 
     /// Скачать модель v3 (~465 МБ) — ЯВНОЕ действие пользователя (кнопка в настройках).
-    /// На время скачивания временно снимаем офлайн-флаг, потом возвращаем. `progress` — доля 0…1.
+    /// СНАЧАЛА пробуем зеркало keyboop.com (сервер в Москве — HuggingFace из РФ «застревает на N%»,
+    /// репорты + тест Nemotron 23.07). Не вышло — фолбэк на штатный загрузчик FluidAudio (HF).
+    /// `progress` — доля 0…1.
     func download(progress: @escaping (Double) -> Void) async -> Bool {
+        if await downloadFromMirror(progress: progress) { return true }
         do {
             DownloadUtils.enforceOffline = false
             let models = try await AsrModels.downloadAndLoad(version: .v3, progressHandler: { p in
@@ -63,7 +70,7 @@ final class ParakeetEngine {
             manager = mgr
             ready = true
             DownloadUtils.enforceOffline = true
-            kbLog("parakeet: модель скачана и загружена (layers=\(decoderLayers))")
+            kbLog("parakeet: модель скачана и загружена (HF-фолбэк, layers=\(decoderLayers))")
             return true
         } catch {
             DownloadUtils.enforceOffline = true
@@ -72,22 +79,85 @@ final class ParakeetEngine {
         }
     }
 
+    /// Зеркало: качаем tar.gz-бандл с keyboop.com → распаковываем в кэш FluidAudio → грузим офлайн.
+    /// Бандл — байт-в-байт та же папка, что создаёт штатный загрузчик (parakeet-tdt-0.6b-v3 с
+    /// .mlmodelc + vocab). Любой сбой (сеть/распаковка/структура) → false, вызывающий уйдёт на HF.
+    private func downloadFromMirror(progress: @escaping (Double) -> Void) async -> Bool {
+        guard let url = URL(string: "https://keyboop.com/models/parakeet/parakeet-v3.tar.gz") else { return false }
+        let dir = Self.modelDir
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-v3-\(UUID().uuidString).tar.gz")
+        guard await TarballDownloader.download(url, to: tmp, progress: progress) else { return false }
+        defer { try? FileManager.default.removeItem(at: tmp) }
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            // Распаковка через системный tar (приложение не в песочнице). -C — прямо в кэш модели.
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+            p.arguments = ["-xzf", tmp.path, "-C", dir.path]
+            try p.run(); p.waitUntilExit()
+            guard p.terminationStatus == 0, Self.modelInstalled else {
+                kbLog("parakeet mirror: распаковка/структура не сошлись (tar=\(p.terminationStatus)) — уходим на HF")
+                return false
+            }
+            DownloadUtils.enforceOffline = true
+            let models = try await AsrModels.load(from: dir, version: .v3)
+            let mgr = AsrManager()
+            try await mgr.loadModels(models)
+            decoderLayers = await mgr.decoderLayerCount
+            manager = mgr
+            ready = true
+            kbLog("parakeet: модель c зеркала keyboop.com (layers=\(decoderLayers))")
+            return true
+        } catch {
+            kbLog("parakeet mirror: \(error) — уходим на HF")
+            return false
+        }
+    }
+
     /// Удалить скачанную модель (освободить место). Сбрасывает и состояние в памяти, чтобы при
     /// следующей диктовке честно сработал onNeedModel (а не отдавал пустой результат с мёртвым manager).
-    @discardableResult
-    func deleteModel() -> Bool {
+    ///
+    /// ⚠️ Тяжёлую работу — освобождение CoreML-менеджера (AsrManager/ANE) и `removeItem` (~465 МБ) —
+    /// делаем В ФОНЕ, НЕ на main-потоке. Причина (репорт 03.07.2026: окно настроек намертво зависало
+    /// на удалении, пользователь закрывал через Force Quit): релиз AsrManager на main мог упереться в
+    /// его собственный cleanup (или долгий teardown ANE/Metal) и заморозить main-runloop → окно не
+    /// закрыть. Состояние (manager/ready) обнуляем сразу на вызывающем потоке (дёшево), сам релиз и
+    /// удаление файлов уводим в фон; `completion` зовём обратно на main.
+    func deleteModel(completion: @escaping (Bool) -> Void) {
+        let old = manager          // придержим ссылку, чтобы освободить AsrManager в ФОНЕ (не на main)
         manager = nil
         ready = false
         decoderLayers = 0
         let dir = Self.modelDir
-        guard FileManager.default.fileExists(atPath: dir.path) else { return true }
-        do {
-            try FileManager.default.removeItem(at: dir)
-            kbLog("parakeet: модель удалена (\(dir.path))")
-            return true
-        } catch {
-            kbLog("parakeet: удаление не удалось: \(error)")
-            return false
+        DispatchQueue.global(qos: .userInitiated).async {
+            var ok = true
+            if FileManager.default.fileExists(atPath: dir.path) {
+                do { try FileManager.default.removeItem(at: dir); kbLog("parakeet: модель удалена (\(dir.path))") }
+                catch { ok = false; kbLog("parakeet: удаление не удалось: \(error)") }
+            } else {
+                kbLog("parakeet: удалять нечего")
+            }
+            _ = old                // держим до конца блока → AsrManager освобождается ЗДЕСЬ, в фоне
+            DispatchQueue.main.async { completion(ok) }
         }
     }
 }
+
+#else
+/// Intel-заглушка: Parakeet живёт на Neural Engine, FluidAudio собрана только под arm64 —
+/// в x86-срезе universal-сборки его физически нет. Интерфейс идентичен боевому классу,
+/// чтобы остальной код компилировался без единого #if: modelInstalled=false означает
+/// «движок недоступен», и вся логика (willUseParakeet, каталог моделей, onNeedModel)
+/// сама сводится к whisper-пути.
+final class ParakeetEngine {
+    static let shared = ParakeetEngine()
+    private(set) var ready = false
+    static var modelInstalled: Bool { false }
+    func loadIfNeeded() async -> Bool { false }
+    func transcribe(samples: [Float]) async -> String { "" }
+    func download(progress: @escaping (Double) -> Void) async -> Bool {
+        kbLog("parakeet: недоступен на Intel (нет Neural Engine)"); return false
+    }
+    func deleteModel(completion: @escaping (Bool) -> Void) { DispatchQueue.main.async { completion(true) } }
+}
+#endif

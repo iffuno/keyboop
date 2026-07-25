@@ -26,6 +26,9 @@ enum ContextHint {
 /// Каскад: guard'ы → force-swap → словарь → триграммная плаузивность (margin).
 enum LayoutDetector {
     static let margin = 2.0
+    /// Порог «EN-форма короткого кир-фрагмента — не мусор» (плаузибельность ≥ этого → реальное слово).
+    /// Отсекает nm/cz/cm/tn (< −11), пропускает it/in/of/the/so (> −9.5). См. enSwapNotJunk в decide().
+    static let shortEnSwapFloor = -10.0
 
     /// Аббревиатуры без гласных — их статистика триграмм не вытягивает (факты, не копирайт).
     static let forceSwap: Set<String> = [
@@ -57,7 +60,7 @@ enum LayoutDetector {
     /// пунктуацию: «(tckb»→«tckb», «tckb)»→«tckb», «„если"»→«если». Цифры НЕ срезаем (чтобы gj1/h2o/b2b
     /// остались keep по guard'у). Сама КОНВЕРСИЯ в Engine идёт по ПОЛНОМУ токену — скобка/кавычка
     /// проходят через Keymap.convert без изменений (та же клавиша в обеих раскладках). Прецедент: «(tckb»
-    /// (= «(если») не чинилось, потому что core() срезал только концевые .,!?;:… (Иван 15.06).
+    /// (= «(если») не чинилось, потому что core() срезал только концевые .,!?;:… (автор 15.06).
     static func letterCore(of raw: String) -> String {
         var s = Substring(raw)
         while let f = s.first, !isLayoutLetter(f), !f.isNumber { s = s.dropFirst() }
@@ -88,11 +91,62 @@ enum LayoutDetector {
         // валидное слово текущего языка — не трогаем
         if sourceLatin, data.wordsEn.contains(w) { return .keep }
         if !sourceLatin, data.wordsRu.contains(w) { return .keep }
+        // Слово-исключение (пользовательское/бренд/extra-словарь) ИЛИ ЕГО ПРЕФИКС — на лету НЕ трогаем.
+        // Решение принимается на НЕПОЛНОМ слове, поэтому ловим и префикс: иначе live-fix мечется, пока
+        // дописываешь слово-исключение («гифк»→en на 4-й букве, затем «гифки»→ru — щёлканье туда-сюда).
+        // Полный словарь не префиксуем (он Set), его ПОЛНЫЕ слова уже ловит wordsRu/wordsEn выше.
+        if Self.isExceptionOrPrefix(w, cyrillic: sourceCyrillic) { return .keep }
         let orig = data.plausibility(w, cyrillic: sourceCyrillic)
         let swap = data.plausibility(swapped, cyrillic: toCyrillic)
         if orig <= liveImpossible && swap > orig + liveMargin {
             return .convert(toCyrillic: toCyrillic)
         }
+        return .keep
+    }
+
+    /// `w` равно слову-исключению ИЛИ является его ПРЕФИКСОМ. Только для live-fix (мид-слово): пока
+    /// пользователь дописывает слово-исключение, его префикс трогать нельзя (иначе щёлканье
+    /// «гифк»→en→«гифки»→ru). Проверяем лишь МАЛЫЕ keep-наборы (исключения пользователя + extra-словарь
+    /// брендов/слов); полный словарь — Set без префиксных запросов, а его полные слова и так держит
+    /// wordsRu/wordsEn.contains. Дёшево: наборы по сотне слов, short-circuit, зовётся только при count≥4.
+    static func isExceptionOrPrefix(_ w: String, cyrillic: Bool) -> Bool {
+        guard w.count >= 2 else { return false }
+        func hit(_ set: Set<String>) -> Bool {
+            if set.contains(w) { return true }                              // точное слово-исключение
+            return set.contains { $0.count > w.count && $0.hasPrefix(w) }   // w — префикс исключения
+        }
+        let exc = ExceptionStore.shared
+        // Пользовательские исключения и бренды — в обе стороны (слово точное, язык не важен).
+        if hit(exc.learned) || hit(exc.ignored) || hit(ExtraWords.defaultKeep) { return true }
+        return cyrillic
+            ? (hit(ExtraWords.ru) || hit(ExtraWords.ruAbbr) || hit(ExtraWords.ruShort))
+            : (hit(ExtraWords.en) || hit(ExtraWords.enKeepShort))
+    }
+
+    /// СПАСЕНИЕ СМЕШАННОГО СЛОВА (кир+лат в одном токене). Такое слово — артефакт нашего же мид-слов-
+    /// флипа раскладки + правки опечатки: live-fix перевёл начало в кириллицу и асинхронно щёлкнул
+    /// системную раскладку, а дописанный/перепечатанный хвост успел декодироваться в другом скрипте
+    /// («привtn», interleaved «приdет», или обратная полярность «ghbdет»). Обычный decide()/liveDecide()
+    /// такие слова ВСЕГДА отдаёт .keep (guard sourceCyrillic != sourceLatin) — и слово застревает
+    /// полуконвертированным: пользователь видит «переключилось только окончание».
+    ///
+    /// Чиним по СЛОВАРЮ, а не по сигнатуре артефакта: анкер live-fix (liveFixLast) к моменту границы уже
+    /// сброшен, поэтому надёжность даёт валидность результата. Конвертим ВЕСЬ токен в каждую сторону и
+    /// принимаем РОВНО ОДНУ, если она даёт валидное словарное слово (и не остаётся смешанной). Если
+    /// валидны обе или ни одной — НЕ угадываем (намеренный билингв: «API-ключ», «C++код», «helloмир»,
+    /// «ноутбукmac» не становятся словом ни в одну сторону → .keep, текст не портим). Whole-word —
+    /// поэтому ловит и interleaved-артефакты, у которых нет «хвостового латинского run» для self-heal.
+    static func mixedRescue(word raw: String) -> SwapDecision {
+        guard raw.hasCyrillic, raw.hasLatinLetter else { return .keep }
+        let core = letterCore(of: raw)
+        guard core.count >= 2, core.allSatisfy(Self.isLayoutLetter) else { return .keep }
+        let toRu = Keymap.convert(core, toCyrillic: true)
+        let toEn = Keymap.convert(core, toCyrillic: false)
+        let data = LayoutData.shared
+        let ruOK = !toRu.hasLatinLetter && data.wordsRu.contains(toRu.lowercased())
+        let enOK = !toEn.hasCyrillic   && data.wordsEn.contains(toEn.lowercased())
+        if ruOK && !enOK { return .convert(toCyrillic: true) }
+        if enOK && !ruOK { return .convert(toCyrillic: false) }
         return .keep
     }
 
@@ -116,6 +170,20 @@ enum LayoutDetector {
         }
         let coreRaw = String(coreSub)
         let w = coreRaw.lowercased()
+        // ДЕФИСНЫЕ термины (e-ink, wi-fi, t-shirt…): обычный гейт ниже отбивает их (дефис ≠ буква),
+        // а посегментный авто-разбор уперся бы в краеугольный принцип («у» в «у-штл» — валидный
+        // предлог). Поэтому конвертим ЦЕЛИКОМ строго по allowlist: swapped-форма ∈ ExtraWords.hyphenTerms.
+        // Любое другое дефисное слово (из-за, что-то, по-русски) → .keep здесь же, ниже не идём.
+        if w.contains("-") {
+            let segs = w.split(separator: "-", omittingEmptySubsequences: false)
+            if segs.count >= 2, segs.allSatisfy({ !$0.isEmpty && $0.allSatisfy(Self.isLayoutLetter) }),
+               w.hasCyrillic != w.hasLatinLetter {
+                let toCyr = !w.hasCyrillic
+                let swapped = Keymap.convert(coreRaw, toCyrillic: toCyr).lowercased()
+                if ExtraWords.hyphenTerms.contains(swapped) { return .convert(toCyrillic: toCyr) }
+            }
+            return .keep
+        }
         // Буква ИЛИ клавиша-буква в другой раскладке (х=[, ж=;, э=', ё=`, ъ=]) — иначе слова с х/ъ/ж/э/ё
         // не детектились бы. Цифро-слова — порог 4 (короткие коллизии вроде gj1→по1 не трогаем).
         guard w.count >= (hadDigits ? 4 : 1), w.allSatisfy(Self.isLayoutLetter) else { return .keep }
@@ -133,7 +201,10 @@ enum LayoutDetector {
 
         let toCyrillic = !sourceCyrillic
         let swapped = Keymap.convert(coreRaw, toCyrillic: toCyrillic).lowercased()
-        guard swapped != w, swapped.allSatisfy({ $0.isLetter }) else { return .keep }
+        // Внутренний апостроф разрешён: английские контракции (i'm, don't, let's) на RU-раскладке
+        // дают «э» внутри слова; без этого они отсекались тут до forceEnAmb. Реальные слова с «э»
+        // защищены strict-gate по словарю ниже, так что апостроф-релакс безопасен.
+        guard swapped != w, swapped.allSatisfy({ $0.isLetter || $0 == "'" }) else { return .keep }
 
         // 1. Force-swap (до словаря): аббревиатуры. КРИТИЧНО (баг, ревизия 2026-06-13): встроенный
         //    forceSwap бил ДО словаря и без контекста → съедал ВАЛИДНЫЕ русские слова, чья латинская
@@ -151,7 +222,7 @@ enum LayoutDetector {
             return .keep // ввели "sql" осознанно — оставить
         }
 
-        // ★ STRICT-GATE (принцип Ивана, 2026-06-14): СЛОВО, ВАЛИДНОЕ В ЯЗЫКЕ, НА КОТОРОМ НАБРАНО, —
+        // ★ STRICT-GATE (принцип автора, 2026-06-14): СЛОВО, ВАЛИДНОЕ В ЯЗЫКЕ, НА КОТОРОМ НАБРАНО, —
         //   НИКОГДА не переключаем, даже если его раскладочная пара тоже валидное слово. Переключаем
         //   ТОЛЬКО кашу (не-слово). Прецедент: «her»(EN)→«рук»(RU) — недопустимо. Гейт по СЛОВАРЮ
         //   (sourceIsRealWord = слово в словаре своего языка), без статистики — надёжно. Стоит ВЫШЕ
@@ -177,10 +248,29 @@ enum LayoutDetector {
                 }
                 return .convert(toCyrillic: true)
             }
+            // EN→RU: одиночные английские i/u/a, набранные на RU-раскладке (ш/г/ф — НЕ русские слова).
+            // Раньше падали в keep (одиночные чинились только лат→кир) → 100% промах на 1 букве (фразовый
+            // тест 2026-06-19). Опираемся на контекст: чиним при латинском/пустом (начало фразы, англ.
+            // сосед); в ЯВНО русской фразе (prev — русское слово) одиночную букву НЕ трогаем (шум/опечатка).
+            if sourceCyrillic, context != .cyrillic, ["i", "u", "a"].contains(swapped) {
+                return .convert(toCyrillic: false)
+            }
             return .keep
         }
 
         let data = LayoutData.shared
+
+        // КОРОТКИЙ кир-фрагмент (≤3) → EN: словарное совпадение swapped НЕ доказывает раскладку —
+        // EN-словарь полон 2-буквенного мусора (nm,cz,cm,tn), и короткое русское окончание («ть»,«ся»,
+        // «ет») попадает на него случайно. Конвертим короткий кир→EN только если EN-форма достаточно
+        // ПЛАУЗИБЕЛЬНА как английское: порог отсекает мусор (nm −12.6, cz −11.7, tn −11.9), но пропускает
+        // реальные слова (it −8.6, in −6.5, of −9.2, the −7.5, so −8.5). EN→RU сторону (lj→до, rfr→как)
+        // НЕ трогаем — там источник латинский гиббериш → реальное RU-слово, сигнал сильный, юзер не
+        // жаловался. Длинные (≥4) словарю доверяем. Прецедент: «ть»→«nm» (автор 2026-06-29). Корень глубже —
+        // буфер «сиротит» окончание (см. Engine pendingContextClear); это — дешёвая страховка-нетто.
+        func enSwapNotJunk() -> Bool {
+            w.count >= 4 || data.plausibility(swapped, cyrillic: false) > Self.shortEnSwapFloor
+        }
 
         // 3. Словарь: валидно в текущей → keep; swap валиден в целевой → convert.
         //    КОЛЛИЗИИ (обе формы валидны: yt↔не, in↔шт — после обогащения словаря ~93 пары 2–5 букв)
@@ -200,17 +290,24 @@ enum LayoutDetector {
             if data.wordsRu.contains(swapped) {
                 // Частый EN-токен вне словаря (vs, lol) при ЛАТИНСКОМ контексте («Loko vs CSKA»)
                 // — намеренный английский, не каша. При русском/пустом — чиним (vs→мы).
+                // НЕ гейтим плаузибельностью: латинский гиббериш → реальное RU-слово = сильный сигнал
+                // (RU-словарь = настоящие слова, не мусор), на эту сторону юзер не жаловался.
                 if context == .latin, ExtraWords.enKeepShort.contains(w) { return .keep }
                 return .convert(toCyrillic: true)
             }
         } else {
+            // forceEnAmb: частый англ. сленг/сокращения (idk/tbh/ngl…), которых нет в EN-словаре, а
+            // кир-форма — гиббериш. Набраны на RU-раскладке → форсим в латиницу (симметрия forceRuAmb).
+            if ExtraWords.forceEnAmb.contains(swapped), !data.wordsRu.contains(w) {
+                return .convert(toCyrillic: false)
+            }
             if data.wordsRu.contains(w) {
                 if context == .latin, data.wordsEn.contains(swapped) {
                     return .convert(toCyrillic: false)  // «hello шт» → «hello in» (фраза EN в RU-раскладке)
                 }
                 return .keep
             }
-            if data.wordsEn.contains(swapped) { return .convert(toCyrillic: false) }
+            if data.wordsEn.contains(swapped), enSwapNotJunk() { return .convert(toCyrillic: false) }
         }
 
         // 4. Триграммы (словоформы, которых нет в плоском словаре) — ТОЛЬКО для слов

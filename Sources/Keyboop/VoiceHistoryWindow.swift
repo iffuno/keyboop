@@ -42,6 +42,19 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     func show() {
+        // Опциональный пароль (HistoryGate): спрашиваем при ОТКРЫТИИ окна. Уже открытое окно
+        // просто фронтим без повторного вопроса; закрыл — при следующем открытии спросим снова.
+        if window?.isVisible != true, HistoryGate.enabled {
+            HistoryGate.promptUnlock { [weak self] ok in
+                guard ok else { return }
+                self?.reallyShow()
+            }
+            return
+        }
+        reallyShow()
+    }
+
+    private func reallyShow() {
         reload()
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
@@ -147,7 +160,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         translBtn.image = NSImage(systemSymbolName: "circle.lefthalf.filled", accessibilityDescription: L10n.t("hist.translucent"))
         translBtn.imagePosition = .imageOnly
         translBtn.contentTintColor = .secondaryLabelColor
-        translBtn.toolTip = L10n.t("hist.translucent") + " · ⌃-клик: настроить"
+        translBtn.toolTip = L10n.t("hist.translucent") + " · " + L10n.t("hist.opacityHint")
         translBtn.target = self; translBtn.action = #selector(toggleTranslucency)
         translBtn.onSecondaryClick = { [weak self] in self?.showOpacitySlider() }
 
@@ -217,6 +230,11 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
             recordBtn.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -14),
             recordBtn.heightAnchor.constraint(equalToConstant: 42)
         ])
+
+        // Длинное удержание на фоне окна (~0.5 с) — тот же слайдер прозрачности, что по правому клику.
+        let press = NSPressGestureRecognizer(target: self, action: #selector(longPressOpacity(_:)))
+        press.minimumPressDuration = 0.5
+        bg.addGestureRecognizer(press)
     }
 
     /// Мелкая вторичная иконка (приглушённая, без рамки) — поверх окон / настройки / очистить.
@@ -337,7 +355,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
     @objc private func toggleTranslucency() {
         translucent.toggle()
         let saved = AppSettings.shared.voiceWinOpacity
-        let lvl = saved > 0 ? saved : 0.3
+        let lvl = saved > 0 ? saved : 0.8
         window?.alphaValue = translucent ? CGFloat(lvl) : 1.0
         translBtn.contentTintColor = translucent ? DS.coral : .secondaryLabelColor
     }
@@ -349,7 +367,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         cap.font = .systemFont(ofSize: 11); cap.textColor = .secondaryLabelColor
         cap.frame = NSRect(x: 14, y: 30, width: 182, height: 14)
         let saved = AppSettings.shared.voiceWinOpacity
-        let lvl = saved > 0 ? saved : 0.3
+        let lvl = saved > 0 ? saved : 0.8
         let sld = NSSlider(value: lvl, minValue: 0.15, maxValue: 1.0, target: self, action: #selector(opacitySliderChanged(_:)))
         sld.frame = NSRect(x: 14, y: 10, width: 182, height: 18); sld.controlSize = .small
         host.addSubview(cap); host.addSubview(sld)
@@ -357,6 +375,10 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         let pop = NSPopover(); pop.contentViewController = vc; pop.behavior = .transient
         opacityPopover = pop
         pop.show(relativeTo: translBtn.bounds, of: translBtn, preferredEdge: .maxY)
+    }
+    @objc private func longPressOpacity(_ gr: NSPressGestureRecognizer) {
+        guard gr.state == .began else { return }
+        showOpacitySlider()
     }
     @objc private func opacitySliderChanged(_ s: NSSlider) {
         translucent = true
