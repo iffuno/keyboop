@@ -32,11 +32,16 @@ enum DS {
 }
 
 enum SettingsSection: Int, CaseIterable {
-    case switching, exceptions, snippets, translate, voice, general, updates, privacy, about
+    case switching, exceptions, ambiguous, snippets, translate, voice, general, updates, privacy, about
+
+    /// Что показываем в левом меню. «Спорные слова» — подстраница «Исключений» (кнопка внутри):
+    /// в меню это был бы одиннадцатый пункт ради списка, который открывают раз в жизни.
+    static var sidebarCases: [SettingsSection] { allCases.filter { $0 != .ambiguous } }
     var l10nKey: String {
         switch self {
         case .switching: return "sec.switching"
         case .exceptions: return "sec.exceptions"
+        case .ambiguous:  return "sec.ambiguous"
         case .snippets:   return "sec.snippets"
         case .translate:  return "sec.translate"
         case .voice:      return "sec.voice"
@@ -50,6 +55,7 @@ enum SettingsSection: Int, CaseIterable {
         switch self {
         case .switching: return "keyboard"
         case .exceptions: return "tag"
+        case .ambiguous:  return "arrow.left.arrow.right"
         case .snippets:   return "wand.and.stars"
         case .translate:  return "character.bubble"
         case .voice:      return "mic"
@@ -118,7 +124,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     func show(section: SettingsSection? = nil) {
         detail.reload()
-        if let section { sidebar.select(section.rawValue, animated: false) }
+        if section == .ambiguous {
+            detail.show(.ambiguous)                     // подстраница: в меню строки нет, подсветка остаётся на «Исключениях»
+        } else if let section {
+            // ⚠️ Выбирать по ИНДЕКСУ строки, а не по rawValue: скрытые разделы (ambiguous) сдвигают
+            // нумерацию, и rawValue открыл бы соседний раздел (поймано 25.07 — вместо «Голосового
+            // набора» показывались «Общие»).
+            if let idx = SettingsSection.sidebarCases.firstIndex(of: section) {
+                sidebar.select(idx, animated: false)
+            }
+        }
         else { detail.revalidateVoiceIfShown() }   // без явного раздела — пере-проверить файлы моделей на диске
         // Пока открыты настройки — показываем иконку в Доке. У LSUIElement-агента её нет, а меню-бар у
         // многих переполнен (наш пункт не умещается и его не видно). Док — надёжный способ вернуться в
@@ -225,6 +240,10 @@ final class SidebarVC: NSViewController {
     private let pill = NSView()
     private let brand = NSTextField(labelWithString: "Keyboop")
     private let tag = NSTextField(labelWithString: L10n.t("tagline"))
+    /// «Поддержать проект ₽» — тихая ссылка внизу левого меню, прямо над версией (просьба автора
+    /// 26.07). Подчёркнутая, некрупная и нежирная: приложение бесплатное, это благодарность,
+    /// а не продажа, и кричать ей незачем.
+    private let supportLink = NSButton()
     private let verLabel = NSButton()   // версия внизу сайдбара; клик — пасхалка
     private var selectedIndex = 0
 
@@ -244,7 +263,7 @@ final class SidebarVC: NSViewController {
         tag.lineBreakMode = .byTruncatingTail
         root.addSubview(tag)
 
-        for (i, sec) in SettingsSection.allCases.enumerated() {
+        for (i, sec) in SettingsSection.sidebarCases.enumerated() {
             let row = SidebarRow(symbol: sec.symbol, title: L10n.t(sec.l10nKey))
             row.onClick = { [weak self] in self?.select(i) }
             rows.append(row)
@@ -261,6 +280,17 @@ final class SidebarVC: NSViewController {
         verLabel.toolTip = "🐾"
         root.addSubview(verLabel)
 
+        supportLink.isBordered = false
+        supportLink.bezelStyle = .inline
+        supportLink.setButtonType(.momentaryChange)
+        supportLink.attributedTitle = NSAttributedString(string: L10n.t("about.support"), attributes: [
+            .foregroundColor: DS.coral,
+            .font: NSFont.systemFont(ofSize: 11, weight: .regular),
+            .underlineStyle: NSUnderlineStyle.single.rawValue])
+        supportLink.target = self
+        supportLink.action = #selector(openSupport)
+        root.addSubview(supportLink)
+
         if ProcessInfo.processInfo.environment["KEYBOOP_WINSHOT"] == "1" {
             root.wantsLayer = true                       // непрозрачный sidebar → cacheDisplay всего окна
             root.layer?.backgroundColor = NSColor(white: 0.17, alpha: 1).cgColor
@@ -269,6 +299,11 @@ final class SidebarVC: NSViewController {
     }
 
     @objc private func versionClicked() { CueSynth.versionTap() }
+
+    /// Ссылка ведёт на страницу поддержки. Без параметров: ничего о пользователе наружу не уходит.
+    @objc private func openSupport() {
+        if let url = URL(string: "https://keyboop.com/tips/") { NSWorkspace.shared.open(url) }
+    }
 
     override func viewDidLayout() {
         super.viewDidLayout()
@@ -282,6 +317,8 @@ final class SidebarVC: NSViewController {
                                width: w - DS.pillInsetH * 2, height: DS.rowHeight)
         }
         verLabel.frame = NSRect(x: 18, y: view.bounds.height - 26, width: w - 30, height: 15)
+        // Ссылка — строкой выше версии, по той же левой границе.
+        supportLink.frame = NSRect(x: 14, y: view.bounds.height - 48, width: w - 26, height: 17)
         positionPill(animated: false)
     }
 
@@ -289,11 +326,11 @@ final class SidebarVC: NSViewController {
         selectedIndex = i
         for (j, row) in rows.enumerated() { row.setSelected(j == i) }
         positionPill(animated: animated)
-        onSelect?(SettingsSection.allCases[i])
+        onSelect?(SettingsSection.sidebarCases[i])
     }
 
     func refreshTitles() {
-        for (i, sec) in SettingsSection.allCases.enumerated() {
+        for (i, sec) in SettingsSection.sidebarCases.enumerated() {
             rows[i].label.stringValue = L10n.t(sec.l10nKey)
         }
     }
@@ -473,6 +510,7 @@ final class DetailVC: NSViewController {
         switch section {
         case .switching:  return buildSwitching()
         case .exceptions: return buildExceptions()
+        case .ambiguous:  return buildAmbiguous()
         case .snippets:   return buildSnippets()
         case .translate:  return buildTranslate()
         case .voice:      return buildVoice()
@@ -607,7 +645,8 @@ final class DetailVC: NSViewController {
             card([
                 switchRow(L10n.t("is.enable"), L10n.t("is.enableSub"),
                           settings.instantSwitchEnabled, #selector(toggleInstantSwitch)),
-                controlRow(L10n.t("is.combo"), instantSwitchControl())
+                controlRow(L10n.t("is.combo"), instantSwitchControl(),
+                           enabled: settings.instantSwitchEnabled)
             ]),
             group(2),
             instantSwitchStatusView(),       // что затеняем этой комбинацией — честно и заранее
@@ -758,6 +797,12 @@ final class DetailVC: NSViewController {
         let addBtn = NSButton(title: L10n.t("exc.addApp"), target: self, action: #selector(addExceptionApp))
         addBtn.bezelStyle = .rounded; addBtn.controlSize = .regular
         views.append(contentsOf: [group(4), buttonRow([addBtn, runningAppsPopup()]), group(2), hint(L10n.t("exc.appsHint"))])
+        // Вход на подстраницу спорных пар: отдельным пунктом левого меню это был бы одиннадцатый
+        // раздел ради списка, который открывают один раз (решение автора 25.07).
+        let ambBtn = NSButton(title: L10n.t("amb.open"), target: self, action: #selector(openAmbiguous))
+        ambBtn.bezelStyle = .rounded; ambBtn.controlSize = .regular
+        views.append(contentsOf: [group(12), title(L10n.t("amb.title")), sub(L10n.t("amb.openSub")),
+                                  group(6), buttonRow([ambBtn])])
 
         // Слова-исключения: чипы с крестиком + поле ввода («вк»/«тг» предзаполнены как образец).
         let ignoredView = ChipFlowView()
@@ -880,6 +925,70 @@ final class DetailVC: NSViewController {
         ExceptionStore.shared.setAppMode(runningAppsList[idx], "off"); reshow()
     }
 
+    /// СПОРНЫЕ ПАРЫ. Одна строка — одна пара, тумблер из двух сегментов, подписанных САМИМИ словами:
+    /// [ vs | мы ]. Так не нужно объяснять, что значит «латиница победила» — человек видит результат.
+    /// Выделен тот сегмент, который выигрывает СЕЙЧАС (спрашиваем детектор, см. AmbiguousPairs.winner).
+    private func buildAmbiguous() -> NSView {
+        let back = NSButton(title: L10n.t("amb.back"), target: self, action: #selector(backToExceptions))
+        back.bezelStyle = .rounded; back.controlSize = .regular
+        var views: [NSView] = [buttonRow([back]), group(2),
+                               title(L10n.t("amb.title")), sub(L10n.t("amb.sub")), group(DS.itemGap)]
+        // Один центрированный столбец тумблеров, БЕЗ карточной подложки: у каждой строки один
+        // элемент, и горизонтальные ячейки во всю ширину только растягивали пустоту (правка 25.07).
+        let stack = vstack(views) as? NSStackView
+        for (i, p) in AmbiguousPairs.list.enumerated() {
+            let holder = ambiguousRow(p, index: i)
+            stack?.addView(holder, in: .bottom)
+            if let stack { holder.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+        }
+        stack?.addView(group(6), in: .bottom)
+        let footer = hint(L10n.t("amb.hint"))
+        stack?.addView(footer, in: .bottom)
+        if let stack { footer.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true }
+        return stack ?? vstack(views)
+    }
+
+    /// Строка = один тумблер по центру. Три состояния: побеждает латиница · по контексту (наша
+    /// обычная логика, дефолт) · побеждает русское. «По контексту» посередине не случайно: это
+    /// нейтральная середина между двумя крайностями, и переход влево/вправо читается как выбор.
+    private func ambiguousRow(_ pair: AmbiguousPairs.Pair, index: Int) -> NSView {
+        let seg = NSSegmentedControl(labels: [pair.en, L10n.t("amb.auto"), pair.ru],
+                                     trackingMode: .selectOne,
+                                     target: self, action: #selector(ambiguousChanged(_:)))
+        seg.segmentDistribution = .fillEqually
+        switch AmbiguousPairs.choice(pair) {
+        case .en:   seg.selectedSegment = 0
+        case .auto: seg.selectedSegment = 1
+        case .ru:   seg.selectedSegment = 2
+        }
+        seg.tag = index                      // строку узнаём по тегу — список статичный, индекс стабилен
+        seg.toolTip = String(format: L10n.t("amb.rowTip"), pair.en, pair.ru)
+        seg.translatesAutoresizingMaskIntoConstraints = false
+        seg.widthAnchor.constraint(equalToConstant: 300).isActive = true
+        let holder = NSView()
+        holder.translatesAutoresizingMaskIntoConstraints = false
+        holder.addSubview(seg)
+        NSLayoutConstraint.activate([
+            seg.centerXAnchor.constraint(equalTo: holder.centerXAnchor),
+            seg.topAnchor.constraint(equalTo: holder.topAnchor, constant: 3),
+            seg.bottomAnchor.constraint(equalTo: holder.bottomAnchor, constant: -3)
+        ])
+        return holder
+    }
+
+    @objc private func ambiguousChanged(_ sender: NSSegmentedControl) {
+        guard sender.tag >= 0, sender.tag < AmbiguousPairs.list.count else { return }
+        let pair = AmbiguousPairs.list[sender.tag]
+        let choice: AmbiguousPairs.Choice = sender.selectedSegment == 0 ? .en
+                                         : sender.selectedSegment == 2 ? .ru : .auto
+        AmbiguousPairs.choose(pair, choice)
+        kbLog("спорная пара \(pair.en)/\(pair.ru) → \(choice)")
+    }
+
+    @objc private func openAmbiguous() { (view.window?.windowController as? SettingsWindowController)?.show(section: .ambiguous) }
+
+    @objc private func backToExceptions() { (view.window?.windowController as? SettingsWindowController)?.show(section: .exceptions) }
+
     private func buildSnippets() -> NSView {
         let editor = SnippetsEditor(frame: .zero)
         editor.translatesAutoresizingMaskIntoConstraints = false
@@ -956,13 +1065,17 @@ final class DetailVC: NSViewController {
         let segImgs: [NSImage?] = [
             brandSeg ?? NSImage(systemSymbolName: "k.square", accessibilityDescription: nil),
             NSImage(systemSymbolName: "keyboard", accessibilityDescription: nil),
+            // В самом сегменте — монохромный символ флага, а не эмодзи: в выборе важна узнаваемость
+            // пункта, а цветной флажок рядом с серыми значками читался бы как «уже включено».
+            NSImage(systemSymbolName: "flag", accessibilityDescription: nil),
             NSImage(systemSymbolName: "nosign", accessibilityDescription: nil),
         ]
-        let segTips = [L10n.t("gen.icon.brand"), L10n.t("gen.icon.keyboard"), L10n.t("gen.icon.hidden")]
+        let segTips = [L10n.t("gen.icon.brand"), L10n.t("gen.icon.keyboard"),
+                       L10n.t("gen.icon.flag"), L10n.t("gen.icon.hidden")]
         for (i, img) in segImgs.enumerated() {
             iconSeg.setImage(img, forSegment: i)
             iconSeg.setImageScaling(.scaleProportionallyDown, forSegment: i)
-            iconSeg.setWidth(52, forSegment: i)
+            iconSeg.setWidth(44, forSegment: i)
             iconSeg.setToolTip(segTips[i], forSegment: i)
         }
         iconSeg.selectedSegment = iconStyleKeys.firstIndex(of: settings.menuBarStyle) ?? 1
@@ -1003,7 +1116,7 @@ final class DetailVC: NSViewController {
     }
 
     /// Ключи стилей значка в порядке сегментов (см. AppSettings.menuBarStyle).
-    private let iconStyleKeys = ["brand", "keyboard", "hidden"]
+    private let iconStyleKeys = ["brand", "keyboard", "flag", "hidden"]
 
     @objc private func iconStyleSegChanged(_ s: NSSegmentedControl) {
         settings.menuBarStyle = iconStyleKeys[max(0, min(s.selectedSegment, iconStyleKeys.count - 1))]
@@ -1114,10 +1227,12 @@ final class DetailVC: NSViewController {
             sub(L10n.t("about.tagline")),
             group(10),
             sectionTitle(L10n.t("about.whatTitle")),
-            sub(L10n.t("about.what")),
+            // Хоткеи в описании — ТЕКУЩИЕ пользовательские, а не зашитые: инструкция,
+            // которая расходится с настройками, хуже отсутствующей.
+            sub(String(format: L10n.t("about.what"), hotkeyDisplayString())),
             group(8),
             sectionTitle(L10n.t("about.canTitle")),
-            sub(L10n.t("about.can")),
+            sub(String(format: L10n.t("about.can"), hotkeyDisplayString())),
             group(8),
             sectionTitle(L10n.t("about.nuanceTitle")),
             sub(L10n.t("about.nuance")),
@@ -1256,7 +1371,18 @@ final class DetailVC: NSViewController {
         // Единый список моделей (Parakeet + whisper) — без тумблера движка: движок выводится из
         // активной модели. Любую можно скачать / активировать / удалить (по просьбе автора 2026-06-14).
         unifiedCatalog = unifiedModels()
-        let modelCard = card(unifiedCatalog.enumerated().map { unifiedModelRow($1, index: $0) })
+        // РЕКОМЕНДУЕМЫЕ отдельно от остальных: из пяти моделей человек не понимает, какую брать
+        // (репорт 25.07). Сверху две, которыми стоит пользоваться, прочие — под спойлером.
+        // Индексы берём от ПОЛНОГО каталога: по ним работают кнопки строк (tag → unifiedCatalog).
+        let indexed = Array(unifiedCatalog.enumerated())
+        let recommended = indexed.filter { Self.recommendedModelIds.contains($0.element.id) }
+        let others = indexed.filter { !Self.recommendedModelIds.contains($0.element.id) }
+        // Спойлер раскрыт сам, если «спрятанная» модель активна или уже скачана — иначе человек
+        // не нашёл бы то, чем прямо сейчас пользуется.
+        if voiceOthersExpanded == nil {
+            voiceOthersExpanded = others.contains { isActiveModel($0.element) || $0.element.isInstalled() }
+        }
+        let modelCard = card(recommended.map { unifiedModelRow($0.element, index: $0.offset) })
 
         let histClear = NSButton(title: L10n.t("voice.histClear"), target: self, action: #selector(clearVoiceHistory))
         histClear.bezelStyle = .rounded; histClear.controlSize = .regular
@@ -1285,9 +1411,23 @@ final class DetailVC: NSViewController {
             group(8),
             modelCard
         ]
+        // «Другие модели» — СРАЗУ за двумя рекомендованными, до пояснений: это продолжение списка,
+        // а не сноска к нему. Пояснительный текст уходит ниже — под раскрывшийся список.
+        if !others.isEmpty {
+            let expanded = voiceOthersExpanded ?? false
+            views.append(contentsOf: [group(4),
+                                      disclosureLink(L10n.t("voice.others"), expanded: expanded,
+                                                     action: #selector(toggleVoiceOthers))])
+            if expanded {
+                views.append(contentsOf: [group(4),
+                                          card(others.map { unifiedModelRow($0.element, index: $0.offset) })])
+            }
+        }
         views.append(contentsOf: [
-            group(2),
+            group(6),
             hint(L10n.t("voice.modelsNote")),
+            group(2),
+            hint(L10n.t("voice.sizeNote")),          // чем крупнее модель, тем медленнее (и, вероятно, точнее)
             group(6),
         ])
         #if !arch(arm64)
@@ -1309,6 +1449,10 @@ final class DetailVC: NSViewController {
     // MARK: единый список моделей распознавания (Parakeet + whisper, без тумблера движка)
 
     private var unifiedCatalog: [UnifiedModel] = []
+    /// Что показываем сразу: Neural-Engine-модель и самая сильная whisper. Остальные — под спойлером.
+    private static let recommendedModelIds: Set<String> = ["parakeet", "large-v3-turbo"]
+    /// nil — ещё не решали (решим по факту: активна/скачана ли «спрятанная» модель).
+    private var voiceOthersExpanded: Bool?
     private var downloadingModelId: String?      // какая модель качается сейчас (одна за раз)
     private var downloadProgress = 0.0
     // Сторож застревания загрузки (репорт 23.07.2026: Parakeet «завис на 2%» — HF-CDN из RU
@@ -1340,6 +1484,11 @@ final class DetailVC: NSViewController {
             UnifiedModel(engine: "whisper", id: $0.name, display: $0.name, size: L10n.size($0.size), note: L10n.t($0.note))
         }
         return list
+    }
+
+    @objc private func toggleVoiceOthers() {
+        voiceOthersExpanded = !(voiceOthersExpanded ?? false)
+        reshow()
     }
 
     /// Активна ли модель (движок + конкретная whisper-модель).
@@ -1675,10 +1824,21 @@ final class DetailVC: NSViewController {
                          enabled: !autoOn)
     }
     /// Строка с произвольным контролом справа (popup / segmented / hotkey).
-    private func controlRow(_ title: String, _ control: NSView) -> NSView {
+    private func controlRow(_ title: String, _ control: NSView, enabled: Bool = true) -> NSView {
         control.setContentHuggingPriority(.required, for: .horizontal)
         control.setContentCompressionResistancePriority(.required, for: .horizontal)
-        return settingRow(title, nil, trailing: control)
+        // Выключенная функция не должна предлагать настраивать себя (нелогично и путает): гасим
+        // контрол вместе со вложенными — правые контролы часто контейнеры из нескольких кнопок.
+        if !enabled { Self.setEnabledDeep(control, false) }
+        let row = settingRow(title, nil, trailing: control)
+        if !enabled { row.alphaValue = 0.45 }
+        return row
+    }
+
+    /// Рекурсивно выключить контрол и всё, что внутри (NSControl + наши кастомные вью).
+    private static func setEnabledDeep(_ view: NSView, _ on: Bool) {
+        if let c = view as? NSControl { c.isEnabled = on }
+        for sub in view.subviews { setEnabledDeep(sub, on) }
     }
     /// Ширины правых контролов — КОНСТАНТЫ, без обращения к AppKit-раскладке.
     ///
@@ -1954,6 +2114,26 @@ final class DetailVC: NSViewController {
     @objc private func micSelectorChanged(_ s: NSPopUpButton) {
         settings.voiceMicUID = (s.selectedItem?.representedObject as? String) ?? ""
     }
+    /// Ссылка-раскрывашка вместо кнопки. Кнопка читалась как действие («скачать», «применить») и
+    /// массивной плашкой перетягивала внимание с двух рекомендованных моделей, хотя всё, что она
+    /// делает — «покажи остальные». Правка 25.07.
+    private func disclosureLink(_ text: String, expanded: Bool, action: Selector) -> NSView {
+        let b = NSButton(title: "", target: self, action: action)
+        b.isBordered = false
+        b.setButtonType(.momentaryChange)
+        b.attributedTitle = NSAttributedString(
+            string: (expanded ? "⌄  " : "›  ") + text,
+            attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium),
+                         .foregroundColor: DS.coral])
+        b.setContentHuggingPriority(.required, for: .horizontal)
+        // В общий столбец кладём через контейнер: у vstack выравнивание по левому краю, а плоская
+        // кнопка без рамки иначе растянулась бы на всю ширину и ловила клики по пустому месту.
+        let row = NSStackView(views: [b, NSView()])
+        row.orientation = .horizontal; row.spacing = 0; row.alignment = .centerY
+        row.edgeInsets = NSEdgeInsets(top: 0, left: 2, bottom: 0, right: 0)
+        return row
+    }
+
     private func soundSettingsLink() -> NSButton {
         let b = NSButton(title: L10n.t("voice.micSettings"), target: self, action: #selector(openSoundSettings))
         b.bezelStyle = .rounded; b.controlSize = .regular

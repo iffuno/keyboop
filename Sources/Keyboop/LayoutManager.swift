@@ -64,6 +64,66 @@ final class LayoutManager {
     }
 
     /// Короткий код текущей раскладки для индикатора ("RU"/"EN"/…).
+    /// Язык АКТИВНОЙ раскладки для индикатора — с поправкой на фоновую природу приложения.
+    ///
+    /// ⚠️ Почему не просто `currentCode()`: `TISCopyCurrentKeyboardInputSource` в агенте без окон
+    /// отдаёт раскладку СВОЕГО процесса и не следует за внешними переключениями. Замер 25.07.2026:
+    /// система щёлкала RU→EN→RU→EN, чтение всё это время возвращало «RU», а системное уведомление
+    /// `kTISNotifySelectedKeyboardInputSourceChanged` в наш процесс не пришло ни разу (0 из 4).
+    /// Настройки HIToolbox при этом менялись мгновенно и без ошибок — их и спрашиваем.
+    /// Из-за этого индикатор RU/EN давно показывал устаревший язык, если раскладку меняли не через
+    /// Keyboop; со флагом это стало заметно сразу.
+    func currentCodeLive() -> String {
+        Self.languageFromSystemPrefs() ?? currentCode()
+    }
+
+    /// Нормализованное имя раскладки → код языка. Строим один раз по списку установленных раскладок:
+    /// в настройках лежит имя («U.S.», «Russian — PC»), а язык знает только TIS-объект.
+    private static var nameToLang: [String: String] = [:]
+
+    /// Имена в настройках и в TIS пишутся по-разному («U.S.» против «US» в идентификаторе), поэтому
+    /// сравниваем по «скелету»: только буквы и цифры в нижнем регистре.
+    private static func nameKey(_ s: String) -> String {
+        s.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    private static func buildNameMap() {
+        guard nameToLang.isEmpty else { return }
+        let filter = [kTISPropertyInputSourceCategory as String: kTISCategoryKeyboardInputSource as String] as CFDictionary
+        guard let list = TISCreateInputSourceList(filter, false)?.takeRetainedValue() as? [TISInputSource] else { return }
+        for src in list {
+            guard let lang = languages(of: src).first else { continue }
+            let code = String(lang.prefix(2)).uppercased()
+            var names: [String] = []
+            if let p = TISGetInputSourceProperty(src, kTISPropertyLocalizedName) {
+                names.append(Unmanaged<CFString>.fromOpaque(p).takeUnretainedValue() as String)
+            }
+            if let p = TISGetInputSourceProperty(src, kTISPropertyInputSourceID) {
+                let id = Unmanaged<CFString>.fromOpaque(p).takeUnretainedValue() as String
+                names.append(String(id.split(separator: ".").last ?? ""))   // «com.apple.keylayout.Russian-PC» → «Russian-PC»
+            }
+            for n in names where !n.isEmpty { nameToLang[nameKey(n)] = code }
+        }
+    }
+
+    /// Что система САМА считает выбранной раскладкой. `Synchronize` обязателен: без него значение
+    /// в нашем процессе кэшируется (тот же урок, что с AppleFnUsageType в GlobeKey).
+    private static func languageFromSystemPrefs() -> String? {
+        CFPreferencesAppSynchronize("com.apple.HIToolbox" as CFString)
+        guard let raw = CFPreferencesCopyAppValue("AppleSelectedInputSources" as CFString,
+                                                 "com.apple.HIToolbox" as CFString) as? [[String: Any]]
+        else { return nil }
+        buildNameMap()
+        for entry in raw {
+            let name = (entry["KeyboardLayout Name"] as? String) ?? (entry["Input Mode"] as? String) ?? ""
+            guard !name.isEmpty else { continue }
+            // Для метода ввода (китайский/японский) в имени лежит идентификатор — берём хвост.
+            let key = nameKey(String(name.split(separator: ".").last ?? Substring(name)))
+            if let code = nameToLang[key] { return code }
+        }
+        return nil
+    }
+
     func currentCode() -> String {
         guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return "??" }
         let lang = Self.languages(of: src).first ?? "en"

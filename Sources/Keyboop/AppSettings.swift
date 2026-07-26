@@ -300,7 +300,10 @@ final class AppSettings {
     var menuBarStyle: String {
         get {
             switch d.string(forKey: "menuBarStyle") {
-            case "brand", "keyboard", "hidden": return d.string(forKey: "menuBarStyle")!
+            // ⚠️ Новый стиль значка НУЖНО дописать сюда: иначе белый список молча вернёт "keyboard",
+            // и в настройках сегмент выберется, а в строке меню ничего не изменится (25.07: так и было
+            // с "flag" — искал ошибку в отрисовке флага, а дело было в этой строке).
+            case "brand", "keyboard", "flag", "hidden": return d.string(forKey: "menuBarStyle")!
             case "letter": return "brand"
             case "layout": return "hidden"
             default: return "keyboard"

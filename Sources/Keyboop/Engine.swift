@@ -494,14 +494,37 @@ final class Engine: EventTapHandler {
     private var frontAppMode = ""
     private var frontAppIsDev = false
     func refreshFrontmostAppCache() {
-        let bid = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
+        let app = NSWorkspace.shared.frontmostApplication
+        let bid = app?.bundleIdentifier ?? ""
         frontAppMode = ExceptionStore.shared.appMode(bid)
         frontAppIsDev = Engine.devApps.contains(bid) || bid.hasPrefix("com.jetbrains")
         frontAppIsChromium = Engine.chromiumFamily.contains(bid)
             || bid.hasPrefix("com.microsoft.edgemac") || bid.hasPrefix("org.chromium")
             || bid.hasPrefix("com.electron") || bid.hasPrefix("com.tinyspeck")
+        // ⚠️ НЕ удлинять паузу перед первым Backspace для Chromium/Electron (пробовали 25.07: 9→40мс).
+        // Симптом «остаётся первая буква» — это НЕ поздний backspace, а ГОНКА: пока летит асинхронная
+        // пачка (пауза + бэкспейсы + Unicode), пользователь успевает нажать следующую клавишу, и она
+        // вклинивается в середину замены (в логе: «в полёт синтетики вклинились реальные клавиши»).
+        // Длинная пауза только РАСШИРЯЕТ это окно: 24мс → 54мс, и промахов стало больше.
+        // Настоящее лечение — глотать реальные клавиши на время полёта и доигрывать их после (задача
+        // #19), а до тех пор держим окно минимальным.
     }
     private var frontAppIsChromium = false
+
+    /// Electron-приложений становится больше, чем мы успеваем вписывать bundle id (Claude, Cursor,
+    /// ChatGPT…), поэтому определяем по ФАКТУ: лежит ли внутри бандла Electron Framework. Результат
+    /// кэшируем по bundle id — обращение к файловой системе происходит один раз на приложение и
+    /// только на смене активного (в колбэке тапа такое звать нельзя).
+    private static var electronCache: [String: Bool] = [:]
+    static func isElectronApp(_ app: NSRunningApplication?) -> Bool {
+        guard let bid = app?.bundleIdentifier else { return false }
+        if let cached = electronCache[bid] { return cached }
+        guard let url = app?.bundleURL else { return false }
+        let fw = url.appendingPathComponent("Contents/Frameworks/Electron Framework.framework")
+        let found = FileManager.default.fileExists(atPath: fw.path)
+        electronCache[bid] = found
+        return found
+    }
 
     /// Chromium/Electron: Unicode-события игнорируют (см. F6 и открытый репорт по Workflowy).
     static let chromiumFamily: Set<String> = [

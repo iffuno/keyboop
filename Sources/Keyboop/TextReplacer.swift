@@ -22,6 +22,11 @@ let kbSyntheticMarker: Int64 = {
 /// через `keyboardSetUnicodeString` (минуя раскладку). Краеугольный принцип Keyboop.
 enum TextReplacer {
 
+    /// Пауза перед первым Backspace. ЕДИНАЯ для всех приложений: попытка удлинить её для
+    /// Chromium/Electron (25.07) сделала хуже — она растягивает окно, в которое успевает вклиниться
+    /// реальное нажатие пользователя. См. разбор в Engine рядом с F6.
+    static var settleMicros: UInt32 = 9_000
+
     private static let backspaceKey: CGKeyCode = 51
     private static let returnKey: CGKeyCode = 36
 
@@ -60,7 +65,7 @@ enum TextReplacer {
     /// Engine.convertBeforeReturn): синтетический Return в ТОМ ЖЕ synth-задании — строго после
     /// всех Backspace/Unicode, ничто не может вклиниться между заменой и отправкой.
     static func replace(deleteCount: Int, with text: String,
-                        firstKeySettleMicros: UInt32 = 9_000, thenReturn: Bool = false,
+                        firstKeySettleMicros: UInt32? = nil, thenReturn: Bool = false,
                         completion: (() -> Void)? = nil) {
         // Замер пути (репорт 23.07: «конвертация стала чуть дольше»): ожидание очереди + синтез.
         // Одна строка на замену — это редкое событие, зато жалоба «дольше» становится цифрой.
@@ -77,10 +82,11 @@ enum TextReplacer {
             // privateState — чтобы не наследовать зажатые пользователем модификаторы (⌥⇧ хоткея).
             let src = CGEventSource(stateID: .privateState)
             let n = max(0, deleteCount)
+            let settle = firstKeySettleMicros ?? settleMicros
             if n > 0 {
                 // Пауза перед ПЕРВЫМ Backspace — иначе он иногда теряется, прилетая слишком рано
                 // после клавиши-триггера, и первый символ остаётся в старой раскладке («gривет»).
-                usleep(firstKeySettleMicros)
+                usleep(settle)
                 for _ in 0..<n {
                     postKey(backspaceKey, source: src)
                     usleep(1800)
@@ -92,7 +98,9 @@ enum TextReplacer {
                 postKey(returnKey, source: src)
             }
             let tEnd = ProcessInfo.processInfo.systemUptime
-            kbLog("synth: replace −\(n)+\(text.count) · очередь \(Int((tStart - tEnq) * 1000))мс · синтез \(Int((tEnd - tStart) * 1000))мс")
+            // Пауза в логе — чтобы по репорту «остался первый символ» сразу было видно, сработала ли
+            // удлинённая пауза для Electron, а не гадать по названию приложения.
+            kbLog("synth: replace −\(n)+\(text.count) · очередь \(Int((tStart - tEnq) * 1000))мс · синтез \(Int((tEnd - tStart) * 1000))мс · пауза \(settle / 1000)мс")
             if let completion { DispatchQueue.main.async(execute: completion) }
         }
     }

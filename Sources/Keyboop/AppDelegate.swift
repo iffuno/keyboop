@@ -108,7 +108,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Dev-помощник: запуск с --settings[=snippets] сразу открывает Настройки (на нужном разделе).
         if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--settings") }) {
-            let sec = arg.contains("snippets") ? SettingsSection.snippets : nil
+            let sec: SettingsSection? = arg.contains("snippets") ? .snippets
+                                      : arg.contains("ambiguous") ? .ambiguous
+                                      : arg.contains("voice") ? .voice : nil
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.openSettings(section: sec) }
         }
 

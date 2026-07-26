@@ -6,6 +6,25 @@ enum Changelog {
     struct Release { let version: String; let ru: [String]; let en: [String] }
 
     static let releases: [Release] = [
+        Release(version: "0.2.69",
+            ru: [
+                "Ваши предложения доезжают до сборки быстрее, чем вы думаете: почти всё в этом обновлении пришло из ваших писем. Пишете — я беру в работу сразу, а не «когда-нибудь в бэклоге».",
+                "Появились «Спорные слова» — раздел для тех случаев, где Keyboop честно не может угадать. Есть слова, которые набираются одними и теми же клавишами и существуют в обоих языках: «vs» и «мы», «here» и «руку», «gj» и «по». Кто-то пишет «versus» каждый день, кто-то — «мы» в каждом втором предложении, и правильного ответа на всех не существует. Теперь у каждой такой пары три положения: оставить английское, оставить русское или (по умолчанию) не вмешиваться и решать по контексту. Настройки → Исключения → «Спорные слова».",
+                "В строке меню теперь может жить флаг языка — как в Punto. Тем, кто привык коситься в правый верхний угол, так быстрее: Настройки → Общие → значок в строке меню → «Флаг языка».",
+                "В голосовом наборе перестали вываливать на вас весь список моделей. Сверху — две, которыми пользуется большинство: Parakeet за скорость и Whisper Turbo за пунктуацию. Остальные никуда не делись, они за ссылкой «Другие модели».",
+                "В «О программе» комбинации клавиш перестали врать. Раньше там был зашит текст с сочетаниями по умолчанию — и если вы их поменяли, описание жило своей жизнью. Теперь показывает ваши.",
+                "Мелочь про мгновенное переключение языка: пока сама функция выключена, комбинацию к ней больше нельзя выбрать. Незачем настраивать то, что не работает.",
+                "И последнее, совсем коротко. Несколько человек спросили, как автора можно поблагодарить. Я подумал — почему бы и нет, и сделал страницу: keyboop.com/tips. Приложение было и остаётся бесплатным, платных функций там не появится; это просто способ сказать «работает, спасибо». В настройках внизу теперь есть тихая ссылка туда же.",
+            ],
+            en: [
+                "Your suggestions reach a build faster than you'd think: almost everything in this update came from your messages. You write — I start on it right away, not «someday, from the backlog».",
+                "Meet «Ambiguous words» — a section for the cases where Keyboop honestly cannot guess. Some words are typed with the exact same keys and exist in both languages: «vs» and «мы», «here» and «руку», «gj» and «по». Some people write «versus» daily, others use «мы» in every other sentence, and there is no single right answer. Each such pair now has three positions: keep the English one, keep the Russian one, or (the default) stay out of it and decide by context. Settings → Exceptions → «Ambiguous words».",
+                "The menu bar can now show a language flag, Punto-style. If you're used to glancing at the top-right corner, it's faster: Settings → General → menu-bar icon → «Language flag».",
+                "Dictation no longer dumps the whole model list on you. The top two are what most people use: Parakeet for speed, Whisper Turbo for punctuation. The rest are still there, behind the «Other models» link.",
+                "In «About», the shortcuts stopped lying. The description used to have the default combinations hard-coded, so if you changed them, it went on living its own life. Now it shows yours.",
+                "A small thing about instant language switching: while the feature itself is off, you can no longer pick a shortcut for it. No point configuring something that isn't running.",
+                "Last one, very briefly. A few people asked how they could thank the author. I thought — why not, and made a page: keyboop.com/tips. The app was and stays free, no paid features will appear there; it's just a way to say «it works, thanks». Settings now has a quiet link to the same place at the bottom.",
+            ]),
         Release(version: "0.2.68",
             ru: [
                 "Исправление на лету стало по-настоящему мгновенным. Раньше слово чинилось с небольшой задержкой, и при быстром наборе могло порваться: «yнормаmyj» вместо «нормально». Мы провели исследование и нашли решение — теперь замена происходит ровно в тот момент, когда вы нажимаете клавишу, и ваш следующий символ физически не может вклиниться в неё. Не «стало реже», а «больше не может произойти». Заодно раскладка чинится на лету снова по умолчанию — ради этого всё и переделывалось.",

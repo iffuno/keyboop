@@ -81,6 +81,10 @@ final class ExceptionStore {
         save()
     }
 
+    /// Убрать слово из «всегда переключать». Нужно странице спорных пар: при смене победителя
+    /// проигравшую сторону надо снять, иначе две записи спорят на разных ветках каскада.
+    func removeForceSwap(_ word: String) { forceSwap.remove(word.lowercased()); save() }
+
     /// Полностью заменить список исключений (из текстового поля настроек).
     func setIgnored(_ words: [String]) {
         ignored = Set(words.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }.filter { !$0.isEmpty })

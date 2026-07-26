@@ -74,6 +74,77 @@ final class MenuBarController: NSObject {
         return img
     }()
 
+    /// ФЛАГ ЯЗЫКА в строке меню — как когда-то в Punto Switcher (просьба пользователей 25.07).
+    ///
+    /// Берём СИСТЕМНЫЙ эмодзи-флаг. Пробовали рисовать плоские флаги вектором — американский вышел
+    /// неубедительно: 13 полос и 50 звёзд на 16pt не помещаются, а упрощённый до 5 полос флаг — это
+    /// уже не флаг США (решение автора 25.07: «неправильно отображать неправильно нарисованный флаг»).
+    /// Системный глиф всегда корректен и совпадает с тем, что человек видит в остальной системе.
+    ///
+    /// Чтобы флаг не выглядел мелким, картинку обрезаем по ФАКТИЧЕСКИМ границам глифа
+    /// (`usesDeviceMetrics`): у эмодзи высота строки заметно больше самого рисунка, и раньше почти
+    /// треть картинки уходила в пустоту под и над флагом.
+    ///
+    /// `isTemplate` обязательно false: template схлопнул бы флаг в монохромный силуэт.
+    private static var flagCache: [String: NSImage] = [:]
+
+    /// Целевая высота флага. Строка меню — 24pt, системные значки ~16–18pt: выше делать нельзя,
+    /// иначе macOS обрежет картинку.
+    private static let flagTargetH: CGFloat = 20
+
+    /// Язык раскладки → флаг. Код приходит из `LayoutManager.currentCodeLive()`, то есть это ЯЗЫК
+    /// ВВОДА, а не страна пользователя. Флаг ≠ язык (на русском пишут не только в РФ, на английском —
+    /// тем более), поэтому таблица покрывает распространённые раскладки, а остальное честно остаётся
+    /// без флага: лучше обычный значок клавиатуры, чем «похожий» чужой флаг.
+    private static let flagByLang: [String: String] = [
+        "RU": "🇷🇺", "EN": "🇺🇸", "UK": "🇺🇦", "BE": "🇧🇾", "KK": "🇰🇿",
+        "DE": "🇩🇪", "FR": "🇫🇷", "ES": "🇪🇸", "IT": "🇮🇹", "PT": "🇵🇹", "NL": "🇳🇱",
+        "PL": "🇵🇱", "CS": "🇨🇿", "TR": "🇹🇷", "SV": "🇸🇪", "NB": "🇳🇴", "DA": "🇩🇰",
+        "FI": "🇫🇮", "EL": "🇬🇷", "HE": "🇮🇱", "AR": "🇸🇦", "HY": "🇦🇲", "KA": "🇬🇪",
+        "ZH": "🇨🇳", "JA": "🇯🇵", "KO": "🇰🇷", "HI": "🇮🇳", "TH": "🇹🇭", "VI": "🇻🇳"
+    ]
+
+    /// Флаг как NSImage под высоту строки меню. Кэш по языку: раскладку опрашиваем каждые полсекунды —
+    /// пересоздавать картинку незачем.
+    static func flagImage(lang: String) -> NSImage? {
+        if let cached = flagCache[lang] { return cached }
+        guard let emoji = flagByLang[lang] else { return nil }
+        // Кегль подбираем так, чтобы РИСУНОК флага (а не строка с отбивками) вышел нужной высоты.
+        // Эмодзи рисуется примерно на 0.78 кегля, поэтому берём с запасом и обрезаем по факту.
+        let font = NSFont.systemFont(ofSize: flagTargetH / 0.78)
+        let text = NSAttributedString(string: emoji, attributes: [.font: font])
+        let box = text.boundingRect(with: NSSize(width: 200, height: 200),
+                                    options: [.usesLineFragmentOrigin, .usesDeviceMetrics])
+        guard box.width > 0, box.height > 0 else { return nil }
+        let scale = min(1, flagTargetH / box.height)          // не даём вылезти за высоту строки меню
+        let size = NSSize(width: ceil(box.width * scale), height: ceil(box.height * scale))
+        let img = NSImage(size: size)
+        img.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        if scale < 1 {
+            let t = NSAffineTransform()
+            t.scale(by: scale)
+            t.concat()
+        }
+        // Сдвигаем на минус-origin рамки глифа — так пустые поля сверху и снизу срезаются.
+        text.draw(at: NSPoint(x: -box.minX, y: -box.minY))
+        img.unlockFocus()
+        img.isTemplate = false
+        img.accessibilityDescription = lang
+        flagCache[lang] = img
+        return img
+    }
+
+    /// Язык, под который уже нарисован флаг. Меняем картинку ТОЛЬКО при реальной смене раскладки:
+    /// иначе трогали бы NSStatusItem.button дважды в секунду на ровном месте.
+    private var lastFlagLang = ""
+
+    /// Флаг для языка, а если такого флага у нас нет — обычный значок клавиатуры.
+    private func flagOrKeyboard(_ lang: String) -> NSImage? {
+        Self.flagImage(lang: lang)
+            ?? NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Keyboop")
+    }
+
     /// Применить выбранный стиль значка (brand/letter/layout/keyboard/hidden). Зовётся из init,
     /// при смене настройки и при языке/раскладке. Во время диктовки не трогаем — иконку держит
     /// voice-индикатор (setVoiceState).
@@ -87,6 +158,11 @@ final class MenuBarController: NSObject {
         case "brand":
             button.image = Self.brandStatusImage ?? NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Keyboop")
             button.imagePosition = .imageLeading
+        case "flag":
+            let lang = layout.currentCodeLive()
+            button.image = flagOrKeyboard(lang)
+            button.imagePosition = .imageLeading
+            lastFlagLang = lang
         case "hidden":
             button.image = nil
             button.imagePosition = .noImage       // значка нет — остаётся только язык (см. updateTitle)
@@ -101,8 +177,17 @@ final class MenuBarController: NSObject {
         if voiceState != .idle { return }   // во время диктовки иконку держит voice-индикатор
         guard let button = statusItem.button else { return }
         if needsPermission { button.title = " ⚠︎"; return }
+        // Раскладку спрашиваем ОДИН раз на тик: и флагу, и подписи нужен один и тот же код.
+        // currentCodeLive, а НЕ currentCode: в фоновом агенте чтение TIS не следует за внешними
+        // переключениями раскладки (замер 25.07 — см. LayoutManager.currentCodeLive).
+        let code = layout.currentCodeLive()
+        // Флаг должен следовать за раскладкой, а единственный живой сигнал о её смене здесь —
+        // опрос из startPolling. Картинку меняем только когда язык реально другой.
+        if settings.menuBarStyle == "flag", code != lastFlagLang {
+            lastFlagLang = code
+            button.image = flagOrKeyboard(code)
+        }
         guard settings.menuBarShowLanguage else { button.title = ""; return }   // язык скрыт
-        let code = layout.currentCode()
         // Без значка (hidden) язык без ведущего пробела; со значком — с отступом от него.
         button.title = settings.menuBarStyle == "hidden" ? code : " \(code)"
     }
@@ -228,7 +313,8 @@ final class MenuBarController: NSObject {
         auto.state = settings.autoEnabled ? .on : .off
         menu.addItem(auto)
 
-        let hot = NSMenuItem(title: L10n.t("menu.switchWord"), action: nil, keyEquivalent: "")
+        let hot = NSMenuItem(title: String(format: L10n.t("menu.switchWord"), hotkeyDisplayString()),
+                             action: nil, keyEquivalent: "")
         hot.isEnabled = false
         menu.addItem(hot)
 
