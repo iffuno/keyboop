@@ -1,6 +1,6 @@
 import Foundation
 
-/// Соответствие фізичних клавіш між Apple-розкладками "U.S." та "Ukrainian".
+/// Відповідність фізичних клавіш між Apple-розкладками "U.S." та "Ukrainian".
 /// Конвертація посимвольна (char↔char) — keycodes не потрібні, т.к. ми працюємо
 /// з уже набраною строкою.
 enum Keymap {
@@ -36,7 +36,7 @@ enum Keymap {
         return d
     }()
 
-    /// Конвертирует строку: toCyrillic=true → EN→UA, иначе UA→EN.
+    /// Конвертує строку: toCyrillic=true → EN→UA, інакше UA→EN.
     /// Символи поза таблицею залишаються як є.
     /// Primary — DynamicKeymap (точна таблиця з реальної розкладки macOS);
     /// статичні пари нижче — fallback, якщо UCKeyTranslate недоступен.
