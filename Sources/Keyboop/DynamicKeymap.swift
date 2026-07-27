@@ -49,7 +49,7 @@ enum DynamicKeymap {
         uaToEn = u2e
     }
 
-    /// Конвертирует строку посимвольно. Символи поза таблицею — як є.
+    /// Конвертує строку посимвольно. Символи поза таблицею — як є.
     static func convert(_ text: String, toCyrillic: Bool) -> String {
         let map = toCyrillic ? enToUa : uaToEn
         var out = ""
