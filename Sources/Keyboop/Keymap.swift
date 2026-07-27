@@ -1,50 +1,50 @@
 import Foundation
 
-/// Соответствие физических клавиш между Apple-раскладками "U.S." и "Russian".
-/// Конвертация посимвольная (char↔char) — keycodes не нужны, т.к. мы работаем
-/// с уже набранной строкой.
+/// Соответствие фізичних клавіш між Apple-розкладками "U.S." та "Ukrainian".
+/// Конвертація посимвольна (char↔char) — keycodes не потрібні, т.к. ми працюємо
+/// з уже набраною строкою.
 enum Keymap {
-    // Базовые пары: EN-символ (раскладка US) -> RU-символ (раскладка Russian), нижний регистр.
+    // Базові пари: EN-символ (розкладка US) -> UA-символ (розкладка Ukrainian), нижній регістр.
     private static let basePairs: [(String, String)] = [
-        ("`","ё"),("q","й"),("w","ц"),("e","у"),("r","к"),("t","е"),("y","н"),("u","г"),
-        ("i","ш"),("o","щ"),("p","з"),("[","х"),("]","ъ"),
-        ("a","ф"),("s","ы"),("d","в"),("f","а"),("g","п"),("h","р"),("j","о"),("k","л"),
-        ("l","д"),(";","ж"),("'","э"),
-        ("z","я"),("x","ч"),("c","с"),("v","м"),("b","и"),("n","т"),("m","ь"),
-        (",","б"),(".","ю"),("/",".")
+        ("`","'"),  ("q","й"), ("w","ц"), ("e","у"), ("r","к"), ("t","е"), ("y","н"), ("u","г"),
+        ("i","ш"), ("o","щ"), ("p","з"), ("[","х"), ("]","ъ"),
+        ("a","ф"), ("s","и"), ("d","в"), ("f","а"), ("g","п"), ("h","р"), ("j","о"), ("k","л"),
+        ("l","д"), (";","ж"), ("'","є"),
+        ("z","я"), ("x","ч"), ("c","с"), ("v","м"), ("b","і"), ("n","т"), ("m","ь"),
+        (",","б"), (".","ю"), ("/",".")
     ]
 
-    static let enToRu: [String: String] = {
+    static let enToUa: [String: String] = {
         var d: [String: String] = [:]
-        for (e, r) in basePairs {
-            d[e] = r
-            if e.lowercased() != e.uppercased() { // только буквы получают верхний регистр
-                d[e.uppercased()] = r.uppercased()
+        for (e, u) in basePairs {
+            d[e] = u
+            if e.lowercased() != e.uppercased() { // тільки букви отримують верхній регістр
+                d[e.uppercased()] = u.uppercased()
             }
         }
         return d
     }()
 
-    static let ruToEn: [String: String] = {
+    static let uaToEn: [String: String] = {
         var d: [String: String] = [:]
-        for (e, r) in basePairs {
-            d[r] = e
+        for (e, u) in basePairs {
+            d[u] = e
             if e.lowercased() != e.uppercased() {
-                d[r.uppercased()] = e.uppercased()
+                d[u.uppercased()] = e.uppercased()
             }
         }
         return d
     }()
 
-    /// Конвертирует строку: toCyrillic=true → EN→RU, иначе RU→EN.
-    /// Символы вне таблицы остаются как есть.
-    /// Primary — DynamicKeymap (точная таблица из реальной раскладки macOS);
-    /// статические пары ниже — fallback, если UCKeyTranslate недоступен.
+    /// Конвертирует строку: toCyrillic=true → EN→UA, иначе UA→EN.
+    /// Символи поза таблицею залишаються як є.
+    /// Primary — DynamicKeymap (точна таблиця з реальної розкладки macOS);
+    /// статичні пари нижче — fallback, якщо UCKeyTranslate недоступен.
     static func convert(_ text: String, toCyrillic: Bool) -> String {
         if DynamicKeymap.isReady {
             return DynamicKeymap.convert(text, toCyrillic: toCyrillic)
         }
-        let map = toCyrillic ? enToRu : ruToEn
+        let map = toCyrillic ? enToUa : uaToEn
         var out = ""
         out.reserveCapacity(text.count)
         for ch in text {
@@ -53,18 +53,18 @@ enum Keymap {
         return out
     }
 
-    /// Семантические знаки препинания: одинаковы в обеих раскладках (просто на разных клавишах),
-    /// поэтому в конце слова их НЕ конвертируем (иначе "." → "ю", "," → "б").
+    /// Семантичні знаки пунктуації: однакові в обох розкладках (просто на різних клавішах),
+    /// тому в кінці слова їх НЕ конвертуємо (інакше "." → "ю", "," → "б").
     static let trailingPunctuation = Set<Character>(".,!?;:…")
 
-    /// Умная конвертация: отделяет концевую пунктуацию (оставляет как есть), конвертит ядро.
-    /// `ghbdtn.` → `привет.` (а не `приветю`).
+    /// Розумна конвертація: відділяє кінцеву пунктуацію (залишає як є), конвертує ядро.
+    /// `ghbdtn.` → `привіт.` (а не `привітю`).
     ///
-    /// НО: клавиши `,` `.` `;` в EN-раскладке — это И знаки препинания, И буквы **б ю ж**. Если ПОЛНАЯ
-    /// конверсия слова (с этим символом КАК БУКВОЙ) даёт валидное слово — символ был буквой, конвертим
-    /// целиком: «yj;»→«нож», «[kt,»→«хлеб» (раньше срезались → «но;», «хле,» — порча). Иначе отделяем
-    /// как пунктуацию: «ghbdtn.»→«привет.». Только EN→RU (`toCyrillic`); проверка валидности —
-    /// `isValidTarget` (словарь RU, передаёт вызывающий, чтобы Keymap не тянул LayoutData).
+    /// НО: клавіші `,` `.` `;` в EN-розкладці — це І знаки пунктуації, І букви **б ю ж**. Якщо ПОВНА
+    /// конверсія слова (з цим символом ЯК БУКВАЮ) дає валідне слово — символ був буквою, конвертуємо
+    /// цілком: «yj;»→«ніж», «[kt,»→«хліб» (раніше зрізалися → «ні;», «хлі,» — порча). Інакше відділяємо
+    /// як пунктуацію: «ghbdtn.»→«привіт.». Тільки EN→UA (`toCyrillic`); перевірка валідності —
+    /// `isValidTarget` (словник UA, передає викликаючий, щоб Keymap не тягнув LayoutData).
     static func smartConvert(_ word: String, toCyrillic: Bool, isValidTarget: ((String) -> Bool)? = nil) -> String {
         if toCyrillic, let valid = isValidTarget {
             let full = convert(word, toCyrillic: true)
@@ -80,7 +80,7 @@ enum Keymap {
         return convert(String(core), toCyrillic: toCyrillic) + trailing
     }
 
-    /// Ядро слова без концевой пунктуации — для анализа детектором.
+    /// Ядро слова без кінцевої пунктуації — для аналізу детектором.
     static func core(of word: String) -> String {
         var s = Substring(word)
         while let last = s.last, trailingPunctuation.contains(last) { s = s.dropLast() }

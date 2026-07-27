@@ -1,20 +1,19 @@
 import Carbon
 import Foundation
 
-/// Таблица соответствия символов между латинской и кириллической раскладками
-/// пользователя, построенная ИЗ САМОЙ macOS через `UCKeyTranslate`.
+/// Таблиця відповідності символів між латинською та кирилічною розкладками
+/// користувача, побудована З САМОЇ macOS через `UCKeyTranslate`.
 ///
-/// Зачем: статический хардкод (`Keymap`) неточен — Apple «Russian» и «Russian — PC»
-/// кладут символы по разным клавишам (напр. на Apple «Russian» кавычка `"` = Shift+2,
-/// а `` ` `` даёт `]`; на «Russian — PC» иначе). Динамика читает РЕАЛЬНУЮ раскладку
-/// и покрывает все символы (буквы, цифровой Shift-ряд, кавычки, скобки) для любого
-/// варианта и любой языковой пары. Используется как primary; `Keymap` — fallback.
+/// Чому: статичний хардкод (`Keymap`) неточний — Apple «Ukrainian» та інші
+/// варіанти кирилічних розкладок кладуть символи по різним клавішах. Динаміка читає РЕАЛЬНУ розкладку
+/// і покриває всі символи (букви, цифровий Shift-ряд, кавички, дужки) для будь-якого
+/// варіанта й будь-якої мовної пари. Використовується як primary; `Keymap` — fallback.
 enum DynamicKeymap {
-    private(set) static var enToRu: [Character: Character] = [:]
-    private(set) static var ruToEn: [Character: Character] = [:]
-    static var isReady: Bool { !enToRu.isEmpty }
+    private(set) static var enToUa: [Character: Character] = [:]
+    private(set) static var uaToEn: [Character: Character] = [:]
+    static var isReady: Bool { !enToUa.isEmpty }
 
-    /// Перестраивает таблицу из включённых раскладок. Идемпотентно, дёшево (~200 UCKeyTranslate).
+    /// Перебудовує таблицю з включених розкладок. Ідемпотентно, дешево (~200 UCKeyTranslate).
     static func rebuild() {
         guard let cf = TISCreateInputSourceList(nil, false)?.takeRetainedValue() else { return }
         let count = CFArrayGetCount(cf)
@@ -25,34 +24,34 @@ enum DynamicKeymap {
             let src = Unmanaged<TISInputSource>.fromOpaque(raw).takeUnretainedValue()
             guard boolProp(src, kTISPropertyInputSourceIsSelectCapable),
                   let data = layoutData(src) else { continue }
-            // Классифицируем по символу клавиши 'a' (keyCode 0).
+            // Класифікуємо за символом клавіші 'a' (keyCode 0).
             guard let ch = translate(data, 0, false).first else { continue }
             if isCyrillic(ch), cyrillic == nil { cyrillic = data }
             else if isLatin(ch), latin == nil { latin = data }
         }
         guard let L = latin, let C = cyrillic else { return }
 
-        var e2r: [Character: Character] = [:]
-        var r2e: [Character: Character] = [:]
-        // Печатные клавиши ANSI: буквы, цифровой ряд, знаки — keyCodes 0…50.
+        var e2u: [Character: Character] = [:]
+        var u2e: [Character: Character] = [:]
+        // Друковані клавіші ANSI: букви, цифровий ряд, знаки — keyCodes 0…50.
         for kc in UInt16(0)...UInt16(50) {
             for shift in [false, true] {
                 let ls = translate(L, kc, shift)
                 let cs = translate(C, kc, shift)
                 guard ls.count == 1, cs.count == 1,
                       let l = ls.first, let c = cs.first, l != c else { continue }
-                if e2r[l] == nil { e2r[l] = c }
-                if r2e[c] == nil { r2e[c] = l }
+                if e2u[l] == nil { e2u[l] = c }
+                if u2e[c] == nil { u2e[c] = l }
             }
         }
-        guard !e2r.isEmpty else { return }
-        enToRu = e2r
-        ruToEn = r2e
+        guard !e2u.isEmpty else { return }
+        enToUa = e2u
+        uaToEn = u2e
     }
 
-    /// Конвертирует строку посимвольно. Символы вне таблицы — как есть.
+    /// Конвертирует строку посимвольно. Символи поза таблицею — як є.
     static func convert(_ text: String, toCyrillic: Bool) -> String {
-        let map = toCyrillic ? enToRu : ruToEn
+        let map = toCyrillic ? enToUa : uaToEn
         var out = ""
         out.reserveCapacity(text.count)
         for ch in text { out.append(map[ch] ?? ch) }
@@ -77,7 +76,7 @@ enum DynamicKeymap {
 
     private static func layoutData(_ src: TISInputSource) -> Data? {
         guard let ptr = TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData) else { return nil }
-        return (Unmanaged<CFData>.fromOpaque(ptr).takeUnretainedValue() as Data)
+        return (Unmanaged<CFData>.fromOpaque(ptr).takeRetainedValue() as Data)
     }
     private static func boolProp(_ src: TISInputSource, _ key: CFString) -> Bool {
         guard let raw = TISGetInputSourceProperty(src, key) else { return false }
