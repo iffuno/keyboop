@@ -67,13 +67,44 @@ enum GlobeKey {
         unsafeBitCast(sym, to: Fn.self)(Int32(value))
     }
 
+    // MARK: - Аварийная расписка (28.07)
+    //
+    // ⚠️ ПОЧЕМУ ФАЙЛ, А НЕ ТОЛЬКО UserDefaults. `release()` возвращает клавишу, только если у него
+    // есть запись «мы её забирали». Запись жила в defaults БАНДЛА, и терялась сразу в трёх случаях:
+    //   1. дев-сборка (ru.keyboop.app.dev) забрала, прод (ru.keyboop.app) отпускает — домены разные;
+    //   2. процесс убит SIGTERM/Activity Monitor/падением — applicationWillTerminate не выполняется;
+    //   3. настройки сброшены или приложение переустановлено.
+    // Во всех трёх клавиша 🌐 остаётся с системным действием «Ничего не делать» — то есть МЁРТВОЙ,
+    // причём НАВСЕГДА и даже после удаления Keyboop. Человек видит сломанную клавишу и никак не
+    // связывает это с нами. Мы ломаем систему за пределами своего приложения и не оставляем следа.
+    //
+    // Расписка лежит в общем для всех сборок месте и переживает и падение, и снос настроек.
+    // Пишется ДО того, как забрали, удаляется ПОСЛЕ того, как вернули.
+    private static var receiptURL: URL {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Keyboop", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("globe-fn-receipt")
+    }
+
+    private static func writeReceipt(_ prev: Int) {
+        try? String(prev).write(to: receiptURL, atomically: true, encoding: .utf8)
+    }
+    private static func readReceipt() -> Int? {
+        guard let s = try? String(contentsOf: receiptURL, encoding: .utf8) else { return nil }
+        return Int(s.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+    private static func clearReceipt() { try? FileManager.default.removeItem(at: receiptURL) }
+
     /// Привести систему к нашим настройкам. Звать: на старте, при смене тумблера/комбинации.
     /// При выключении фичи (или смене комбинации с 🌐 на другую) честно возвращаем «как было».
     static func reconcile() {
         let s = AppSettings.shared
         if s.instantSwitchEnabled && s.instantSwitchMode == "globe" {
             guard current != .nothing else { return }   // уже свободна — забирать нечего
-            if s.globePrevFnUsage == -1 { s.globePrevFnUsage = rawValue() ?? -2 }   // −2 = ключа не было
+            let prev = s.globePrevFnUsage == -1 ? (rawValue() ?? -2) : s.globePrevFnUsage
+            s.globePrevFnUsage = prev
+            writeReceipt(prev)          // расписка ДО захвата: падение между строками не осиротит клавишу
             take()
         } else {
             release()
@@ -93,11 +124,25 @@ enum GlobeKey {
         return ok
     }
 
-    /// Вернуть системе прежнее действие (выключение тумблера / смена комбинации / выход).
+    /// Вернуть системе прежнее действие (выключение тумблера / смена комбинации / выход / старт).
+    ///
+    /// ⚠️ Расписка на диске — ВТОРОЙ источник (28.07). Раньше здесь стоял только `guard != -1` по
+    /// defaults бандла, и осиротевшая клавиша не возвращалась НИКОГДА: у прод-сборки нет записи
+    /// дев-сборки, у переустановленной — записи прошлой, у убитой SIGTERM — вообще никакой.
+    /// Симптом: 🌐 не делает ничего, ни системного действия, ни нашего, и лечится только включением
+    /// нашей же фичи обратно. Именно так это поймал автор 28.07.
     static func release() {
         let s = AppSettings.shared
-        guard s.globePrevFnUsage != -1 else { return }   // мы ничего не забирали
-        let prev = s.globePrevFnUsage
+        let prev = s.globePrevFnUsage != -1 ? s.globePrevFnUsage : (readReceipt() ?? -1)
+        guard prev != -1 else { return }   // ни записи, ни расписки — мы действительно не забирали
+        // Не отбираем чужой выбор: если человек САМ поставил на 🌐 что-то другое после нас, наше
+        // «как было» уже неактуально. Возвращаем только то, что оставили мы («Ничего не делать»).
+        guard current == .nothing else {
+            s.globePrevFnUsage = -1
+            clearReceipt()
+            kbLog("globe: возвращать нечего — на клавише уже чужая настройка, расписку снял")
+            return
+        }
         if prev == -2 {
             // Ключа до нас не было — честно УДАЛЯЕМ, а не пишем «умолчание» (оно может отличаться
             // по типу мака). Кэшам рассылаем фактическое умолчание глобус-маков: inputSource.
@@ -110,6 +155,7 @@ enum GlobeKey {
             applyLive(prev)
         }
         s.globePrevFnUsage = -1
+        clearReceipt()
         kbLog("globe: клавиша возвращена системе (было \(prev == -2 ? "умолчание" : String(prev)))")
     }
 }

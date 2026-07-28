@@ -17,10 +17,17 @@ enum DS {
     static let pillRadius: CGFloat = 6        // concentric с control-радиусами Tahoe
     // Content
     static let contentMaxWidth: CGFloat = 600 // Apple grouped-form cap (macOS 15+); контент НЕ растягивается
-    static let contentWidth: CGFloat = 480    // ФИКС ширина блока настроек: прижат влево, поля узкие
+    /// ФИКС ширина блока настроек: прижат влево, поля узкие.
+    /// 480 → 600 (28.07): подписи под строками резались, а половину из них ширина как раз лечит.
+    /// Ровно 600, а не «сколько влезет»: шире строка «подпись слева, контрол справа» превращается в
+    /// таблицу с дырой посередине, а короткие заголовки вроде «Голосовой ввод» выглядят брошенными.
+    /// Совпадает с contentMaxWidth выше (Apple grouped-form cap).
+    /// Проверка по экранам: окно 896 это 61% ширины на 13" Air (1470×956), 62% на 1440×900 и 70% в
+    /// худшем реалистичном случае «крупный текст» 1280×800. Запас есть везде, где вообще идёт macOS 13.
+    static let contentWidth: CGFloat = 600
     static let contentMargin: CGFloat = 24
     /// Минимальная ширина окна = sidebar + поле + блок + правое поле → блок всегда влезает.
-    static let minWindowWidth: CGFloat = 220 + 24 + 480 + 28   // = 752
+    static let minWindowWidth: CGFloat = 220 + 24 + contentWidth + 28   // сайдбар + поле + контент + инсет
     static let sectionGap: CGFloat = 18
     static let itemGap: CGFloat = 10
     // Поля ввода
@@ -145,7 +152,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     /// Dev: отрендерить раздел в PNG (отладка дизайна без Screen Recording).
     func dump(section i: Int, to path: String) {
-        window?.appearance = NSAppearance(named: .darkAqua)   // как видит юзер (тёмная тема)
+        // ⚠️ .aqua, а не .darkAqua (28.07). Рендер идёт в СВЕТЛУЮ подложку, поэтому под тёмной темой
+        // получался светлый текст на светлом фоне — снимок формально есть, а прочитать нельзя.
+        // Канон снимков интерфейса в этом проекте: appearance = .aqua.
+        window?.appearance = NSAppearance(named: .aqua)
         sidebar.select(i, animated: false)
         window?.contentView?.layoutSubtreeIfNeeded()
         let base = (path as NSString).deletingPathExtension
@@ -363,6 +373,9 @@ final class DetailVC: NSViewController {
     private var learnedChips: ChipFlowView?
     private var wordInput: NSTextField?
     private var voiceModelStatus: [String: NSTextField] = [:]
+    /// Кнопки «Скачать» по id модели. Как и метки выше, ПЕРЕрегистрируются при каждой сборке
+    /// раздела — иначе обработчик прогресса держал бы ссылку на кнопку, которой уже нет.
+    private var voiceModelButton: [String: NSButton] = [:]
     private var historyWC: VoiceHistoryWindowController?
     private let docView = FlippedView()
     private let column = FlippedView()           // колонка контента с ограниченной шириной
@@ -373,14 +386,23 @@ final class DetailVC: NSViewController {
         let env = ProcessInfo.processInfo.environment
         let bg: NSView
         if env["KEYBOOP_DUMP"] == "1" || env["KEYBOOP_WINSHOT"] == "1" {
+            // Дампы рендерятся под .aqua (см. dump()), поэтому подложка ДОЛЖНА быть светлой.
+            // Раньше здесь стоял жёсткий тёмный 0.14 «для .darkAqua» — из-за него снимки выходили
+            // с чёрным фоном и читались хуже живого окна.
             let solid = NSView(); solid.wantsLayer = true
-            solid.layer?.backgroundColor = NSColor(white: 0.14, alpha: 1).cgColor  // тёмный (дампы под .darkAqua)
+            solid.layer?.backgroundColor = NSColor.white.cgColor
             bg = solid
         } else {
+            // ⚠️ Страница СВЕТЛАЯ в светлой теме (правка 29.07). `.underPageBackground` под .aqua
+            // даёт серый, и вместе с белыми карточками это была инверсия системной схемы: у macOS
+            // белая страница и серые группы. Материал оставляем только для тёмной темы, где он
+            // выглядит правильно и даёт живое размытие за окном.
             let eff = NSVisualEffectView()
             eff.material = .underPageBackground
             eff.blendingMode = .behindWindow
-            bg = eff
+            let solid = NSView(); solid.wantsLayer = true
+            let holder = ThemedBackgroundView(dark: eff, light: solid)
+            bg = holder
         }
 
         let scroll = NSScrollView()
@@ -416,7 +438,7 @@ final class DetailVC: NSViewController {
         NSLayoutConstraint.activate([
             column.topAnchor.constraint(equalTo: docView.topAnchor, constant: DS.contentMargin),
             column.bottomAnchor.constraint(equalTo: docView.bottomAnchor, constant: -DS.contentMargin),
-            // ЛЕВЫЙ КРАЙ + ФИКС ширина (по просьбе автора): блок прижат влево, ширина 480, справа —
+            // ЛЕВЫЙ КРАЙ + ФИКС ширина (по просьбе автора): блок прижат влево, ширина DS.contentWidth, справа —
             // свободное место. Окно не сужается ниже minWindowWidth → блок гарантированно влезает,
             // обрезки нет. Никакого центрирования и «docView шире вьюпорта».
             column.leadingAnchor.constraint(equalTo: docView.leadingAnchor, constant: DS.contentMargin),
@@ -628,15 +650,17 @@ final class DetailVC: NSViewController {
             sub(L10n.t("switch.sub")),
             group(8),
             card([
-                switchRow(L10n.t("switch.auto"), L10n.t("switch.autoSub"), settings.autoEnabled, #selector(toggleAuto)),
+                switchRow(L10n.t("switch.auto"), L10n.t("switch.autoSub"), settings.autoEnabled, #selector(toggleAuto),
+                          help: L10n.t("switch.autoHelp")),
                 // «Чинить на лету» — надстройка над авто-переключением: движок и так гейтит его по
                 // autoEnabled (Engine ~278). Показываем это честно: авто выкл → тумблер серый и
                 // выключенный. САМА настройка при этом не трогается — включат авто обратно, и
                 // live-fix вернётся таким, каким был (регресс замечено в тестировании).
                 switchRow(L10n.t("switch.live"), L10n.t("switch.liveSub"),
                           settings.autoEnabled && settings.liveFixEnabled, #selector(toggleLive),
-                          enabled: settings.autoEnabled),
-                switchRow(L10n.t("switch.dev"), L10n.t("switch.devSub"), settings.developerMode, #selector(toggleDev)),
+                          enabled: settings.autoEnabled, help: L10n.t("switch.liveHelp")),
+                switchRow(L10n.t("switch.dev"), L10n.t("switch.devSub"), settings.developerMode, #selector(toggleDev),
+                          help: L10n.t("switch.devHelp")),
                 controlRow(L10n.t("switch.manual"), HotkeyControl()),
                 groupConvertRow()            // «переключать несколько слов» — сразу после ручного хоткея
             ]),
@@ -644,7 +668,8 @@ final class DetailVC: NSViewController {
             sectionTitle(L10n.t("is.title")),
             card([
                 switchRow(L10n.t("is.enable"), L10n.t("is.enableSub"),
-                          settings.instantSwitchEnabled, #selector(toggleInstantSwitch)),
+                          settings.instantSwitchEnabled, #selector(toggleInstantSwitch),
+                          help: L10n.t("is.enableHelp")),
                 controlRow(L10n.t("is.combo"), instantSwitchControl(),
                            enabled: settings.instantSwitchEnabled)
             ]),
@@ -656,7 +681,8 @@ final class DetailVC: NSViewController {
             sectionTitle(L10n.t("switch.trig")),
             card([
                 controlRow(L10n.t("switch.trigAfter"), trigKeys),
-                switchRow(L10n.t("switch.arrows"), nil, settings.arrowsCancel, #selector(toggleArrows))
+                switchRow(L10n.t("switch.arrows"), L10n.t("switch.arrowsSub"), settings.arrowsCancel, #selector(toggleArrows),
+                          help: L10n.t("switch.arrowsHelp"))
             ]),
             group(6),
             card([
@@ -1105,6 +1131,9 @@ final class DetailVC: NSViewController {
         }
         general.append(contentsOf: [
             group(6),
+            card([ switchRow(L10n.t("gen.silent"), L10n.t("gen.silentSub"),
+                             !settings.silentMode, #selector(toggleSoundsEnabled)) ]),
+            group(6),
             sectionTitle(L10n.t("gen.access")),
             card([ buttonRow([perm, mic]) ]),
             group(2),
@@ -1186,8 +1215,12 @@ final class DetailVC: NSViewController {
             sub(L10n.t("upd.sub")),
             group(8),
             card([
-                switchRow(L10n.t("upd.check2"), L10n.t("upd.check2Sub"), checkOn, #selector(toggleAutoCheck), enabled: !silent),
-                switchRow(L10n.t("upd.silent"), L10n.t("upd.silentSub"), silent, #selector(toggleSilentUpdate)),
+                switchRow(L10n.t("upd.check2"), L10n.t("upd.check2Sub"), checkOn, #selector(toggleAutoCheck), enabled: !silent,
+                          help: L10n.t("upd.check2Help")),
+                switchRow(L10n.t("upd.silent"), L10n.t("upd.silentSub"), silent, #selector(toggleSilentUpdate),
+                          help: L10n.t("upd.silentHelp")),
+                switchRow(L10n.t("upd.beta"), L10n.t("upd.betaSub"), settings.betaChannel, #selector(toggleBetaChannel),
+                          help: L10n.t("upd.betaHelp")),
                 buttonRow([checkBtn])
             ]),
             group(2),
@@ -1195,6 +1228,52 @@ final class DetailVC: NSViewController {
         ])
     }
 
+    /// Все ползунки громкости в одном месте: ключ запоминания → чтение/запись значения.
+    private var volumeSliders: [(key: String, get: () -> Double, set: (Double) -> Void)] {
+        [("switch",    { self.settings.soundVolume },          { self.settings.soundVolume = $0 }),
+         ("translate", { self.settings.translateSoundVolume }, { self.settings.translateSoundVolume = $0 }),
+         ("voice",     { self.settings.voiceSoundVolume },     { self.settings.voiceSoundVolume = $0 })]
+    }
+
+    /// Пользователь двигал ползунок, пока звук был выключён → его выбор важнее нашей памяти.
+    /// Зовётся из каждого обработчика громкости.
+    private func noteVolumeTouchedWhileMuted(_ key: String) {
+        guard settings.silentMode else { return }
+        settings.setMutedBackup(key, nil)
+    }
+
+    /// Тумблер «Звуки». Формулировка ПОЛОЖИТЕЛЬНАЯ намеренно (просьба автора 28.07): у строки
+    /// «Вообще без звуков» включение означало тишину, и рефлекс «выключил — молчит, включил —
+    /// слышно» не срабатывал. Теперь срабатывает буквально.
+    ///
+    /// Логика громкостей (его же): выключаем звук — уводим все ползунки в ноль, но ЗАПОМИНАЕМ, где
+    /// они стояли. Ползунки остаются активными: захочет — подвинет. Включаем обратно — те, которых
+    /// он не трогал, возвращаются на прежние места, а тронутые остаются как он выставил (их память
+    /// стёрлась в момент, когда он их двинул).
+    @objc private func toggleSoundsEnabled(_ s: NSSwitch) {
+        let soundsOn = (s.state == .on)
+        settings.silentMode = !soundsOn
+        if !soundsOn {
+            for v in volumeSliders {
+                settings.setMutedBackup(v.key, v.get())
+                v.set(0)
+            }
+        } else {
+            for v in volumeSliders {
+                let saved = settings.mutedBackup(v.key)
+                if saved >= 0 { v.set(saved) }      // не трогал — вернём как было
+                settings.setMutedBackup(v.key, nil) // трогал — оставляем его значение
+            }
+            // Слышно, что именно вернулось и на какой громкости. При ВЫКЛЮЧЕНИИ, разумеется, молчим.
+            if settings.soundEnabled, !settings.soundName.isEmpty {
+                let cue = settings.soundName == "keyboop"
+                    ? NSSound(data: CueSynth.switchData) : NSSound(named: settings.soundName)
+                Sounds.play(cue, volume: settings.soundVolume, as: "switch")
+            }
+        }
+        // Перерисовать раздел: ползунки должны показать новые значения (0 либо восстановленные).
+        DispatchQueue.main.async { [weak self] in self?.reshow() }
+    }
     @objc private func toggleAutoCheck(_ s: NSSwitch) { UpdaterController.shared.automaticChecks = (s.state == .on) }
     @objc private func toggleSilentUpdate(_ s: NSSwitch) {
         settings.silentAutoUpdate = (s.state == .on)
@@ -1212,6 +1291,13 @@ final class DetailVC: NSViewController {
         // Откладываем на такт: reshow() сносит contentStack вместе с ЭТИМ ЖЕ NSSwitch, а на macOS 26
         // это teardown его SwiftUI-графа изнутри собственного sendAction/анимации (см. RowMetrics).
         DispatchQueue.main.async { [weak self] in self?.reshow() }
+    }
+    @objc private func toggleBetaChannel(_ s: NSSwitch) {
+        settings.betaChannel = (s.state == .on)
+        // Смена канала — это изменение того, ЧТО мы ищем, а не когда. Без перезавода цикла новый
+        // выбор доехал бы только к следующей плановой проверке, а у агента в строке меню она может
+        // быть через сутки: человек включил бету и решил бы, что тумблер не работает.
+        UpdaterController.shared.noteChannelChanged()
     }
     @objc private func checkForUpdates() { UpdaterController.shared.checkNow() }
 
@@ -1386,6 +1472,7 @@ final class DetailVC: NSViewController {
 
     private func buildVoice() -> NSView {
         voiceModelStatus.removeAll()
+        voiceModelButton.removeAll()
         // Раздел собран по ТЕКУЩЕМУ состоянию диска → запоминаем сигнатуру, чтобы ближайший
         // revalidateVoiceIfShown (активация окна) не делал лишнюю пересборку впустую.
         lastModelsSignature = modelsSignature()
@@ -1410,39 +1497,74 @@ final class DetailVC: NSViewController {
         let histShow = NSButton(title: L10n.t("voice.showHistory"), target: self, action: #selector(showVoiceHistory))
         histShow.bezelStyle = .rounded; histShow.controlSize = .regular
 
+        // РАСКЛАДКА ПО СМЫСЛУ.
+        // Было: 12 разнородных строк в ОДНОЙ карточке. Микрофон стоял в пятой строке, а его же
+        // прогрев — в восьмой, через две чужие. Кнопка системной панели звука («Открыть настройки
+        // звука…») сидела прямо над нашим собственным «Звуком записи», и слово «звук» в двух
+        // разных смыслах читалось как дубль. Теперь четыре карточки с заголовками; ровно четыре,
+        // потому что коралловый акцент, встречающийся шесть раз на экране, перестаёт быть акцентом.
+        warmBox = nil; volumeBox = nil; autoEnterBox = nil; othersBox = nil; outputBox = nil   // ссылки прошлой сборки недействительны
         var views: [NSView] = [
             title(L10n.t("voice.title")),
             group(8),
+            // A. Самое главное: включить и чем вызывать. Без заголовка — идёт сразу под названием.
             card([
                 switchRow(L10n.t("voice.on"), nil, settings.voiceEnabled, #selector(toggleVoice)),
                 controlRow(L10n.t("voice.hotkey"), voiceHotkeyRow()),
-                controlRow(L10n.t("voice.mode"), voiceModeControl()),
+                controlRow(L10n.t("voice.mode"), voiceModeControl(), subtitle: L10n.t("voice.modeSub")),
                 controlRow(L10n.t("voice.lang"), voiceLangControl()),
-                controlRow(L10n.t("voice.mic"), micSelectorControl()),
-                buttonRow([soundSettingsLink()]),
-                switchRow(L10n.t("voice.escCancel"), nil, settings.escCancelsDictation, #selector(toggleEscCancel)),
-                switchRow(L10n.t("voice.warm"), L10n.t("voice.warmSub"), settings.voiceWarmWindow, #selector(toggleWarmWindow)),
-                controlRow(L10n.t("voice.warmDur"), warmDurationControl()),
-                switchRow(L10n.t("voice.sound"), nil, settings.voiceSoundEnabled, #selector(toggleVoiceSound)),
-                controlRow(L10n.t("voice.soundVol"), voiceVolumeSlider()),
-                switchRow(L10n.t("voice.streaming"), L10n.t("voice.streamingSub"), settings.voiceStreaming, #selector(toggleVoiceStreaming))
             ]),
+            group(6),
+            sectionTitle(L10n.t("voice.grpMic")),
+            group(8),
+            // B. Всё про устройство ввода в одном месте: выбор, прогрев и его окно, системный уровень.
+            card([
+                controlRow(L10n.t("voice.mic"), micSelectorControl()),
+                switchRow(L10n.t("voice.warm"), L10n.t("voice.warmSub"), settings.voiceWarmWindow, #selector(toggleWarmWindow),
+                          help: L10n.t("voice.warmHelp")),
+                makeWarmBox(),
+                buttonRow([soundSettingsLink()]),
+            ]),
+            group(6),
+            sectionTitle(L10n.t("voice.grpDictation")),
+            group(8),
+            // C. Поведение самой диктовки. Наш звук записи живёт ЗДЕСЬ, а системный уровень входа —
+            // в карточке микрофона: два разных смысла разведены по разным карточкам.
+            card([
+                switchRow(L10n.t("voice.escCancel"), L10n.t("voice.escCancelSub"), settings.escCancelsDictation, #selector(toggleEscCancel),
+                          help: L10n.t("voice.escHelp")),
+                switchRow(L10n.t("voice.streaming"), L10n.t("voice.streamingSub"), settings.voiceStreaming, #selector(toggleVoiceStreaming),
+                          help: L10n.t("voice.streamHelp")),
+                switchRow(L10n.t("voice.sound"), L10n.t("voice.soundSub"), settings.voiceSoundEnabled, #selector(toggleVoiceSound),
+                          help: L10n.t("voice.soundHelp")),
+                makeVolumeBox(),
+                // «Как вставлять текст» больше НЕ висит отдельной ссылкой между карточкой и
+                // заголовком — она была там сиротой, без карточки и без заголовка. Теперь это
+                // обычная строка внутри «Диктовки», а четыре правила выезжают под ней.
+                outputGroupRow(),
+                makeOutputBox(),
+            ]),
+        ]
+        views.append(contentsOf: [
             group(6),
             sectionTitle(L10n.t("voice.modelsTitle")),
             group(8),
             modelCard
-        ]
+        ])
         // «Другие модели» — СРАЗУ за двумя рекомендованными, до пояснений: это продолжение списка,
         // а не сноска к нему. Пояснительный текст уходит ниже — под раскрывшийся список.
         if !others.isEmpty {
+            // Без треугольника раскрытия (он автору разонравился) и БЕЗ reshow: список строится
+            // всегда и лежит в шторке, кнопка лишь меняет её isHidden. Отправитель клика при этом
+            // жив, поэтому обёртка в async здесь не нужна.
             let expanded = voiceOthersExpanded ?? false
+            let box = CollapsibleRow(row: card(others.map { unifiedModelRow($0.element, index: $0.offset) }),
+                                     separator: group(4), visible: expanded)
+            othersBox = box
             views.append(contentsOf: [group(4),
-                                      disclosureLink(L10n.t("voice.others"), expanded: expanded,
-                                                     action: #selector(toggleVoiceOthers))])
-            if expanded {
-                views.append(contentsOf: [group(4),
-                                          card(others.map { unifiedModelRow($0.element, index: $0.offset) })])
-            }
+                                      flatLink(String(format: L10n.t("voice.othersN"), others.count),
+                                               action: #selector(toggleVoiceOthers)),
+                                      box])
         }
         views.append(contentsOf: [
             group(6),
@@ -1455,9 +1577,13 @@ final class DetailVC: NSViewController {
         views.append(contentsOf: [hint(L10n.t("voice.intelNote")), group(6)])
         #endif
         views.append(contentsOf: [
+            group(6),
+            sectionTitle(L10n.t("voice.grpHistory")),
+            group(8),
             card([
                 switchRow(L10n.t("voice.history"), L10n.t("voice.historySub"), settings.voiceHistoryEnabled, #selector(toggleVoiceHistory)),
-                switchRow(L10n.t("hist.lock.toggle"), L10n.t("hist.lock.toggleSub"), HistoryGate.enabled, #selector(toggleHistoryLock)),
+                switchRow(L10n.t("hist.lock.toggle"), L10n.t("hist.lock.toggleSub"), HistoryGate.enabled, #selector(toggleHistoryLock),
+                          help: L10n.t("hist.lockHelp")),
                 controlRow(L10n.t("voice.retention"), historyRetentionControl()),
                 buttonRow([histShow, histClear])
             ]),
@@ -1502,14 +1628,98 @@ final class DetailVC: NSViewController {
                                  display: L10n.t("voice.pkName"), size: L10n.size("~465 MB"), note: L10n.t("voice.pkDesc")))
         #endif
         list += ModelDownloader.catalog.map {
-            UnifiedModel(engine: "whisper", id: $0.name, display: $0.name, size: L10n.size($0.size), note: L10n.t($0.note))
+            UnifiedModel(engine: "whisper", id: $0.name, display: Self.whisperDisplayName($0.name),
+                         size: L10n.size($0.size), note: L10n.t($0.note))
         }
         return list
     }
 
+    /// Человекочитаемое имя whisper-модели (вопрос автора 28.07: «Base, Small, Medium — непонятно,
+    /// что это Whisper»). В списке они стояли голыми идентификаторами рядом с названным по имени
+    /// Parakeet, и выглядело это как размеры чего-то безымянного, а не как отдельный движок.
+    static func whisperDisplayName(_ id: String) -> String {
+        let pretty = id.split(separator: "-").map { part -> String in
+            // «v3» оставляем как есть, остальное с заглавной: large-v3-turbo → Large v3 Turbo
+            part.first == "v" && part.dropFirst().allSatisfy(\.isNumber) ? String(part) : part.capitalized
+        }.joined(separator: " ")
+        return "Whisper " + pretty
+    }
+
+    /// Шторки раздела «Голос». Ссылки СЛАБЫЕ и обнуляются в начале сборки: иначе после законной
+    /// пересборки (смена языка, докачка модели, revalidateVoiceIfShown) они указывали бы на строки
+    /// прошлой сборки, и анимация молча перестала бы работать.
+    private weak var warmBox: CollapsibleRow?
+    private weak var volumeBox: CollapsibleRow?
+
+    private func makeWarmBox() -> CollapsibleRow {
+        let box = CollapsibleRow(row: subordinateRow(controlRow(L10n.t("voice.warmDur"), warmDurationControl())),
+                                 separator: hairline(), visible: settings.voiceWarmWindow)
+        warmBox = box
+        return box
+    }
+    private func makeVolumeBox() -> CollapsibleRow {
+        let box = CollapsibleRow(row: subordinateRow(controlRow(L10n.t("voice.soundVol"), voiceVolumeSlider())),
+                                 separator: hairline(), visible: settings.voiceSoundEnabled)
+        volumeBox = box
+        return box
+    }
+    /// ⚠️ ЗДЕСЬ БЫЛ ЛЕВЫЙ ОТСТУП У ПОДЧИНЁННЫХ СТРОК — УБРАН 29.07, НЕ ВОЗВРАЩАТЬ БЕЗ РАЗБОРА.
+    /// Идея была пометить отступом строки-параметры («Громкость» под «Звуком записи», «Окно
+    /// прогрева» под «Мгновенным стартом»), чтобы они читались как подчинённые. На практике автор
+    /// увидел это как случайную поломку выравнивания: «почему надпись чуть правее съехала, как будто
+    /// какой-то отступ появился». Приём, который приходится объяснять, свою работу не делает.
+    /// Связь и так очевидна: подчинённая строка появляется и исчезает ВМЕСТЕ с родительским
+    /// тумблером, и стоит вплотную под ним.
+    private func subordinateRow(_ row: NSView) -> NSView { row }
+
+    private weak var outputBox: CollapsibleRow?
+    /// Строка «Как вставлять текст»: заголовок + сводка текущего состояния + ссылка-раскрытие.
+    /// Сводка нужна, чтобы человеку не приходилось раскрывать группу ради ответа «а что там сейчас».
+    private func outputGroupRow() -> NSView {
+        var parts: [String] = []
+        if settings.voiceNoCapital { parts.append(L10n.t("voice.sumNoCap")) }
+        if settings.voiceNoFinalPeriod { parts.append(L10n.t("voice.sumNoDot")) }
+        if settings.voiceAutoEnter { parts.append(L10n.t("voice.sumEnter")) }
+        if !settings.voiceTrailingSpace { parts.append(L10n.t("voice.sumNoSpace")) }
+        let summary = parts.isEmpty ? L10n.t("voice.sumDefault") : parts.joined(separator: " · ")
+        let link = NSButton(title: "", target: self, action: #selector(toggleVoiceOutputGroup))
+        link.isBordered = false; link.setButtonType(.momentaryChange)
+        link.attributedTitle = NSAttributedString(
+            string: L10n.t("voice.outputOpen"),
+            attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium), .foregroundColor: DS.coral])
+        link.setContentHuggingPriority(.required, for: .horizontal)
+        return settingRow(L10n.t("voice.outputGroup"), summary, trailing: link,
+                          help: L10n.t("voice.outputHelp"))
+    }
+    private func makeOutputBox() -> CollapsibleRow {
+        let inner = NSStackView(views: [
+            subordinateRow(switchRow(L10n.t("voice.noCapital"), L10n.t("voice.noCapitalSub"), settings.voiceNoCapital, #selector(toggleVoiceNoCapital))),
+            hairline(),
+            subordinateRow(switchRow(L10n.t("voice.noPeriod"), L10n.t("voice.noPeriodSub"), settings.voiceNoFinalPeriod, #selector(toggleVoiceNoPeriod))),
+            hairline(),
+            subordinateRow(switchRow(L10n.t("voice.autoEnter"), L10n.t("voice.autoEnterSub"), settings.voiceAutoEnter, #selector(toggleVoiceAutoEnter))),
+            makeAutoEnterBox(),
+            hairline(),
+            subordinateRow(switchRow(L10n.t("voice.trailSpace"), L10n.t("voice.trailSpaceSub"), settings.voiceTrailingSpace, #selector(toggleVoiceTrailSpace))),
+        ])
+        inner.orientation = .vertical; inner.alignment = .width; inner.spacing = 0
+        let box = CollapsibleRow(row: inner, separator: hairline(), visible: voiceOutputExpanded ?? false)
+        outputBox = box
+        return box
+    }
+
+    private var voiceOutputExpanded: Bool?
+    @objc private func toggleVoiceOutputGroup() {
+        let on = !(voiceOutputExpanded ?? false)
+        voiceOutputExpanded = on
+        outputBox?.setVisible(on, in: contentStack)
+    }
+
+    private weak var othersBox: CollapsibleRow?
     @objc private func toggleVoiceOthers() {
-        voiceOthersExpanded = !(voiceOthersExpanded ?? false)
-        reshow()
+        let on = !(voiceOthersExpanded ?? false)
+        voiceOthersExpanded = on
+        othersBox?.setVisible(on, in: contentStack)
     }
 
     /// Активна ли модель (движок + конкретная whisper-модель).
@@ -1527,7 +1737,9 @@ final class DetailVC: NSViewController {
             settings.voiceEngine = "whisper"
             settings.voiceModel = m.id
         }
-        reshow()
+        // Кнопка «Использовать» живёт в ПЕРЕСОБИРАЕМОЙ строке — снос из её же action это тот самый
+        // класс, который на macOS 26 роняет приложение (см. toggleSilentUpdate). Откладываем на такт.
+        DispatchQueue.main.async { [weak self] in self?.reshow() }
     }
 
     /// Строка модели в едином списке: имя + (размер · статус) слева; справа — Скачать / Использовать
@@ -1561,6 +1773,7 @@ final class DetailVC: NSViewController {
             dl.bezelStyle = .rounded; dl.controlSize = .regular; dl.tag = index
             dl.setContentCompressionResistancePriority(.required, for: .horizontal)
             if downloadingModelId == m.id { dl.isEnabled = false; dl.title = "\(Int(downloadProgress * 100))%" }
+            voiceModelButton[m.id] = dl
             right = [dl]
         } else {
             if !activeNow {
@@ -1694,9 +1907,10 @@ final class DetailVC: NSViewController {
         return s
     }
     @objc private func soundVolChanged(_ s: NSSlider) {
+        noteVolumeTouchedWhileMuted("switch")
         settings.soundVolume = s.doubleValue
         if settings.soundEnabled, !settings.soundName.isEmpty {   // короткое превью на новой громкости
-            let snd = NSSound(named: settings.soundName); snd?.volume = Float(settings.soundVolume); snd?.play()
+            Sounds.play(NSSound(named: settings.soundName), volume: settings.soundVolume)
         }
     }
 
@@ -1707,7 +1921,49 @@ final class DetailVC: NSViewController {
         s.widthAnchor.constraint(equalToConstant: 130).isActive = true
         return s
     }
-    @objc private func toggleVoiceSound(_ s: NSSwitch) { settings.voiceSoundEnabled = (s.state == .on) }
+    @objc private func toggleVoiceNoCapital(_ s: NSSwitch) { settings.voiceNoCapital = (s.state == .on) }
+    @objc private func toggleVoiceNoPeriod(_ s: NSSwitch) { settings.voiceNoFinalPeriod = (s.state == .on) }
+    /// Чем «отправлять» после диктовки. Порядок — по распространённости: Enter (Telegram, iMessage,
+    /// большинство чатов), ⌘Enter (Gmail, Linear, Slack в режиме «Enter = перенос строки»), ⇧Enter и
+    /// ⌃Enter встречаются реже, но у людей просили и их.
+    private static let autoEnterCombos: [(String, UInt64)] = [
+        ("Enter", 0),
+        ("⌘ Enter", CGEventFlags.maskCommand.rawValue),
+        ("⇧ Enter", CGEventFlags.maskShift.rawValue),
+        ("⌃ Enter", CGEventFlags.maskControl.rawValue),
+    ]
+    private func autoEnterCombo() -> NSView {
+        let pop = NSPopUpButton(frame: .zero, pullsDown: false)
+        pop.addItems(withTitles: Self.autoEnterCombos.map { $0.0 })
+        let cur = settings.voiceAutoEnterMods
+        pop.selectItem(at: Self.autoEnterCombos.firstIndex { $0.1 == cur } ?? 0)
+        pop.target = self; pop.action = #selector(autoEnterComboChanged(_:))
+        return pop
+    }
+    @objc private func autoEnterComboChanged(_ p: NSPopUpButton) {
+        settings.voiceAutoEnterMods = Self.autoEnterCombos[p.indexOfSelectedItem].1
+    }
+
+    private weak var autoEnterBox: CollapsibleRow?
+    private func makeAutoEnterBox() -> CollapsibleRow {
+        let box = CollapsibleRow(row: subordinateRow(controlRow(L10n.t("voice.autoEnterKey"), autoEnterCombo())),
+                                 separator: hairline(), visible: settings.voiceAutoEnter)
+        autoEnterBox = box
+        return box
+    }
+
+    @objc private func toggleVoiceAutoEnter(_ s: NSSwitch) {
+        let on = (s.state == .on)
+        settings.voiceAutoEnter = on
+        autoEnterBox?.setVisible(on, in: contentStack)
+    }
+    @objc private func toggleVoiceTrailSpace(_ s: NSSwitch) { settings.voiceTrailingSpace = (s.state == .on) }
+    @objc private func toggleVoiceSound(_ s: NSSwitch) {
+        let on = (s.state == .on)
+        settings.voiceSoundEnabled = on
+        // Никакого reshow: анимируем ДРУГУЮ вью, отправитель этого action остаётся жив.
+        volumeBox?.setVisible(on, in: contentStack)
+    }
 
     private func translateVolumeSlider() -> NSView {
         let s = NSSlider(value: settings.translateSoundVolume, minValue: 0, maxValue: 1,
@@ -1719,20 +1975,24 @@ final class DetailVC: NSViewController {
     @objc private func toggleTranslateSound(_ s: NSSwitch) { settings.translateSoundEnabled = (s.state == .on) }
     private var translateVolPreview: NSSound?   // удерживаем превью, иначе оборвётся
     @objc private func translateVolChanged(_ s: NSSlider) {
+        noteVolumeTouchedWhileMuted("translate")
         settings.translateSoundVolume = s.doubleValue
         guard settings.translateSoundEnabled else { return }   // превью на новой громкости
         let vol = Float(settings.translateSoundVolume)
         let name = settings.translateSoundName
         if name == "keyboop" {
             translateVolPreview?.stop()
-            translateVolPreview = NSSound(data: CueSynth.translateData)
-            translateVolPreview?.volume = vol; translateVolPreview?.play()
+            translateVolPreview = Sounds.play(NSSound(data: CueSynth.translateData), volume: Double(vol))
         } else if !name.isEmpty {
-            let snd = NSSound(named: name); snd?.volume = vol; snd?.play()
+            Sounds.play(NSSound(named: name), volume: Double(vol))
         }
     }
     @objc private func toggleEscCancel(_ s: NSSwitch) { settings.escCancelsDictation = (s.state == .on) }
-    @objc private func toggleWarmWindow(_ s: NSSwitch) { settings.voiceWarmWindow = (s.state == .on) }
+    @objc private func toggleWarmWindow(_ s: NSSwitch) {
+        let on = (s.state == .on)
+        settings.voiceWarmWindow = on
+        warmBox?.setVisible(on, in: contentStack)
+    }
     @objc private func toggleVoiceStreaming(_ s: NSSwitch) {
         let on = (s.state == .on)
         settings.voiceStreaming = on
@@ -1760,12 +2020,11 @@ final class DetailVC: NSViewController {
     }
     private var cuePreview: NSSound?   // удерживаем превью, иначе звук оборвётся
     @objc private func voiceVolChanged(_ s: NSSlider) {
+        noteVolumeTouchedWhileMuted("voice")
         settings.voiceSoundVolume = s.doubleValue
         if settings.voiceSoundEnabled {   // превью звука старта на новой громкости
             cuePreview?.stop()
-            cuePreview = NSSound(data: CueSynth.startData)
-            cuePreview?.volume = Float(settings.voiceSoundVolume)
-            cuePreview?.play()
+            cuePreview = Sounds.play(NSSound(data: CueSynth.startData), volume: settings.voiceSoundVolume)
         }
     }
 
@@ -1795,7 +2054,9 @@ final class DetailVC: NSViewController {
         v.orientation = .vertical; v.alignment = .width; v.spacing = 0
         v.translatesAutoresizingMaskIntoConstraints = false
         for (i, r) in rows.enumerated() {
-            if i > 0 { v.addArrangedSubview(hairline()) }
+            // Шторка несёт разделитель внутри себя (см. CollapsibleRow): если добавить ещё и здесь,
+            // при схлопывании в карточке повиснет лишняя линия.
+            if i > 0, !(r is CollapsibleRow) { v.addArrangedSubview(hairline()) }
             v.addArrangedSubview(r)
         }
         c.addSubview(v)
@@ -1822,15 +2083,17 @@ final class DetailVC: NSViewController {
         return wrap
     }
     /// Строка-переключатель: заголовок (+подзаголовок) слева, NSSwitch справа (on = coral через accent).
-    private func switchRow(_ title: String, _ subtitle: String?, _ on: Bool, _ action: Selector) -> NSView {
+    private func switchRow(_ title: String, _ subtitle: String?, _ on: Bool, _ action: Selector,
+                           help: String? = nil) -> NSView {
         let sw = NSSwitch(); sw.state = on ? .on : .off; sw.target = self; sw.action = action
-        return settingRow(title, subtitle, trailing: sw)
+        return settingRow(title, subtitle, trailing: sw, help: help)
     }
     /// Вариант switchRow с возможностью приглушить (серый + недоступен) — для зависимых настроек.
-    private func switchRow(_ title: String, _ subtitle: String?, _ on: Bool, _ action: Selector, enabled: Bool) -> NSView {
+    private func switchRow(_ title: String, _ subtitle: String?, _ on: Bool, _ action: Selector,
+                           enabled: Bool, help: String? = nil) -> NSView {
         let sw = NSSwitch(); sw.state = on ? .on : .off; sw.target = self; sw.action = action
         sw.isEnabled = enabled
-        let row = settingRow(title, subtitle, trailing: sw)
+        let row = settingRow(title, subtitle, trailing: sw, help: help)
         row.alphaValue = enabled ? 1.0 : 0.5
         return row
     }
@@ -1845,13 +2108,14 @@ final class DetailVC: NSViewController {
                          enabled: !autoOn)
     }
     /// Строка с произвольным контролом справа (popup / segmented / hotkey).
-    private func controlRow(_ title: String, _ control: NSView, enabled: Bool = true) -> NSView {
+    private func controlRow(_ title: String, _ control: NSView, enabled: Bool = true,
+                            subtitle: String? = nil, help: String? = nil) -> NSView {
         control.setContentHuggingPriority(.required, for: .horizontal)
         control.setContentCompressionResistancePriority(.required, for: .horizontal)
         // Выключенная функция не должна предлагать настраивать себя (нелогично и путает): гасим
         // контрол вместе со вложенными — правые контролы часто контейнеры из нескольких кнопок.
         if !enabled { Self.setEnabledDeep(control, false) }
-        let row = settingRow(title, nil, trailing: control)
+        let row = settingRow(title, subtitle, trailing: control, help: help)
         if !enabled { row.alphaValue = 0.45 }
         return row
     }
@@ -1881,10 +2145,14 @@ final class DetailVC: NSViewController {
         /// где текст и так влезал. Раньше здесь был баг: у NSSlider ширина -1 → ветка `tw > 1`
         /// молча подставляла ширину переключателя строке громкости.
         static let wideControl: CGFloat = 200
+        /// Слот кнопки-подсказки «i». Есть у КАЖДОЙ строки, иначе правый край рассыпается между
+        /// строками со справкой и без. 22pt — минимум HIG для цели клика: меньше означает, что
+        /// промах мимо кружка ПЕРЕКЛЮЧИТ соседний тумблер.
+        static let helpSlot: CGFloat = 22
     }
 
     /// Доступная ширина текстовой колонки строки = ширина блока − отступы − контрол справа − зазор.
-    /// contentWidth 480, insets 14+14, spacing 10 → под переключателем ≈388pt.
+    /// contentWidth 600, insets 14+14, spacing 10 → под переключателем ≈508pt (было 388 при 480).
     /// tooltip ставим ТОЛЬКО когда текст в неё не влезает.
     private func availTextWidth(trailing: NSView) -> CGFloat {
         let trailingW = (trailing is NSSwitch) ? RowMetrics.nsSwitch : RowMetrics.wideControl
@@ -1893,8 +2161,9 @@ final class DetailVC: NSViewController {
     private func truncates(_ text: String, font: NSFont, within avail: CGFloat) -> Bool {
         (text as NSString).size(withAttributes: [.font: font]).width > avail
     }
-    private func settingRow(_ title: String, _ subtitle: String?, trailing: NSView) -> NSView {
-        let avail = availTextWidth(trailing: trailing)
+    private func settingRow(_ title: String, _ subtitle: String?, trailing: NSView,
+                            help: String? = nil) -> NSView {
+        let avail = availTextWidth(trailing: trailing) - (help == nil ? 0 : RowMetrics.helpSlot + 10)
         let l = NSTextField(labelWithString: title)
         l.font = .systemFont(ofSize: 13); l.textColor = .labelColor
         l.lineBreakMode = .byTruncatingTail
@@ -1908,7 +2177,14 @@ final class DetailVC: NSViewController {
             let s = NSTextField(labelWithString: sub)
             s.font = .systemFont(ofSize: 11); s.textColor = .secondaryLabelColor
             s.lineBreakMode = .byTruncatingTail
-            if truncates(sub, font: s.font!, within: avail) { s.toolTip = sub }
+            // ⚠️ Подсказку в tooltip кладём ВСЕГДА (репорт #41 на 0.2.70: «под некоторыми пунктами
+            // есть описание, но оно не отображается полностью… наводя курсор, можно было бы
+            // прочитать полностью, хотелось бы иметь возможность прочитать, что там хотел сказать
+            // автор»). Раньше tooltip ставился только когда `truncates()` СЧИТАЛ, что текст не
+            // влезает, а доступная ширина там оценочная: стоило оценке ошибиться в большую сторону,
+            // и текст на экране обрезался, а tooltip не появлялся — то есть прочитать описание было
+            // нельзя вообще никак. Лишний tooltip на короткой строке безвреден, недостающий — нет.
+            s.toolTip = sub
             s.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             let vs = NSStackView(views: [l, s]); vs.orientation = .vertical; vs.alignment = .leading; vs.spacing = 1
             textCol = vs
@@ -1918,7 +2194,17 @@ final class DetailVC: NSViewController {
         let spacer = NSView(); spacer.translatesAutoresizingMaskIntoConstraints = false
         spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let row = NSStackView(views: [textCol, spacer, trailing])
+        // ⚠️ ПОДСКАЗКА СЛЕВА ОТ КОНТРОЛА И ТОЛЬКО ТАМ, ГДЕ ОНА ЕСТЬ (правка 29.07).
+        // Сначала я сделал слот фиксированной ширины в КАЖДОЙ строке — чтобы кружки встали в одну
+        // колонку. Вышло хуже: пустые слоты сдвинули ВСЕ тумблеры влево, и ровный правый край,
+        // который был раньше, развалился. автор поймал это сразу: «справа от тумблера, там, где их
+        // нет, пустое место, отстойно выглядит».
+        // Правильно наоборот: кружок вставляем ПЕРЕД контролом и только при наличии текста. Тогда
+        // правый край контролов у всех строк одинаковый, а кружок просто стоит рядом со своим.
+        var items: [NSView] = [textCol, spacer]
+        if let help { items.append(HelpButton(text: help, title: title)) }
+        items.append(trailing)
+        let row = NSStackView(views: items)
         row.orientation = .horizontal; row.alignment = .centerY; row.spacing = 10
         row.edgeInsets = NSEdgeInsets(top: 9, left: 14, bottom: 9, right: 14)
         row.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
@@ -2138,6 +2424,24 @@ final class DetailVC: NSViewController {
     /// Ссылка-раскрывашка вместо кнопки. Кнопка читалась как действие («скачать», «применить») и
     /// массивной плашкой перетягивала внимание с двух рекомендованных моделей, хотя всё, что она
     /// делает — «покажи остальные». Правка 25.07.
+    /// Коралловая плоская подпись без треугольника: сама говорит, что произойдёт по клику.
+    /// Пришла на смену disclosureLink там, где раскрытие анимируется шторкой (автор 28.07:
+    /// «эти раскрывающиеся списки я придумал когда-то, но они мне уже не особо нравятся»).
+    private func flatLink(_ text: String, action: Selector) -> NSView {
+        let b = NSButton(title: "", target: self, action: action)
+        b.isBordered = false
+        b.setButtonType(.momentaryChange)
+        b.attributedTitle = NSAttributedString(
+            string: text,
+            attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium),
+                         .foregroundColor: DS.coral])
+        b.setContentHuggingPriority(.required, for: .horizontal)
+        let row = NSStackView(views: [b, NSView()])
+        row.orientation = .horizontal; row.spacing = 0; row.alignment = .centerY
+        row.edgeInsets = NSEdgeInsets(top: 0, left: 2, bottom: 0, right: 0)
+        return row
+    }
+
     private func disclosureLink(_ text: String, expanded: Bool, action: Selector) -> NSView {
         let b = NSButton(title: "", target: self, action: action)
         b.isBordered = false
@@ -2188,7 +2492,12 @@ final class DetailVC: NSViewController {
             self.voiceModelStatus[id]?.toolTip = String(format: L10n.t("voice.dlStalledTip"), pct)
             kbLog("модель \(id): скачивание застряло на \(pct)% (без прогресса \(Int(quiet))с) — вероятно, сеть до Hugging Face")
         }
-        let onProgress: (Double) -> Void = { [weak self, weak s] p in
+        // ⚠️ Кнопку берём ИЗ СЛОВАРЯ, а не по захваченной ссылке (репорт #39 на 0.2.70: «проценты
+        // под моделью растут, а справа стоят на месте; переключишь раздел и вернёшься — актуальные»).
+        // Раньше здесь висел `[weak s]` на конкретную кнопку: при любой перестройке раздела кнопка
+        // пересоздаётся, слабая ссылка обнуляется, и правая часть замирает навсегда. Метка слева
+        // жила в словаре по id и потому продолжала обновляться — отсюда и расхождение цифр.
+        let onProgress: (Double) -> Void = { [weak self] p in
             guard let self else { return }
             if p != self.downloadProgress { self.dlLastChangeAt = Date() }
             let dec = Int(p * 10)
@@ -2199,7 +2508,7 @@ final class DetailVC: NSViewController {
             self.downloadProgress = p
             self.voiceModelStatus[m.id]?.stringValue = "\(Int(p * 100)) %"
             self.voiceModelStatus[m.id]?.toolTip = nil
-            s?.title = "\(Int(p * 100))%"
+            self.voiceModelButton[m.id]?.title = "\(Int(p * 100))%"
         }
         let onDone: (Bool) -> Void = { [weak self] ok in
             self?.dlStallTimer?.invalidate(); self?.dlStallTimer = nil
@@ -2265,10 +2574,177 @@ final class CardView: NSView {
         layer?.cornerRadius = 11
         layer?.cornerCurve = .continuous
         layer?.borderWidth = 1
+        // ⚠️ В СВЕТЛОЙ ТЕМЕ У НАС БЫЛО ИНВЕРТИРОВАНО ОТНОСИТЕЛЬНО macOS (замечание автора 29.07 со
+        // скриншотом системных настроек). У системы: страница белая, группы чуть СЕРЕЕ. У нас было
+        // наоборот — серая страница и белые карточки. В тёмной теме наша схема с системой совпадала,
+        // поэтому годами и не бросалось в глаза: баг жил ровно в одной теме.
+        // Берём НЕ фиксированный серый, а полупрозрачный чёрный поверх белой страницы: так оттенок
+        // следует за «Увеличить контраст» и прочими настройками универсального доступа.
         layer?.backgroundColor = (dark ? NSColor.white.withAlphaComponent(0.075)
-                                        : NSColor.white.withAlphaComponent(0.85)).cgColor
+                                        : NSColor.black.withAlphaComponent(0.035)).cgColor
         layer?.borderColor = (dark ? NSColor.white.withAlphaComponent(0.10)
-                                    : NSColor.black.withAlphaComponent(0.07)).cgColor
+                                    : NSColor.black.withAlphaComponent(0.06)).cgColor
+    }
+}
+
+/// Подложка страницы настроек: в тёмной теме — живое размытие за окном, в светлой — белый лист.
+///
+/// Зачем разное (правка 29.07): у macOS в СВЕТЛОЙ теме страница белая, а группы чуть серее. У нас
+/// было наоборот, потому что `.underPageBackground` под .aqua даёт серый, а карточки мы рисовали
+/// белыми. В тёмной теме материал выглядит правильно, поэтому его и оставляем — меняем только
+/// светлую ветку.
+final class ThemedBackgroundView: NSView {
+    private let darkView: NSView
+    private let lightView: NSView
+    init(dark: NSView, light: NSView) {
+        darkView = dark; lightView = light
+        super.init(frame: .zero)
+        for v in [dark, light] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(v)
+            NSLayoutConstraint.activate([
+                v.topAnchor.constraint(equalTo: topAnchor),
+                v.bottomAnchor.constraint(equalTo: bottomAnchor),
+                v.leadingAnchor.constraint(equalTo: leadingAnchor),
+                v.trailingAnchor.constraint(equalTo: trailingAnchor),
+            ])
+        }
+        light.wantsLayer = true
+        apply()
+    }
+    required init?(coder: NSCoder) { fatalError("no xib") }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); apply() }
+    private func apply() {
+        let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        darkView.isHidden = !dark
+        lightView.isHidden = dark
+        lightView.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+    }
+}
+
+/// Кружок «i» в строке настройки: по клику показывает полное описание.
+///
+/// Зачем (репорт #41 и просьба автора 29.07): подписи под строками не влезают по ширине даже после
+/// расширения окна до 600 — замерено рендером, четыре подписи всё равно обрезаются. Ширина лечит
+/// заголовки и воздух, а описания лечит только сокращённая подпись плюс полный текст по клику.
+///
+/// Показывается СТРОГО по наличию текста справки, а НЕ по оценке «влезает ли подпись»: эта оценка
+/// уже один раз соврала (из-за неё 28.07 tooltip'ы сделали безусловными), и вешать на неё видимую
+/// кнопку нельзя.
+///
+/// Поповер держим СИЛЬНОЙ ссылкой: без неё он умирает сразу после показа (прецедент в
+/// VoiceHistoryWindow.showOpacitySlider).
+final class HelpButton: NSButton {
+    private let helpText: String
+    private let rowTitle: String
+    private var popover: NSPopover?
+
+    init(text: String, title: String) {
+        helpText = text; rowTitle = title
+        super.init(frame: .zero)
+        translatesAutoresizingMaskIntoConstraints = false
+        isBordered = false
+        setButtonType(.momentaryChange)
+        image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: title)?
+            .withSymbolConfiguration(.init(pointSize: 13, weight: .regular))
+        contentTintColor = .tertiaryLabelColor
+        imagePosition = .imageOnly
+        target = self
+        action = #selector(show)
+        // ⚠️ tooltip у кружка НЕ ставим (автор 29.07). Он дублировал бы поповер и вылезал при
+        // случайном проходе мышью. Подсказка на «i» — строго по КЛИКУ. Tooltip остаётся у самой
+        // ПОДПИСИ строки (там он показывает обрезанный хвост при наведении) — это разные роли.
+        widthAnchor.constraint(equalToConstant: 22).isActive = true
+        heightAnchor.constraint(equalToConstant: 22).isActive = true
+    }
+    required init?(coder: NSCoder) { fatalError("no xib") }
+
+    @objc private func show() {
+        popover?.close()
+        let t = NSTextField(labelWithString: rowTitle)
+        t.font = .systemFont(ofSize: 13, weight: .semibold)
+        let body = NSTextField(wrappingLabelWithString: helpText)
+        body.font = .systemFont(ofSize: 12)
+        body.textColor = .secondaryLabelColor
+        body.preferredMaxLayoutWidth = 300
+        let stack = NSStackView(views: [t, body])
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 6
+        stack.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        let host = NSView()
+        host.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: host.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+            host.widthAnchor.constraint(equalToConstant: 328),
+        ])
+        let vc = NSViewController()
+        vc.view = host
+        let p = NSPopover()
+        p.contentViewController = vc
+        p.behavior = .transient
+        p.show(relativeTo: bounds, of: self, preferredEdge: .maxY)
+        popover = p
+    }
+}
+
+/// Строка-«шторка»: подчинённый параметр, который выезжает из-под своего тумблера.
+///
+/// Зачем именно так: была просьба, чтобы
+/// дополнительные пункты «плавно разъезжались, выезжали вниз», и чтобы исчезли треугольники
+/// раскрытия. Ключевое ограничение — `reshow()` пересобирает раздел и сносит тот самый тумблер, из
+/// чьего action всё началось; анимировать поверх пересборки невозможно в принципе. Поэтому шторка
+/// строится ВСЕГДА, а меняется у неё только `isHidden` — отправитель остаётся жив, пересборки нет.
+///
+/// Скрытый arranged-subview исключается из раскладки NSStackView, поэтому высота карточки и
+/// `fittingSize` (её меряет tallestSectionHeight) остаются честными.
+///
+/// Свой разделитель несёт ВНУТРИ себя: иначе при схлопывании в карточке повисала бы лишняя линия.
+final class CollapsibleRow: NSStackView {
+    init(row: NSView, separator: NSView, visible: Bool) {
+        super.init(frame: .zero)
+        orientation = .vertical
+        alignment = .width
+        spacing = 0
+        translatesAutoresizingMaskIntoConstraints = false
+        addArrangedSubview(separator)
+        addArrangedSubview(row)
+        isHidden = !visible
+    }
+    required init?(coder: NSCoder) { fatalError("no xib") }
+
+    /// Показать/спрятать.
+    ///
+    /// ⚠️ НЕ `animator().isHidden` (правка 29.07 по замечанию автора: «откуда-то они сейчас издалека
+    /// очень вылетают»). Появляющаяся вью до первой раскладки имеет нулевой фрейм в левом верхнем
+    /// углу, и анимация честно везёт её ОТТУДА на место — через пол-окна. Выглядит как влёт издалека.
+    ///
+    /// Правильный порядок: сначала показать БЕЗ анимации (вью встаёт на своё место мгновенно, но
+    /// прозрачной), и только потом проявить. При скрытии наоборот: сперва погасить, спрятать в
+    /// завершении. Двигается при этом только то, что ниже по стеку, и ровно на высоту строки.
+    func setVisible(_ on: Bool, in container: NSView?) {
+        if on {
+            alphaValue = 0
+            isHidden = false
+            container?.layoutSubtreeIfNeeded()   // встали на место БЕЗ анимации
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.18
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                self.animator().alphaValue = 1
+            }
+        } else {
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.12
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+                self.animator().alphaValue = 0
+            }, completionHandler: { [weak self, weak container] in
+                self?.isHidden = true
+                self?.alphaValue = 1          // вернуть, иначе следующий показ будет невидимым
+                container?.layoutSubtreeIfNeeded()
+            })
+        }
     }
 }
 

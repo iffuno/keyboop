@@ -70,9 +70,7 @@ enum CueSynth {
     private static var meowSound: NSSound?   // удерживаем, иначе оборвётся
     static func playMeow() {
         meowSound?.stop()
-        meowSound = NSSound(data: meowData)
-        meowSound?.volume = 0.7
-        meowSound?.play()
+        meowSound = Sounds.play(NSSound(data: meowData), volume: 0.7)
     }
 
     /// Синтез «мяу»: фундамент скользит вверх-вниз (ме-оу), 4 гармоники + вибрато,

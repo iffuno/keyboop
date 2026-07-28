@@ -174,7 +174,7 @@ final class VoiceController {
             defer { starting = false }
             // Доступ к микрофону — ПЕРВЫМ (даже без модели), чтобы новый юзер увидел системный промпт.
             guard await AudioRecorder.requestAccess() else {
-                kbLog("voice: нет доступа к микрофону"); NSSound.beep(); VoiceGate.set(false); return
+                kbLog("voice: нет доступа к микрофону"); Sounds.beep(); VoiceGate.set(false); return
             }
             if abortStart { kbLog("voice: старт прерван (отпустили до начала записи)"); VoiceGate.set(false); setState(.idle); return }
             guard hasUsableModel else {
@@ -331,9 +331,13 @@ final class VoiceController {
     private let stopSound  = NSSound(data: CueSynth.stopData)
     private let failSound  = NSSound(data: CueSynth.failData)
     private func playCue(_ sound: NSSound?) {
-        guard settings.voiceSoundEnabled, let sound else { return }
+        guard settings.voiceSoundEnabled, !Sounds.allMuted, let sound else { return }
+        // Ноль на ползунке = не играть вовсе (задача #60): иначе ползунок врёт, а звук «есть,
+        // но не слышно» ещё и будит аудиоустройство.
+        let vol = max(0, min(1, settings.voiceSoundVolume))
+        guard vol > 0 else { return }
         sound.stop()   // на случай быстрого повторного вызова — переиграть с начала
-        sound.volume = Float(max(0, min(1, settings.voiceSoundVolume)))
+        sound.volume = Float(vol)
         sound.play()
     }
 
@@ -468,6 +472,30 @@ final class VoiceController {
         }
     }
 
+    /// Опции вывода (#41). Порядок важен: сначала убираем точку, потом регистр — иначе строка из
+    /// одной буквы с точкой («А.») после снятия точки осталась бы заглавной.
+    ///
+    /// Точку снимаем ТОЛЬКО одиночную в самом конце и только её: «...» и «?»/«!» не трогаем, они
+    /// несут смысл, а многоточие вдобавок часто ставит сама модель на оборванной фразе.
+    /// Регистр опускаем ТОЛЬКО у первой буквы и только если вторая — строчная: иначе аббревиатуры
+    /// («МФЦ», «ГОСТ») превратились бы в «мФЦ». Это тот случай, где «умное» правило без оговорки
+    /// портит редкий, но заметный ввод.
+    static func applyOutputOptions(_ text: String) -> String {
+        let s = AppSettings.shared
+        var out = text
+        if s.voiceNoFinalPeriod, out.hasSuffix("."), !out.hasSuffix("..") {
+            out.removeLast()
+            out = String(out.reversed().drop { $0 == " " }.reversed())
+        }
+        if s.voiceNoCapital, let first = out.first, first.isUppercase {
+            let second = out.dropFirst().first
+            if second == nil || !(second!.isUppercase) {
+                out = first.lowercased() + out.dropFirst()
+            }
+        }
+        return out
+    }
+
     private func deliver(_ text: String) {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else {
@@ -494,7 +522,14 @@ final class VoiceController {
         // Пробел в конце — чтобы следующая фраза не слиплась с этой (предложил пользователь).
         // insert — async на serial-очереди; notification шлём в completion (после постинга), чтобы Engine
         // очистил буфер не раньше времени: надиктованный текст не должен попасть в групповую конвертацию (G3).
-        TextReplacer.insert(clean + " ") {
+        // Авто-Enter гасит хвостовой пробел: « текст » + Enter отправляет сообщение с пробелом на
+        // конце, и это видно получателю. Настройку пробела при этом НЕ трогаем — человек включит
+        // авто-Enter, потом выключит, и его выбор про пробел должен вернуться (тот же принцип, что
+        // с громкостями при «Звуки выкл»).
+        let autoEnter = settings.voiceAutoEnter
+        let out = Self.applyOutputOptions(clean) + ((settings.voiceTrailingSpace && !autoEnter) ? " " : "")
+        TextReplacer.insert(out, thenReturn: autoEnter,
+                            returnMods: CGEventFlags(rawValue: settings.voiceAutoEnterMods)) {
             NotificationCenter.default.post(name: .keyboopVoiceInserted, object: nil)
         }
         VoiceHistory.shared.add(clean)

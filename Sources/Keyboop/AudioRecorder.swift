@@ -122,7 +122,20 @@ final class AudioRecorder: NSObject {
         // 1. Устройство. НИКАКОГО AudioDevices.inputs() на пути старта (перечисление CoreAudio с
         //    Bluetooth занимает сотни мс — регресс 0.2.53); AVCaptureDevice(uniqueID:) — прямой lookup.
         let uid = forceUID ?? (ignorePin ? "" : AppSettings.shared.voiceMicUID)
-        let picked: AVCaptureDevice? = uid.isEmpty ? nil : AVCaptureDevice(uniqueID: uid)
+        // Пусто = «системный по умолчанию». Спрашиваем СИСТЕМУ (CoreAudio), а не AVFoundation:
+        // её `default(for: .audio)` не следует за выбором в Настройках → Звук → Вход, из-за чего
+        // AirPods и Continuity не подхватывались (репорт #23). Один быстрый запрос свойства, без
+        // перечисления устройств — то самое, что в 0.2.53 стоило сотни мс на Bluetooth.
+        var picked: AVCaptureDevice? = uid.isEmpty ? nil : AVCaptureDevice(uniqueID: uid)
+        if uid.isEmpty, let sysUID = AudioDevices.systemDefaultInputUID() {
+            picked = AVCaptureDevice(uniqueID: sysUID)
+            // Доказательство вместо веры: если два источника расходятся, это ровно тот случай, ради
+            // которого правка и делалась, и в багрепорте он будет виден. Пишем только при
+            // расхождении — на совпадении строка была бы шумом.
+            if let avDefault = AVCaptureDevice.default(for: .audio), avDefault.uniqueID != sysUID {
+                kbLog("voice rec: система выбрала «\(picked?.localizedName ?? "?")», AVFoundation предлагала «\(avDefault.localizedName)» — берём системный")
+            }
+        }
         guard let device = picked ?? AVCaptureDevice.default(for: .audio) else {
             self.session = nil
             kbLog("voice rec: нет ни одного входного устройства")

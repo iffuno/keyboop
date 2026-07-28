@@ -202,8 +202,11 @@ final class MenuBarController: NSObject {
             applyIconStyle()                              // вернуть выбранный пользователем значок (не хардкод)
         case .recording:
             // Живой waveform «K + столбики по громкости» вместо «микрофон + точка».
-            button.title = ""
-            button.imagePosition = .imageOnly
+            // В режиме «без значка» код языка на время записи НЕ прячем: он там единственное, что
+            // человек согласился видеть, и его исчезновение читалось бы как ещё одна поломка.
+            let bare = settings.menuBarStyle == "hidden"
+            button.title = (bare && settings.menuBarShowLanguage) ? layout.currentCodeLive() : ""
+            button.imagePosition = bare ? .imageLeading : .imageOnly
             button.image?.accessibilityDescription = L10n.t("a11y.recording")
             startWave()
         case .processing:
@@ -252,19 +255,29 @@ final class MenuBarController: NSObject {
     private func renderWave() {
         guard let button = statusItem.button else { return }
         let H: CGFloat = 18
-        let markS: CGFloat = 17                                   // знак почти во всю высоту строки меню (поля PNG срезаны → крупный, читаемый)
-        let bw: CGFloat = 1.5, gap: CGFloat = 1.5, markGap: CGFloat = 3.5   // waveform ~15% у́же — освобождаем место знаку
+        // ⚠️ «Без значка» значит без значка И ВО ВРЕМЯ ДИКТОВКИ (репорт #43). Если человек выбрал
+        // «без значка», но оставил язык рядом, статус-элемент остаётся видимым ради кода языка —
+        // и мы рисовали туда waveform ВМЕСТЕ с фирменным знаком. То есть логотип возникал ровно
+        // там, где его выключили, и только на время записи: со стороны это выглядит как «оно само
+        // включилось обратно». Столбики оставляем: это индикатор состояния, а не бренд, и без них
+        // человек не увидит, что запись идёт.
+        let showMark = settings.menuBarStyle != "hidden"
+        let markS: CGFloat = showMark ? 17 : 0                    // знак почти во всю высоту строки меню (поля PNG срезаны → крупный, читаемый)
+        let bw: CGFloat = 1.5, gap: CGFloat = 1.5
+        let markGap: CGFloat = showMark ? 3.5 : 0                 // waveform ~15% у́же — освобождаем место знаку
         let barsW = CGFloat(waveBars) * bw + CGFloat(waveBars - 1) * gap
         let W = markS + markGap + barsW
 
         let img = NSImage(size: NSSize(width: ceil(W), height: H))
         img.lockFocus()
         // Фирменный знак — НАСТОЯЩИЙ логотип (Resources/menubar-mark.png, template); вектор — фолбэк.
-        let markRect = NSRect(x: 0, y: (H - markS) / 2, width: markS, height: markS)
-        if let mark = Self.markImage {
-            mark.draw(in: markRect, from: .zero, operation: .sourceOver, fraction: 1)
-        } else {
-            KeyboopMark.draw(in: markRect, color: .black)
+        if showMark {
+            let markRect = NSRect(x: 0, y: (H - markS) / 2, width: markS, height: markS)
+            if let mark = Self.markImage {
+                mark.draw(in: markRect, from: .zero, operation: .sourceOver, fraction: 1)
+            } else {
+                KeyboopMark.draw(in: markRect, color: .black)
+            }
         }
         NSColor.black.setFill()
         for i in 0..<waveBars {

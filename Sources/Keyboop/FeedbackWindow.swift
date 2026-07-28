@@ -73,6 +73,15 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         // в changelog писать «починили невидимый текст» НЕЛЬЗЯ.
         textView.textColor = .textColor
         textView.insertionPointColor = .textColor
+
+        // ⚠️ ПРОВЕРЕННАЯ И ОТВЕРГНУТАЯ ГИПОТЕЗА (28.07). Кандидатом на «не видно текст» была
+        // недонастройка NSTextView внутри NSScrollView: здесь нет ни minSize/maxSize, ни
+        // isVerticallyResizable, ни widthTracksTextView, а голый `NSTextView()` создаётся без
+        // фрейма. Звучит как учебниковый случай «глифам негде разместиться».
+        // Собран стенд с ЭТОЙ ЖЕ конструкцией (Auto Layout, скролл получает размер позже, ввод
+        // посимвольно через insertText): и с канонной настройкой, и без неё результат идентичен —
+        // контейнер 426 пунктов, все 300 глифов размещены, перенос на 6 строк. Назначение
+        // documentView само доводит вью до ума. Не тратить время на этот путь повторно.
         textScroll.documentView = textView
         textScroll.hasVerticalScroller = true
         textScroll.borderType = .bezelBorder

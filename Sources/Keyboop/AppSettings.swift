@@ -93,6 +93,19 @@ final class AppSettings {
     /// Обучение на отмене (см. UndoLearner). Ключ читается и напрямую в UndoLearner.enabled.
     var learnOnUndoEnabled: Bool { get { d.bool(forKey: "learnOnUndoEnabled") } set { d.set(newValue, forKey: "learnOnUndoEnabled") } }
     var soundEnabled: Bool { get { d.bool(forKey: Key.sound) } set { d.set(newValue, forKey: Key.sound) } }
+    /// «Вообще без звуков»: один выключатель поверх всех остальных (см. Sounds.allMuted).
+    /// Нужен потому, что отдельные тумблеры не покрывали системный бип, и человек не мог
+    /// заглушить приложение никакими средствами (репорт #29).
+    var silentMode: Bool { get { d.bool(forKey: "silentMode") } set { d.set(newValue, forKey: "silentMode") } }
+
+    /// Громкости, запомненные на время тишины. −1 = «не запоминали» (человек сам двигал ползунок,
+    /// пока звук был выключён, — его выбор важнее нашего). См. SettingsWindow.toggleSoundsEnabled.
+    func mutedBackup(_ key: String) -> Double {
+        d.object(forKey: "mutedVol." + key) == nil ? -1 : d.double(forKey: "mutedVol." + key)
+    }
+    func setMutedBackup(_ key: String, _ v: Double?) {
+        if let v { d.set(v, forKey: "mutedVol." + key) } else { d.removeObject(forKey: "mutedVol." + key) }
+    }
     var soundName: String { get { d.string(forKey: Key.soundName) ?? "Pop" } set { d.set(newValue, forKey: Key.soundName) } }
     /// Громкость звука переключения (0…1). По умолчанию потише (0.6).
     var soundVolume: Double { get { d.double(forKey: "soundVolume") } set { d.set(newValue, forKey: "soundVolume") } }
@@ -160,6 +173,28 @@ final class AppSettings {
     var voiceHoldMode: String { get { d.string(forKey: "voiceHoldMode") ?? "hold" } set { d.set(newValue, forKey: "voiceHoldMode") } }
     /// Звук старта/стопа записи (отдельно от звука конвертации). По умолчанию включён.
     var voiceSoundEnabled: Bool { get { d.bool(forKey: "voiceSoundEnabled") } set { d.set(newValue, forKey: "voiceSoundEnabled") } }
+
+    /// Опции ВЫВОДА диктовки (просили несколько человек, задача #41). Обе выключены по умолчанию:
+    /// модель отдаёт нормально оформленный текст, и портить его без просьбы мы не должны.
+    /// Заглавная первая буква мешает тем, кто диктует в середину предложения; точка в конце —
+    /// тем, кто диктует по кусочкам в мессенджер или в поле поиска.
+    var voiceNoCapital: Bool { get { d.bool(forKey: "voiceNoCapital") } set { d.set(newValue, forKey: "voiceNoCapital") } }
+    var voiceNoFinalPeriod: Bool { get { d.bool(forKey: "voiceNoFinalPeriod") } set { d.set(newValue, forKey: "voiceNoFinalPeriod") } }
+    /// Пробел после вставленного текста. Обычно нужен (следующая фраза не слипнется), но в поле
+    /// поиска и в паре с авто-Enter он лишний.
+    /// Отправлять надиктованное сразу: после вставки уходит Enter (задача #36, просили несколько раз).
+    /// Выключено по умолчанию: в текстовом редакторе Enter это перенос строки, а не отправка, и
+    /// включать такое всем по умолчанию нельзя.
+    var voiceAutoEnter: Bool { get { d.bool(forKey: "voiceAutoEnter") } set { d.set(newValue, forKey: "voiceAutoEnter") } }
+    /// Чем именно «отправлять»: разные приложения шлют по разным сочетаниям (Telegram и большинство
+    /// чатов — Enter, Slack в режиме «Enter = перенос строки», Gmail, Linear и почти вся веб-почта —
+    /// ⌘Enter). Просьба автора 29.07 по обратной связи от людей. Храним маску CGEventFlags.
+    var voiceAutoEnterMods: UInt64 { get { UInt64(bitPattern: Int64(d.integer(forKey: "voiceAutoEnterMods"))) } set { d.set(Int(bitPattern: UInt(newValue)), forKey: "voiceAutoEnterMods") } }
+
+    var voiceTrailingSpace: Bool {
+        get { d.object(forKey: "voiceTrailingSpace") == nil ? true : d.bool(forKey: "voiceTrailingSpace") }
+        set { d.set(newValue, forKey: "voiceTrailingSpace") }
+    }
     /// Escape отменяет текущую диктовку (запись отбрасывается). По умолчанию включено.
     var escCancelsDictation: Bool { get { d.bool(forKey: "escCancelsDictation") } set { d.set(newValue, forKey: "escCancelsDictation") } }
     // Тёплое окно: держать микрофон активным ~30с после диктовки для мгновенного повтора.
@@ -252,6 +287,10 @@ final class AppSettings {
     /// Ставить обновления тихо, без вопроса (opt-in). По умолчанию FALSE — спрашиваем уведомлением
     /// «Обновить сейчас / Обновлять автоматически». Пользователь жмёт «авто» → ставим тихо в простое.
     var silentAutoUpdate: Bool { get { d.bool(forKey: "silentAutoUpdate") } set { d.set(newValue, forKey: "silentAutoUpdate") } }
+    /// Канал обновлений «бета»: человек ДОБРОВОЛЬНО получает сборки раньше всех, до обкатки.
+    /// Выключено по умолчанию и включается только вручную — иначе это не обкатка, а раздача сырого
+    /// всем сразу, то есть ровно то, от чего канал и защищает.
+    var betaChannel: Bool { get { d.bool(forKey: "betaChannel") } set { d.set(newValue, forKey: "betaChannel") } }
 
     /// Вид ЗНАЧКА в строке меню (автор 23.07, ред. — значок и язык независимы): brand — фирменный
     /// знак Keyboop; keyboard — глиф клавиатуры (историч. дефолт); hidden — значка нет.

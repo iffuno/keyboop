@@ -130,6 +130,18 @@ final class EventTap {
         // Пропускаем её НАСКВОЗЬ, не трогая буфер/хоткей-состояние. Это надёжная замена временно́му
         // фильтру muted: реальный ввод пользователя теперь НИКОГДА не глотается (даже во время нашей
         // конверсии) → буфер не рассинхронивается с экраном (аудит 15.06, корни №1/№2).
+        // ПУСТЫШКА ПАУЗНОЙ ПРАВКИ (#19) — проверяем ПЕРВОЙ, до пропуска печатающей синтетики: у неё
+        // своя метка и противоположный смысл (её надо СЪЕСТЬ и выполнить по ней замену).
+        // Она существует ради одного: дать себе КОЛБЭК. Burst, отправленный отсюда через
+        // tapPostEvent, встаёт в поток ДО любой реальной клавиши, нажатой после, — вклиниться в
+        // замену нечему (тот же принцип, что inline-путь). Обрабатываем до handleKeyDown/handleFlags:
+        // пустышка не должна трогать буфер и взводы хоткеев. keyUp у неё нет (мы его не шлём),
+        // поэтому глотание не нарушает инвариант парности.
+        if type == .keyDown,
+           event.getIntegerValueField(.eventSourceUserData) == kbPauseFixMarker {
+            (handler as? Engine)?.handlePauseFixMarker(post: { $0.tapPostEvent(proxy) })
+            return nil
+        }
         if (type == .keyDown || type == .keyUp),
            event.getIntegerValueField(.eventSourceUserData) == kbSyntheticMarker {
             return Unmanaged.passUnretained(event)

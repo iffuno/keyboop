@@ -18,6 +18,24 @@ let kbSyntheticMarker: Int64 = {
     return v
 }()
 
+/// Метка события-ПУСТЫШКИ паузной правки (#19). Отдельная от `kbSyntheticMarker`, потому что смысл
+/// противоположный: печатающую синтетику тап пропускает НАСКВОЗЬ, а пустышку — ГЛОТАЕТ и выполняет
+/// по ней замену. Одна метка на оба смысла означала бы, что любое наше событие может быть принято
+/// за команду «чини сейчас».
+///
+/// ⚠️ Тип события — именно keyDown (28.07). Первая версия слала `flagsChanged` с текущими флагами,
+/// и она НЕ ДОХОДИЛА: flagsChanged описывает ПЕРЕХОД состояния модификаторов, а событие «состояние
+/// не изменилось» система отбрасывает как no-op. В логе было 53 срабатывания inline-пути и ровно
+/// НОЛЬ паузных. keyDown доходит гарантированно — на нём же работает вся синтетика замены.
+/// virtualKey 255 не назначен ни на что и без keyboardSetUnicodeString не печатает ничего, поэтому
+/// даже утечка (тап умер между постингом и доставкой) безвредна. Пары keyUp мы не шлём вовсе, так
+/// что глотание пустышки инвариант парности не затрагивает.
+let kbPauseFixMarker: Int64 = {
+    var v: Int64 = 0
+    while v == 0 || v == kbSyntheticMarker { v = Int64.random(in: .min ... .max) }
+    return v
+}()
+
 /// Замена текста БЕЗ буфера обмена: синтетические Backspace + печать Unicode напрямую
 /// через `keyboardSetUnicodeString` (минуя раскладку). Краеугольный принцип Keyboop.
 enum TextReplacer {
@@ -66,14 +84,25 @@ enum TextReplacer {
     static var secureInputActive: Bool { IsSecureEventInputEnabled() }
 
     /// Впечатать текст без удаления (для голосового ввода / перевода).
-    static func insert(_ text: String, completion: (() -> Void)? = nil) {
+    ///
+    /// `thenReturn` — сразу после текста отправить настоящий Return (авто-Enter диктовки, задача #36).
+    /// Enter уходит В ТОМ ЖЕ synth-задании, как и у `replace`: между текстом и отправкой физически
+    /// нечему вклиниться. Отдельным событием следом это было бы гонкой — реальное нажатие человека
+    /// или чужая синтетика могли бы лечь между ними, и отправилось бы полсообщения.
+    static func insert(_ text: String, thenReturn: Bool = false, returnMods: CGEventFlags = [],
+                       completion: (() -> Void)? = nil) {
         synthQueue.async {
             guard !secureInputActive else {
                 kbLog("synth: активен secure input — insert(\(text.count) симв.) пропущен")
                 if let completion { DispatchQueue.main.async(execute: completion) }
                 return
             }
-            typeUnicode(text, source: CGEventSource(stateID: .privateState))
+            let src = CGEventSource(stateID: .privateState)
+            typeUnicode(text, source: src)
+            if thenReturn {
+                usleep(1800)   // дать полю принять текст, затем настоящий Return (keyCode, не "\n")
+                postKey(returnKey, source: src, mods: returnMods)
+            }
             if let completion { DispatchQueue.main.async(execute: completion) }
         }
     }
@@ -197,15 +226,17 @@ enum TextReplacer {
         return true
     }
 
-    private static func postKey(_ key: CGKeyCode, source: CGEventSource?) {
+    /// `mods` — модификаторы для отправки (авто-Enter: разные приложения шлют по разным сочетаниям).
+    /// Пустые по умолчанию: это же postKey используют Backspace'ы, которым модификаторы противопоказаны.
+    private static func postKey(_ key: CGKeyCode, source: CGEventSource?, mods: CGEventFlags = []) {
         if let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true) {
-            down.flags = []
+            down.flags = mods
             down.setIntegerValueField(.eventSourceUserData, value: kbSyntheticMarker)   // «это наше»
             down.post(tap: .cghidEventTap)
         }
         usleep(900)   // короткое «удержание» down→up — некоторые поля не видят мгновенный тап
         if let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false) {
-            up.flags = []
+            up.flags = mods
             up.setIntegerValueField(.eventSourceUserData, value: kbSyntheticMarker)
             up.post(tap: .cghidEventTap)
         }

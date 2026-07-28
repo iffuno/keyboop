@@ -6,6 +6,39 @@ import Foundation
 enum AudioDevices {
     struct Device { let id: AudioDeviceID; let uid: String; let name: String }
 
+    /// UID устройства, которое СИСТЕМА считает текущим входом (Настройки → Звук → Вход).
+    ///
+    /// ⚠️ Зачем отдельная функция, если есть `AVCaptureDevice.default(for: .audio)` (репорт #23):
+    /// это РАЗНЫЕ вещи. `AVCaptureDevice.default` отдаёт дефолт по мнению AVFoundation — как
+    /// правило встроенный микрофон, — и он НЕ следует за выбором человека в системных настройках.
+    /// Отсюда жалоба: «работаю с закрытым маком на внешнем экране, надеваю AirPods, а приложение
+    /// на них не переключается»; человек кончил тем, что намертво прибил iPhone как микрофон.
+    /// Правду знает только CoreAudio, и спрашивать надо именно его.
+    ///
+    /// Возвращаем UID, а не AudioDeviceID: сессию записи мы собираем через
+    /// `AVCaptureDevice(uniqueID:)`, а UID — единственный идентификатор, общий для обоих миров
+    /// (проверено побайтово на built-in / USB / Continuity / Bluetooth).
+    static func systemDefaultInputUID() -> String? {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var devID = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &devID) == noErr,
+              devID != 0 else { return nil }
+
+        var uidAddr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain)
+        var uidRef: CFString? = nil
+        var uidSize = UInt32(MemoryLayout<CFString?>.size)
+        guard AudioObjectGetPropertyData(devID, &uidAddr, 0, nil, &uidSize, &uidRef) == noErr,
+              let uid = uidRef as String? , !uid.isEmpty else { return nil }
+        return uid
+    }
+
     /// Все устройства, у которых есть входные каналы (микрофоны).
     static func inputs() -> [Device] {
         var addr = AudioObjectPropertyAddress(

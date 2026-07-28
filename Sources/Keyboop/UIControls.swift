@@ -550,11 +550,11 @@ final class SoundPicker: NSPopUpButton {
             settings.soundName = ""
         case 1:
             settings.soundName = "keyboop"
-            cue?.stop(); cue = NSSound(data: CueSynth.switchData); cue?.volume = vol; cue?.play()
+            cue?.stop(); cue = Sounds.play(NSSound(data: CueSynth.switchData), volume: Double(vol))
         default:
             if let t = titleOfSelectedItem {
                 settings.soundName = t
-                let s = NSSound(named: t); s?.volume = vol; s?.play()
+                Sounds.play(NSSound(named: t), volume: Double(vol))
             }
         }
     }
@@ -591,13 +591,13 @@ final class TranslateSoundPicker: NSPopUpButton {
         switch indexOfSelectedItem {
         case 0:
             settings.translateSoundName = "keyboop"
-            preview = NSSound(data: CueSynth.translateData); preview?.volume = vol; preview?.play()
+            preview = Sounds.play(NSSound(data: CueSynth.translateData), volume: Double(vol))
         case 1:
             settings.translateSoundName = ""
         default:
             if let t = titleOfSelectedItem {
                 settings.translateSoundName = t
-                let s = NSSound(named: t); s?.volume = vol; s?.play()
+                Sounds.play(NSSound(named: t), volume: Double(vol))
             }
         }
     }

@@ -66,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CapsRemap.reconcile()   // Caps-ремап не переживает перезагрузку (переприменить) и не должен
                                 // переживать выключенный тумблер (снять после падения без restore)
         GlobeKey.reconcile()    // роль 🌐: забрать при включённом режиме / вернуть после падения
+        installTerminationSignalHandlers()   // SIGTERM/SIGINT: вернуть системе 🌐 и Caps (см. ниже)
         engine = Engine()
         menuBar = MenuBarController(layout: engine.layout)
         menuBar.onOpenSettings = { [weak self] in self?.openSettings() }
@@ -640,6 +641,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// процесса, Metal-буферы «утекали» за exit, и статический деструктор ggml бил ассерт → SIGABRT
     /// при квите (краш-репорт 20.07, llama.cpp #19137 «not a bug — free your context before exit»).
     /// Первый слой защиты — GGML_METAL_NO_RESIDENCY=1 в main.swift; этот — второй, канонический.
+    /// Держим источники сигналов живыми (иначе GCD их снимет сразу после выхода из функции).
+    private var signalSources: [DispatchSourceSignal] = []
+
+    /// ВОЗВРАТ СИСТЕМНЫХ НАСТРОЕК ПРИ УБИЙСТВЕ ПРОЦЕССА (28.07).
+    ///
+    /// `applicationWillTerminate` выполняется при штатном выходе, но НЕ при SIGTERM: дефолтное
+    /// действие сигнала убивает процесс, минуя AppKit. А `pkill`, «Завершить» в Мониторинге системы
+    /// и перезагрузка с зависшим приложением шлют именно SIGTERM. Мы при этом держим ДВЕ системные
+    /// настройки: роль клавиши 🌐 (AppleFnUsageType) и ремап Caps через hidutil. Обе переживают
+    /// смерть процесса, поэтому «нас убили» означало «у человека сломана клавиша, и он даже не
+    /// свяжет это с нами» — причём навсегда, в том числе после удаления Keyboop.
+    ///
+    /// `DispatchSourceSignal` вместо `signal(2)`-обработчика намеренно: обработчик сигнала обязан
+    /// быть async-signal-safe, а CFPreferences и запуск hidutil таковыми не являются. Источник же
+    /// выполняет блок на обычной очереди, вне контекста сигнала. `signal(sig, SIG_IGN)` обязателен —
+    /// без него дефолтное действие убьёт процесс раньше, чем очередь проснётся.
+    private func installTerminationSignalHandlers() {
+        for sig in [SIGTERM, SIGINT] {
+            signal(sig, SIG_IGN)
+            let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            src.setEventHandler {
+                kbLog("получен сигнал \(sig) — возвращаю системе 🌐 и Caps, выхожу")
+                CapsRemap.removeIfOurs()
+                GlobeKey.release()
+                exit(0)
+            }
+            src.resume()
+            signalSources.append(src)
+        }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         VoiceController.shared.unloadForTermination()
         // Caps-ремап и забранная 🌐 без нас жить не должны: выходим — возвращаем всё системе.

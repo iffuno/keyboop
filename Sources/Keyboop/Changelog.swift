@@ -6,6 +6,25 @@ enum Changelog {
     struct Release { let version: String; let ru: [String]; let en: [String] }
 
     static let releases: [Release] = [
+        Release(version: "0.3.0",
+            ru: [
+                "Настройки наконец разложены по полкам. Раньше в голосовом наборе было двенадцать разных строк подряд в одной куче: микрофон стоял в начале, а его же прогрев где-то в середине, между чужими пунктами. Теперь всё собрано по смыслу, а параметры, которые нужны не всем, прячутся под своими переключателями и выезжают, только когда вы их включаете.",
+                "У пунктов появились подсказки. Кружок с буквой «i» рядом с настройкой открывает нормальное объяснение: что именно произойдёт, чем это грозит и когда это стоит включать. Раньше объяснение обрывалось на середине, потому что не влезало по ширине.",
+                "Светлая тема перестала выглядеть вывернутой наизнанку. У macOS страница светлая, а блоки настроек чуть темнее; у нас было ровно наоборот. В тёмной теме всё совпадало, поэтому мы это годами не замечали. Спасибо тому, кто показал скриншотом.",
+                "Окно настроек стало шире, а подписи под пунктами перестали обрезаться на полуслове.",
+                "Диктовка научилась подстраиваться под то, куда вы пишете. Можно не начинать с заглавной буквы, не ставить точку в конце и отправлять сообщение сразу после диктовки. Отправку можно повесить на Enter или на ⌘Enter, потому что в разных программах это разные клавиши.",
+                "И починка, которую поймал Стас (привет!). Если выделить слово мышью и нажать хоткей, соседнее слово могло исчезнуть вместе с пробелом. Причина оказалась обидной: после клика мы забывали, что выделение вообще есть, и стирали ровно столько символов, сколько было в выделенном слове, но начиная не оттуда.",
+                "Плюс мелочи: звук записи больше не пропадает при быстром наборе, микрофон следует за тем, что выбрано в системе (AirPods наконец подхватываются), а логотип не появляется в строке меню, если вы его выключили.",
+            ],
+            en: [
+                "Settings are finally sorted into groups. Voice input used to be twelve unrelated rows in a single pile: the microphone at the top, its own warm-up somewhere in the middle with other things in between. Everything is grouped by meaning now, and the options not everyone needs hide under their own switches and slide out only when you turn them on.",
+                "Rows got proper help. The small «i» next to a setting opens a real explanation: what exactly happens, what it costs you and when it is worth turning on. Before, the explanation was cut off mid-sentence because it did not fit the width.",
+                "Light theme stopped looking inside out. macOS uses a light page with slightly darker setting blocks; ours was exactly the other way round. In dark theme everything matched, which is why we missed it for so long. Thanks to whoever sent the screenshot.",
+                "The settings window is wider, and the descriptions under each row no longer break off mid-word.",
+                "Dictation now adapts to where you are writing. You can skip the leading capital, skip the trailing period, and send the message right after dictating. Sending can be Enter or ⌘Enter, because different apps use different keys.",
+                "And a fix caught by Стас (hi!). Selecting a word with the mouse and pressing the hotkey could make the neighbouring word disappear along with its space. The cause was embarrassing: after a click we forgot the selection existed and deleted exactly as many characters as the selected word had, only starting from the wrong place.",
+                "Plus smaller things: the recording cue no longer goes missing while you type fast, the microphone follows your system choice (AirPods finally get picked up), and the logo no longer shows in the menu bar if you turned it off.",
+            ]),
         Release(version: "0.2.70",
             ru: [
                 "Это обновление почти целиком собрано по вашим письмам. Я разобрал всё, что пришло через форму отзыва, сгруппировал по симптомам и починил то, что чинилось. Ниже честно: что было сломано и как это выглядело с вашей стороны.",
