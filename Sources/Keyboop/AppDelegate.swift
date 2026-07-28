@@ -10,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var welcomeWC: WelcomeWindowController?
     private var retryTimer: Timer?
     private var engineRunning = false
+    /// Уже написали в лог, что ждём Accessibility (иначе строка повторялась бы дважды в секунду).
+    private var loggedWaitingForAX = false
     private var alertShown = false
     private var moveAlertShown = false    // алерт «перенеси в /Applications» (translocation) — показан
     private var relaunchOffered = false   // предложили перезапуск (TCC-залипание) — один раз
@@ -57,6 +59,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { NSApp.terminate(nil) }
             return
         }
+        _ = AppHealth.launchedAt   // ленивый static let: «потрогать» на старте, иначе аптайм в первом
+                                   // багрепорте всегда «0с» и разбор уходит в ложную ветку
         installMainMenu()   // меню Edit (Cmd+V/C/X/A/Z) — иначе в текстовых полях не работает вставка
         syncProcessLanguage()   // Sparkle и системные диалоги — на языке приложения (репорт 24.07)
         CapsRemap.reconcile()   // Caps-ремап не переживает перезагрузку (переприменить) и не должен
@@ -337,6 +341,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if welcomePending && !Permissions.isTrusted() {
             menuBar.needsPermission = true
             menuBar.refresh()
+            // ⚠️ Пишем в лог ОДИН раз (репорт #34, 28.07: весь лог человека — три строки, потому что
+            // этот возврат случался ~840 раз за семь минут и не оставлял следа). Сам гард правильный,
+            // он не перекрывает системный промпт; лечим именно немоту, а не логику.
+            if !loggedWaitingForAX {
+                loggedWaitingForAX = true
+                kbLog("жду доступ к Accessibility — движок НЕ запущен; конверсия и диктовка работать не будут, пока не разрешат")
+            }
             return
         }
 

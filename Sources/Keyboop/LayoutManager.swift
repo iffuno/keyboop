@@ -39,6 +39,9 @@ final class LayoutManager {
     /// чтение в этот момент само стейлится и дало бы ложное «не применилось»).
     private var lastSelectAt: TimeInterval = 0
 
+    /// Последний источник, выбранный фолбэком латиницы, — чтобы не писать одну строку сотни раз.
+    private var lastFallbackLatinID: String?
+
     /// Мы в grace-окне собственного переключения: любые чтения «текущего» из TIS недостоверны,
     /// а правда уже установлена детерминированно (кэш из выбранного объекта + мнение).
     var withinOwnSelectGrace: Bool { ProcessInfo.processInfo.systemUptime - lastSelectAt < 1.0 }
@@ -131,13 +134,50 @@ final class LayoutManager {
     }
 
     /// Переключить системную раскладку на кириллицу/латиницу (если такая включена).
+    ///
+    /// ⚠️ ЛАТИНИЦУ ИЩЕМ ПО ASCII-СПОСОБНОСТИ, А НЕ ПО ЯЗЫКУ «en» (28.07, репорты #11 и #15 от одного
+    /// человека на 0.2.67 и 0.2.69). Раньше здесь было `languages.first.hasPrefix("en")`, и в его
+    /// логах лежат 45 строк «среди включённых раскладок нет EN» при НУЛЕ успешных переключений
+    /// RU→EN и пяти успешных EN→RU. То есть мгновенное переключение работало ровно в одну сторону:
+    /// человек уходил в русский и обратно уже не возвращался. Причина в том, что штатные латинские
+    /// раскладки macOS объявляют первым языком вовсе не английский: ABC-AZERTY → fr, ABC-QWERTZ → de,
+    /// испанская → es, чешская → cs, польская → pl. Флаг `IsASCIICapable` описывает ровно то, что нам
+    /// нужно («на этой раскладке можно набрать латиницу»), и кириллические раскладки его не имеют.
+    /// Настоящий английский всё равно предпочитаем первым — у большинства он и есть.
     @discardableResult
     func selectLayout(cyrillic: Bool) -> Bool {
-        let wanted = cyrillic ? "ru" : "en"
-        guard let src = enabledKeyboardSources().first(where: {
-            (Self.languages(of: $0).first ?? "").hasPrefix(wanted)
-        }) else { return false }
+        let sources = enabledKeyboardSources()
+        let src: TISInputSource?
+        if cyrillic {
+            src = sources.first { (Self.languages(of: $0).first ?? "").hasPrefix("ru") }
+        } else {
+            src = sources.first { (Self.languages(of: $0).first ?? "").hasPrefix("en") }
+                ?? sources.first { Self.isUsableLatinLayout($0) }
+        }
+        guard let src else {
+            // Разводим два РАЗНЫХ отказа: «подходящей раскладки нет вовсе» и «TIS отказался
+            // переключать» (ниже). Раньше обе писали одну строку, из-за чего этот баг и баг с
+            // перехватом на macOS 27 beta невозможно было отличить в логе друг от друга.
+            kbLog("layout: не нашёл \(cyrillic ? "кириллическую" : "латинскую") раскладку среди включённых (\(sources.count) шт.)")
+            return false
+        }
+        // Сработал фолбэк — пишем об этом. Ради разведения логов правку и делали, а самая рискованная
+        // ветка не должна быть немой: если человек придёт с «переключает не туда», нам нужен ID.
+        // ⚠️ Но ровно ОДИН раз на источник. У человека без английской раскладки фолбэк срабатывает
+        // на КАЖДОЕ переключение языка, то есть сотни раз в день, а в багрепорт уходит хвост из 300
+        // строк: строка-на-каждое-переключение вытеснила бы оттуда всё остальное. Как с причинами
+        // отказа тихого обновления — логируем смену состояния, а не его наличие.
+        if !cyrillic, (Self.languages(of: src).first ?? "").hasPrefix("en") == false {
+            let id = Self.stringProp(src, kTISPropertyInputSourceID) ?? "?"
+            if id != lastFallbackLatinID {
+                lastFallbackLatinID = id
+                kbLog("layout: EN-раскладки нет, беру ASCII-способную \(id)")
+            }
+        }
         let ok = TISSelectInputSource(src) == noErr
+        if !ok {
+            kbLog("layout: TISSelectInputSource отказал (\(Self.stringProp(src, kTISPropertyInputSourceID) ?? "?"))")
+        }
         if ok {
             opinionCyr = cyrillic   // память против стейл-чтения (см. opinionCyr)
             lastSelectAt = ProcessInfo.processInfo.systemUptime
@@ -166,6 +206,52 @@ final class LayoutManager {
             result.append(src)
         }
         return result
+    }
+
+    /// Годится ли источник как «латиница» для фолбэка мгновенного переключения.
+    ///
+    /// Мало быть ASCII-способным — нужен ещё блоб раскладки (`kTISPropertyUnicodeKeyLayoutData`).
+    /// ⚠️ Найдено ревью 28.07 живым опросом TIS: среди установленных источников есть ASCII-способные
+    /// БЕЗ блоба — вьетнамские методы ввода (Telex/VNI/VIQR). Если бы фолбэк выбрал такой источник,
+    /// `TISSelectInputSource` вернул бы noErr, мнение стало бы «мы в латинице», а
+    /// `KeyboardLayoutCache.refresh(fromSelected:)` молча вышел бы по своему guard — и в кэше остался
+    /// бы РУССКИЙ блоб. Дальше тап декодирует каждое нажатие русской раскладкой (кэш непустой, значит
+    /// фолбэк на CG-строку не включается), движок видит кириллицу там, где человек печатает латиницу,
+    /// и «чинит» нормальный текст в мусор во всех программах. Самолечения у этого состояния нет.
+    /// Пустой список языков тоже отбрасываем: так отсеивается Unicode Hex Input, при выборе которого
+    /// у человека молча пропадают Option-акценты и мёртвые клавиши.
+    private static func isUsableLatinLayout(_ src: TISInputSource) -> Bool {
+        guard boolProp(src, kTISPropertyInputSourceIsASCIICapable) else { return false }
+        guard TISGetInputSourceProperty(src, kTISPropertyUnicodeKeyLayoutData) != nil else { return false }
+        return !languages(of: src).isEmpty
+    }
+
+    /// Названия ВКЛЮЧЁННЫХ раскладок — для шапки багрепорта.
+    ///
+    /// Прямая улика для класса «переключает только в одну сторону»: у людей с ABC-AZERTY, QWERTZ,
+    /// испанской и подобными первый объявленный язык не «en», и старый поиск латиницы их не находил.
+    /// Отдаём языковый тег, признак ASCII и — только для ШТАТНЫХ раскладок — название.
+    ///
+    /// ⚠️ Название своей раскладки придумывает не Apple, а тот, кто её собрал (Ukelele, корпоративные
+    /// сборки, самоделки): там регулярно встречаются имя человека, название работодателя, внутренние
+    /// кодовые слова. Багрепорт уходит на наш сервер, поэтому имя не-эппловского источника мы не
+    /// отправляем вовсе — пишем «своя». Диагностическая ценность в теге языка и признаке ASCII, а
+    /// они остаются на месте: класс «переключает только в одну сторону» по ним и виден.
+    static func enabledLayoutNamesForDiagnostics() -> [String] {
+        guard let cf = TISCreateInputSourceList(nil, false)?.takeRetainedValue() else { return [] }
+        var out: [String] = []
+        for i in 0..<CFArrayGetCount(cf) {
+            guard let raw = CFArrayGetValueAtIndex(cf, i) else { continue }
+            let src = Unmanaged<TISInputSource>.fromOpaque(raw).takeUnretainedValue()
+            guard stringProp(src, kTISPropertyInputSourceCategory) == (kTISCategoryKeyboardInputSource as String),
+                  boolProp(src, kTISPropertyInputSourceIsEnabled) else { continue }
+            let isApple = (stringProp(src, kTISPropertyInputSourceID) ?? "").hasPrefix("com.apple.")
+            let name = isApple ? (stringProp(src, kTISPropertyLocalizedName) ?? "?") : "своя"
+            let lang = languages(of: src).first ?? "—"
+            let ascii = boolProp(src, kTISPropertyInputSourceIsASCIICapable) ? "+ascii" : ""
+            out.append("\(name)[\(lang)\(ascii)]")
+        }
+        return out
     }
 
     private static func languages(of src: TISInputSource) -> [String] {

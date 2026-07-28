@@ -122,6 +122,37 @@ enum L10n {
         "switch.hkRecord":[.ru: "Нажми комбинацию…  (Esc — отмена)", .en: "Press a combo…  (Esc to cancel)"],
         "hk.custom":      [.ru: "Свой…", .en: "Custom…"],
         "hk.press":       [.ru: "Нажми комбинацию…  (Esc)", .en: "Press a combo…  (Esc)"],
+        // Окно записи комбинации (HotkeyRecorderPanel)
+        // Состояния, в которых Keyboop не может работать (AppHealth). Пишем ЧТО не так и что делать,
+        // без паники: человек и так уже видит, что ничего не происходит.
+        "health.noAccessibility": [.ru: "не выдан доступ к Универсальному доступу",
+                                   .en: "Accessibility permission not granted"],
+        "health.engineDown":      [.ru: "движок не запущен", .en: "engine not running"],
+        "health.secureInput":     [.ru: "включён Secure Input — macOS прячет клавиатуру от всех программ",
+                                   .en: "Secure Input is on, macOS hides the keyboard from every app"],
+        "health.secureInputHolder": [.ru: "включён Secure Input (держит %@) — macOS прячет клавиатуру",
+                                     .en: "Secure Input is on (held by %@), macOS hides the keyboard"],
+        "hkrec.title":    [.ru: "Новая комбинация", .en: "New shortcut"],
+        "hkrec.for":      [.ru: "Для действия: %@", .en: "For: %@"],
+        "hkrec.waiting":  [.ru: "нажмите клавиши", .en: "press keys"],
+        "hkrec.hint":     [.ru: "Держите модификаторы и нажмите клавишу. Esc — отмена.",
+                           .en: "Hold modifiers and press a key. Esc to cancel."],
+        "hkrec.assign":   [.ru: "Назначить", .en: "Assign"],
+        // Предупреждения ВНУТРИ окна записи. Тон: понятно, без занудства, с лёгкой усмешкой.
+        // ⚠️ Советов «добавьте ⌥ или ⌃» здесь нет намеренно (автор 28.07): объясняем, почему нельзя,
+        // а что нажать вместо — человек решает сам. И про F13…F20 молчим: на маке они живут через
+        // Fn, так почти никто не назначает, а оговорка только удлиняет текст.
+        "hkrec.warn.busy": [.ru: "%@ система уже забрала себе. Отнимать не будем, вам же им пользоваться.",
+                            .en: "%@ is already taken by the system. We won't fight it, you need it too."],
+        "hkrec.warn.bare": [.ru: "Одна клавиша без модификаторов отнимется у всех программ сразу, включая ту, где вы сейчас читаете это.",
+                            .en: "A key with no modifiers gets taken from every app at once, including the one you're reading this in."],
+        "hkrec.warn.ours": [.ru: "Это сочетание у нас уже занято: %@. Две функции на одну комбинацию не уживутся.",
+                            .en: "We already use this one for %@. Two actions on one shortcut never ends well."],
+        "hkrec.cancel":   [.ru: "Отмена", .en: "Cancel"],
+        "hkrec.what.switch": [.ru: "исправление раскладки по хоткею", .en: "fix layout by hotkey"],
+        "hkrec.what.voice":  [.ru: "голосовой набор", .en: "dictation"],
+        "hkrec.what.translate": [.ru: "перевод выделенного", .en: "translate selection"],
+        "hkrec.what.instant":[.ru: "мгновенная смена языка", .en: "instant language switch"],
 
         // — 0.2.20: строки, ранее захардкоженные мимо L10n (ревизия локализации) —
         // Назначение хоткея (UIControls.displayHotkey / display)
@@ -575,9 +606,14 @@ enum L10n {
                            .en: "Goes to keyboop.com and straight to the developer's Telegram. Your typing and speech never enter the diagnostics — only versions, settings and the service log."],
         "fb.send":        [.ru: "Отправить", .en: "Send"],
         "fb.sending":     [.ru: "Отправляю…", .en: "Sending…"],
-        "fb.sent":        [.ru: "Улетело. Спасибо!", .en: "Sent. Thank you!"],
         "fb.fail":        [.ru: "Сеть не отвечает. Можно почтой:", .en: "Network isn't answering. Email works:"],
         "fb.mail":        [.ru: "Отправить почтой", .en: "Send by email"],
+        "fb.doneTitle":   [.ru: "Улетело", .en: "Off it goes"],
+        "fb.doneWithContact": [.ru: "Спасибо. Прочитаю всё до последней буквы, и если понадобится уточнить — напишу вам сам.",
+                              .en: "Thank you. I'll read every word, and if I need details I'll get in touch."],
+        "fb.doneNoContact":   [.ru: "Спасибо. Прочитаю всё до последней буквы. Контакта вы не оставили, так что ответить будет некуда — но на разбор это никак не влияет.",
+                              .en: "Thank you. I'll read every word. You left no contact, so there's nowhere to reply — that doesn't affect anything else."],
+        "fb.doneClose":   [.ru: "Закрыть", .en: "Close"],
         "fb.tooShort":    [.ru: "Напиши хоть пару слов )", .en: "Give me at least a couple of words )"],
         "menu.voiceHistory":[.ru: "История голосового набора…", .en: "Dictation history…"],
         "voice.foot":     [.ru: "Аудио и распознавание не покидают Mac. История шифруется и остаётся только у вас.",

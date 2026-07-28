@@ -6,6 +6,27 @@ enum Changelog {
     struct Release { let version: String; let ru: [String]; let en: [String] }
 
     static let releases: [Release] = [
+        Release(version: "0.2.70",
+            ru: [
+                "Это обновление почти целиком собрано по вашим письмам. Я разобрал всё, что пришло через форму отзыва, сгруппировал по симптомам и починил то, что чинилось. Ниже честно: что было сломано и как это выглядело с вашей стороны.",
+                "Самое неприятное. У части из вас переставал работать пробел, а иногда и другие клавиши, причём сразу во всех программах, и лечилось это только выходом из Keyboop. Виноват был Keyboop: он перехватывал отпускание клавиши, нажатие которой не трогал, и система оставалась в уверенности, что клавиша всё ещё зажата. Теперь правило жёсткое: перехватили нажатие, значит перехватим и отпускание. Не перехватили, значит не трогаем ни то, ни другое.",
+                "Мгновенная смена языка работала в одну сторону. Уходило в русский и обратно не возвращалось. Оказалось, латинскую раскладку я искал по признаку «английская», а у ABC-AZERTY, QWERTZ, испанской, чешской и польской первым языком записан вовсе не английский. Теперь ищем по способности набирать латиницу, а не по названию.",
+                "Назначение своей комбинации переехало в отдельное окно. Видно, что вы нажимаете, прямо в момент нажатия. Если сочетание занято системой или уже занято другой функцией Keyboop, окно скажет об этом на месте, а не выкинет поверх себя предупреждение, которое перекрывало всё и обрывало запись. И оно больше не закрывается само, пока вы перебираете варианты.",
+                "Хоткей из одного модификатора больше не срабатывает внутри чужого сочетания. Кто работает с Windows-машиной по удалённому доступу и жмёт там Alt+Shift, у того Keyboop заодно менял язык на своей стороне.",
+                "Автообновления чинились. После первой скачанной версии проверки прекращались совсем, то есть приложение тихо застревало на ней навсегда. Если вы давно не видели предложения обновиться, дело было в этом.",
+                "Keyboop научился признаваться, что не работает. Раньше он мог молчать: система забрала клавиатуру в защищённый режим, доступ к клавиатуре отозвали, микрофон не отдаёт звук. Снаружи это выглядело как «просто перестало работать». Теперь причина написана прямо в меню.",
+                "Ещё по мелочи: окно «Что нового» больше не падает при втором открытии, а форма отзыва теперь показывает, что письмо ушло, и ждёт, пока вы сами её закроете, а не исчезает через секунду.",
+            ],
+            en: [
+                "This update is built almost entirely from your messages. I went through everything that came in via the feedback form, grouped it by symptom and fixed what could be fixed. Below, honestly: what was broken and how it looked from your side.",
+                "The worst one. For some of you the Space key stopped working, sometimes other keys too, across every app at once, and only quitting Keyboop helped. Keyboop was to blame: it intercepted the release of a key whose press it had let through, so the system kept believing the key was still held down. The rule is strict now: if we intercept a press, we intercept its release. If we don't, we touch neither.",
+                "Instant language switching worked one way only. It went into Russian and never came back. It turned out I looked for the Latin layout by the mark «English», while ABC-AZERTY, QWERTZ, Spanish, Czech and Polish list something else as their first language. Now we look for the ability to type Latin, not for the name.",
+                "Assigning your own shortcut moved into its own window. You can see what you're pressing as you press it. If the combination is taken by the system, or already taken by another Keyboop function, the window says so in place instead of throwing a warning on top of itself, covering everything and cutting the recording short. And it no longer closes on its own while you're trying options.",
+                "A single-modifier shortcut no longer fires inside somebody else's combination. If you work with a Windows machine over remote access and press Alt+Shift there, Keyboop used to switch the language on your side as well.",
+                "Auto-updates got fixed. After the first downloaded version, checks stopped entirely, so the app quietly got stuck on it forever. If you haven't seen an update offer in a while, that was why.",
+                "Keyboop learned to admit when it isn't working. It used to stay silent: the system put the keyboard into secure mode, keyboard access was revoked, the microphone returned no sound. From the outside it just looked like «it stopped working». The reason is now written right in the menu.",
+                "Smaller things: the «What's new» window no longer crashes on a second open, and the feedback form now shows that your message went out and waits for you to close it, instead of vanishing after a second.",
+            ]),
         Release(version: "0.2.69",
             ru: [
                 "Ваши предложения доезжают до сборки быстрее, чем вы думаете: почти всё в этом обновлении пришло из ваших писем. Пишете — я беру в работу сразу, а не «когда-нибудь в бэклоге».",

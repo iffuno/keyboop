@@ -96,7 +96,11 @@ final class AudioRecorder: NSObject {
         // постит, поэтому тёплая сессия могла быть собрана на другом устройстве. Сравнение двух
         // строк — ноль обращений к CoreAudio на горячем пути (регресс 0.2.53 не повторяем).
         rebuildStrikes = 0
-        deadStrikes = 0
+        // ⚠️ deadStrikes НЕ сбрасываем (репорт #32, 27.07: «не работает голосовой набор»). Лестница
+        // объяснений про мёртвый вход шагает раз в 3 секунды, а человек жмёт диктовку короткими
+        // попытками по 2-5с — и обнуление на каждом старте не давало ему дойти ни до одного
+        // сообщения. Пять попыток подряд с RMS=0.0000 и полная тишина в ответ. Счётчик обнуляется
+        // там, где ему и место: при живом сигнале (см. ниже, alive → deadStrikes = 0).
         if let s = session, s.isRunning, pinnedUID == AppSettings.shared.voiceMicUID {
             setCapturing(true)
             armWatchdog()   // сторож и на тёплом пути: ловит «сессия жива, но буферы умерли»
@@ -417,7 +421,13 @@ extension AudioRecorder: AVCaptureAudioDataOutputSampleBufferDelegate {
 
             lock.lock()
             firstBufferSeen = true                      // сторож: буферы идут (и в тёплом простое тоже)
-            if rms > 0 { nonZeroSeen = true }           // вход реально живой (а не пустой поток)
+            if rms > 0 {
+                nonZeroSeen = true
+                // Живой сигнал — счётчик мёртвых попыток обнуляем ЗДЕСЬ. В стороже (3с) этого мало:
+                // у диктовок короче трёх секунд он не выполняется вовсе, и страйки от давно
+                // закрытого Zoom копились до ветки «сдаюсь» (ревью 28.07).
+                if deadStrikes != 0 { deadStrikes = 0 }
+            }           // вход реально живой (а не пустой поток)
             guard capturing else { lock.unlock(); return }   // тёплый холостой ход: отбрасываем молча
             let chunk = Array(UnsafeBufferPointer(start: ch, count: n))
             samples.append(contentsOf: chunk)

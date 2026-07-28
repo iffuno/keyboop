@@ -78,11 +78,165 @@ private func modsPlusKey(_ mods: CGEventFlags, _ keyCode: Int) -> String {
 /// (перевод/диктовка/мгновенное переключение). Пока идёт запись, пользователь жмёт как раз такие
 /// комбинации — tap съедал нажатие и запускал СТАРОЕ действие, а локальный монитор окна настроек
 /// не получал ничего. Поэтому на время записи tap перестаёт трогать наши хоткеи (см. EventTap).
+/// Режим записи комбинации. Пока он включён, EventTap пропускает ВСЁ насквозь (EventTap.swift:161) —
+/// то есть авто-переключение, исправление на лету и сниппеты не работают вовсе.
+///
+/// ⚠️ Почему здесь сторожа (28.07). Раньше флаг снимался только из `capture()`, то есть по факту
+/// нажатия клавиши. Человек открывал «Назначить свою…», передумывал и закрывал окно — флаг оставался
+/// поднятым до конца жизни процесса: движок молча мёртв, в логе ни строки, лечится только
+/// перезапуском. Вторая половина хуже: локальный монитор контрола продолжал глотать клавиши в наших
+/// окнах, и следующее нажатие могло назначить на хоткей что угодно, вплоть до пробела.
+/// `reset()` для этого и был задуман, но его никто не вызывал — предохранитель без проводов.
+///
+/// Теперь запись гасится сама: по закрытию СВОЕГО окна, по потере фокуса приложением и по таймауту.
 enum HotkeyRecording {
     /// Идёт запись комбинации (читает EventTap; всё на main-потоке, гонки нет).
-    static var active = false
-    /// Аварийный сброс: окно закрыли/потеряли фокус, не сняв флаг.
-    static func reset() { active = false }
+    private(set) static var active = false
+
+    /// Сколько ждём БЕЗДЕЙСТВИЯ, прежде чем считать, что человек передумал.
+    ///
+    /// ⚠️ Это таймер ПРОСТОЯ, а не общий лимит на запись (баг-репорт: «окошко исчезло само,
+    /// я перебирал варианты и не успел»). Раньше он отсчитывал 15с от начала и не продлевался — то
+    /// есть наказывал именно за то, ради чего окно и сделано: спокойно попробовать несколько
+    /// сочетаний. Теперь любое нажатие продлевает его заново, а сам порог поднят: окно записи теперь
+    /// ВИДНО, поэтому сторож нужен лишь как страховка от протечки, а не как средство сигнализации.
+    private static let watchdogSeconds: TimeInterval = 90
+    /// Абсолютный потолок сессии записи: продлеваемый таймер простоя можно продлевать бесконечно
+    /// теми же клавишами, которые локальный монитор глотает в наших окнах. Этот не продлевается
+    /// ничем (найдено ревью 28.07).
+    private static let hardCapSeconds: TimeInterval = 180
+    private static var hardCap: Timer?
+    /// Насколько недавним должно быть нажатие, чтобы уход из приложения НЕ считался отказом.
+    /// Нужен, потому что часть назначаемых сочетаний система забирает себе (⌘Space открывает
+    /// Spotlight) и фокус уезжает сам собой — это не «человек ушёл», это он нажал то, что просили.
+    private static let recentActivityWindow: TimeInterval = 3
+    private static var lastActivity: TimeInterval = 0
+
+    private static var stopper: (() -> Void)?
+    private static var watchdog: Timer?
+    private static var observers: [NSObjectProtocol] = []
+    /// Поколение записи. Наблюдатели ставятся с `queue: .main`, то есть их блок уходит в очередь;
+    /// `removeObserver` уже поставленную операцию не отменяет. Без этого счётчика отложенный колбэк
+    /// от ПРОШЛОЙ записи мог погасить УЖЕ ДРУГУЮ, начатую мгновением позже.
+    private static var session = 0
+
+    /// Начать запись. `stop` — как вернуть КОНКРЕТНЫЙ контрол в обычный вид (снять локальный
+    /// монитор, перерисовать список): сторожа зовут именно его, а не только гасят флаг.
+    ///
+    /// `window` — окно, в котором идёт запись. Наблюдатель закрытия вешается ИМЕННО на него.
+    /// ⚠️ Почему не `object: nil` (найдено ревью 28.07): уведомление о закрытии прилетает от ЛЮБОГО
+    /// окна процесса. У нас есть окна, которые закрываются сами: окно докачки языковых пакетов
+    /// (TranslationEngine закрывает его из колбэка, когда загрузка кончилась) и окно отзыва
+    /// (закрывается по таймеру через ~1.1с после отправки). Человек начал назначать хоткей, в этот
+    /// момент докачалась модель — запись молча умирала, тап оживал, и следующее нажатие запускало
+    /// СТАРЫЙ хоткей вместо записи. Это ровно тот баг 25.07, который сторожа и должны были лечить.
+    static func begin(stop: @escaping () -> Void, in window: NSWindow?) {
+        // Повторный вход: не выбрасываем прошлый stopper молча, а честно ЗАВЕРШАЕМ ту запись —
+        // иначе её локальный монитор остаётся висеть и глотает клавиши во всех наших окнах
+        // (в поле сниппетов, в поиске исключений, в форме отзыва — «не набирается ни символа»).
+        forceStop("начата запись другой комбинации")
+        session &+= 1
+        let mySession = session
+        active = true
+        stopper = stop
+        lastActivity = ProcessInfo.processInfo.systemUptime
+        kbLog("хоткей: запись комбинации начата")
+        armWatchdog(session: mySession)
+        armHardCap(session: mySession)
+        let nc = NotificationCenter.default
+        if let window {
+            observers.append(nc.addObserver(forName: NSWindow.willCloseNotification,
+                                            object: window, queue: .main) { _ in
+                forceStop("окно закрыто", session: mySession)
+            })
+        }
+        observers.append(nc.addObserver(forName: NSApplication.didResignActiveNotification,
+                                        object: nil, queue: .main) { _ in
+            // Если человек только что нажимал — фокус увела САМА система (Spotlight на ⌘Space и
+            // подобное), и обрывать запись из-за этого нельзя.
+            let idle = ProcessInfo.processInfo.systemUptime - lastActivity
+            if idle > recentActivityWindow {
+                forceStop("ушли из приложения", session: mySession)
+                return
+            }
+            // Нажатие было только что: возможно, фокус увела САМА система (⌘Space открыл Spotlight).
+            // Но молча оставлять запись живой нельзя — иначе человек уйдёт работать в другую
+            // программу, а движок будет отключён. Перепроверяем через recentActivityWindow.
+            DispatchQueue.main.asyncAfter(deadline: .now() + recentActivityWindow) {
+                guard !NSApp.isActive else { return }
+                forceStop("ушли из приложения", session: mySession)
+            }
+        })
+    }
+
+    /// Была активность в записи: продлеваем сторожа. Зовут контролы из своих capture().
+    static func noteActivity() {
+        guard active else { return }
+        lastActivity = ProcessInfo.processInfo.systemUptime
+        armWatchdog(session: session)
+    }
+
+    private static func armWatchdog(session sess: Int) {
+        watchdog?.invalidate()
+        watchdog = Timer.scheduledTimer(withTimeInterval: watchdogSeconds, repeats: false) { _ in
+            forceStop("ничего не нажимали \(Int(watchdogSeconds))с", session: sess)
+        }
+    }
+
+    private static func armHardCap(session sess: Int) {
+        hardCap?.invalidate()
+        hardCap = Timer.scheduledTimer(withTimeInterval: hardCapSeconds, repeats: false) { _ in
+            forceStop("запись идёт дольше \(Int(hardCapSeconds / 60)) мин", session: sess)
+        }
+    }
+
+    /// Штатное завершение (клавиша нажата либо Esc).
+    static func end() {
+        guard active else { return }
+        active = false
+        disarm()
+        kbLog("хоткей: запись комбинации завершена")
+    }
+
+    /// Аварийный сброс: окно закрыли / потеряли фокус / истёк таймаут / начали другую запись.
+    /// `session` — чью именно запись гасим; отложенный колбэк от прошлой не трогает текущую.
+    private static func forceStop(_ reason: String, session sess: Int? = nil) {
+        guard active else { return }
+        if let sess, sess != session { return }
+        active = false
+        let s = stopper
+        disarm()
+        kbLog("хоткей: запись прервана (\(reason)) — движок снова работает")
+        s?()      // вернуть контрол в нормальный вид и снять его локальный монитор
+    }
+
+    private static func disarm() {
+        watchdog?.invalidate(); watchdog = nil
+        hardCap?.invalidate(); hardCap = nil
+        observers.forEach { NotificationCenter.default.removeObserver($0) }
+        observers.removeAll()
+        stopper = nil
+    }
+}
+
+/// Общее правило «хватает ли модификаторов». Живёт здесь, чтобы рекордеры и тап судили ОДИНАКОВО.
+///
+/// Почему это правило вообще есть (репорты #13/#22/#30, 27.07): назначенная по недосмотру «голая»
+/// клавиша перехватывается у ВСЕЙ системы. В пределе человек назначает пробел и остаётся без
+/// пробела во всех программах, пока не выйдет из Keyboop. Раньше запрет стоял только в контроле
+/// перевода, остальные три принимали что угодно.
+enum HotkeyKeys {
+    /// ⚠️ Белый список F13…F20 УБРАН (ревью 28.07). Он был реализован наполовину: рекордеры голую
+    /// F-клавишу принимали, но тап её перехватывал только для мгновенного переключения (у конверсии
+    /// и перевода стоит `!isEmpty`), а подписи KeyLabels знают лишь F1–F12 — панель рисовала пустую
+    /// капсулу и всё равно давала нажать «Назначить». Человек получал вечно мёртвый хоткей.
+    /// Полдела хуже, чем ничего: правило теперь одно и без исключений.
+
+    /// Допустима ли клавиша с таким набором модификаторов.
+    static func modifiersSufficient(keyCode: Int, mods: CGEventFlags) -> Bool {
+        let relevant: CGEventFlags = [.maskAlternate, .maskShift, .maskCommand, .maskControl]
+        return !mods.intersection(relevant).isEmpty
+    }
 }
 
 /// Комбинации, которые НЕЛЬЗЯ отдавать под наши хоткеи.
@@ -99,14 +253,15 @@ enum HotkeyGuard {
         48: "⌘Tab", 51: "⌘⌫"
     ]
     /// Объяснить человеку, почему не взяли (без этого «нажал — ничего» выглядит как поломка).
-    static func showRejected(_ what: String) {
-        let a = NSAlert()
-        a.messageText = "Эта комбинация занята системой"
-        a.informativeText = "\(what) нужен вам самому — копирование, отмена, закрытие окна. "
-            + "Добавьте ⌥ или ⌃ (например ⌃⌥T), и Keyboop не будет мешать привычным сочетаниям."
-        a.addButton(withTitle: "Понятно")
-        a.runModal()
+    /// Текст «эта комбинация занята системой» — показываем ПРЯМО в окне записи, не отдельным
+    /// модальным окном (просьба автора 28.07: алерт перекрывал само окно и обрывал запись, вместо
+    /// того чтобы дать спокойно нажать другое сочетание).
+    static func busyMessage(_ what: String) -> String {
+        String(format: L10n.t("hkrec.warn.busy"), what)
     }
+
+    /// Текст «нужен хотя бы один модификатор».
+    static func needsModifierMessage() -> String { L10n.t("hkrec.warn.bare") }
 
     /// nil — комбинация допустима; иначе текст, чем именно она занята.
     static func rejection(keyCode: Int, mods: CGEventFlags) -> String? {
@@ -122,8 +277,48 @@ final class HotkeyControl: NSView {
     private let settings = AppSettings.shared
     private let pop = NSPopUpButton(frame: .zero, pullsDown: false)
     private var monitor: Any?
+    /// Что применить, если человек нажмёт «Назначить» в окне записи. Пока nil — назначать нечего.
+    private var pendingApply: (() -> Void)?
+    /// Кандидат набран и ЗАМОРОЖЕН на экране: отпускание клавиш его больше не меняет.
+    private var frozen = false
+    /// Показали отказ, а клавиши ещё ФИЗИЧЕСКИ зажаты — ждём, пока отпустят всё. См. capture().
+    private var awaitingRelease = false
+    /// Предыдущий набор модификаторов — чтобы отличить «отпускает старое» от «начал новое».
+    private var lastMods: CGEventFlags = []
+
+    /// Человек начал набирать заново: модификаторы пошли вверх с нуля.
+    private func shouldRestart(_ mods: CGEventFlags) -> Bool { !mods.isEmpty && lastMods.isEmpty }
+
+    /// Сбросить замороженного кандидата перед новым набором.
+    private func restartIfFrozen() {
+        guard frozen else { return }
+        frozen = false
+        pendingApply = nil
+        resetPeaks()
+    }
+
+    /// Живое отображение, пока клавиши зажаты.
+    private func live(_ parts: [String]) {
+        HotkeyRecorderPanel.shared.render(parts: parts, complete: false)
+    }
+
+    /// Зафиксировать набранное: остаётся на экране, кнопка «Назначить» становится активной.
+    private func freeze(_ parts: [String]) {
+        frozen = true
+        HotkeyRecorderPanel.shared.render(parts: parts, complete: true)
+    }
+
+    /// Отказ БЕЗ прерывания записи: показываем причину в самом окне, человек жмёт другое сочетание.
+    private func warnInPanel(_ text: String, parts: [String]) {
+        frozen = false
+        pendingApply = nil
+        resetPeaks()
+        awaitingRelease = true
+        HotkeyRecorderPanel.shared.warn(text, parts: parts)
+    }
     private var peak: CGEventFlags = []
     private var peakKey: Int = -1   // keyCode ПЕРВОГО одиночного модификатора (для modkey, напр. левый Option)
+    private func resetPeaks() { peak = []; peakKey = -1 }
 
     // (label, mode, keyCode, modifiers). Лейбл modkey-пресетов локализуется в presetLabel() на
     // момент сборки списка (combo/doubletap — символ+англ., как у Apple в RU не переводится).
@@ -213,54 +408,101 @@ final class HotkeyControl: NSView {
     }
 
     private func startRecording() {
-        HotkeyRecording.active = true   // tap не трогает наши хоткеи, пока пишем
-        peak = []; peakKey = -1
+        HotkeyRecording.begin(stop: { [weak self] in self?.stopRecording() }, in: self.window)   // tap не трогает наши хоткеи, пока пишем
+        peak = []; peakKey = -1; pendingApply = nil
+        frozen = false; lastMods = []; awaitingRelease = false   // прошлую запись могли завершить с зажатыми модификаторами
         pop.item(at: Self.presets.count)?.title = L10n.t("hk.press")
         pop.synchronizeTitleAndSelectedItem()
+        HotkeyRecorderPanel.shared.show(what: L10n.t("hkrec.what.switch"), over: self.window,
+                                        onCommit: { [weak self] in self?.commitPending() },
+                                        onCancel: { [weak self] in self?.stopRecording() })
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] ev in
             self?.capture(ev)
             return nil
         }
     }
+    /// Человек нажал «Назначить» — только теперь пишем настройки.
+    private func commitPending() {
+        let apply = pendingApply
+        stopRecording()
+        apply?()
+        rebuild()
+    }
     private func stopRecording() {
-        HotkeyRecording.active = false
+        HotkeyRecording.end()
+        HotkeyRecorderPanel.shared.hide()
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+        pendingApply = nil
         rebuild()
     }
 
     private func capture(_ ev: NSEvent) {
+        HotkeyRecording.noteActivity()   // продлеваем сторожа: человек перебирает варианты, это не простой
         let mods = cg(ev.modifierFlags)
         if ev.type == .keyDown {
             if ev.keyCode == 53 { stopRecording(); return } // Esc
-            if let busy = HotkeyGuard.rejection(keyCode: Int(ev.keyCode), mods: mods) {
-                stopRecording(); HotkeyGuard.showRejected(busy); return
+            restartIfFrozen()
+            guard HotkeyKeys.modifiersSufficient(keyCode: Int(ev.keyCode), mods: mods) else {
+                warnInPanel(HotkeyGuard.needsModifierMessage(),
+                            parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
+                return
             }
-            settings.hotkeyMode = "key"
-            settings.hotkeyKeyCode = Int(ev.keyCode)
-            settings.hotkeyModifiers = mods.rawValue
-            settings.hotkeyKeyLabel = KeyLabels.symbol(forKeyCode: Int(ev.keyCode))
-            stopRecording()
+            if let busy = HotkeyGuard.rejection(keyCode: Int(ev.keyCode), mods: mods) {
+                warnInPanel(HotkeyGuard.busyMessage(busy),
+                            parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
+                return
+            }
+            let kc = Int(ev.keyCode), label = KeyLabels.symbol(forKeyCode: Int(ev.keyCode))
+            pendingApply = { [weak self] in
+                guard let s = self?.settings else { return }
+                s.hotkeyMode = "key"; s.hotkeyKeyCode = kc
+                s.hotkeyModifiers = mods.rawValue; s.hotkeyKeyLabel = label
+            }
+            freeze(HotkeyRecorderPanel.parts(mods: mods, keyLabel: label))
         } else {
+            // Пока на экране висит зафиксированный кандидат, ОТПУСКАНИЕ клавиш его не трогает —
+            // иначе человек не успевал донести мышь до «Назначить». Сброс только на новом наборе
+            // (см. shouldRestart): модификаторы пошли вверх с нуля.
+            // ⚠️ Показали отказ, а клавиши всё ещё ФИЗИЧЕСКИ зажаты. Их отпускание по одной приходит
+            // сюда обычным flagsChanged, и накопитель принимает его за НАЧАЛО нового набора: в
+            // кандидат уходит keyCode ОТПУСКАЕМОЙ клавиши с маской от тех, что ещё внизу. Человек
+            // видит на экране «⌃», а записывается левый ⌥ с маской control: сочетание, которое не
+            // сработает никогда, но при этом глотает модификатор у всей системы. Ждём чистого нуля.
+            // (Найдено ревью 28.07 на сценарии «зажал ⌃⌥, нажал T, получил отказ, отпустил по одной».)
+            if awaitingRelease {
+                lastMods = mods
+                if mods.isEmpty { awaitingRelease = false; resetPeaks() }
+                return
+            }
+            if frozen, !shouldRestart(mods) { lastMods = mods; return }
+            restartIfFrozen()
+            lastMods = mods
             if mods.isEmpty {
-                // Отпустили все модификаторы → коммитим накопленный пик.
+                // Отпустили все модификаторы → предлагаем накопленный пик (записываем по кнопке).
                 if count(peak) >= 2 {
-                    settings.hotkeyMode = "combo"          // ⌥⇧ и т.п.
-                    settings.hotkeyKeyCode = -1
-                    settings.hotkeyModifiers = peak.rawValue
-                    settings.hotkeyKeyLabel = ""
-                    stopRecording()
+                    let p = peak
+                    pendingApply = { [weak self] in
+                        guard let s = self?.settings else { return }
+                        s.hotkeyMode = "combo"          // ⌥⇧ и т.п.
+                        s.hotkeyKeyCode = -1; s.hotkeyModifiers = p.rawValue; s.hotkeyKeyLabel = ""
+                    }
+                    freeze(HotkeyRecorderPanel.parts(mods: p))
                 } else if count(peak) == 1, peakKey >= 0 {
                     // ОДИН модификатор (напр. левый Option) → modkey: тап по нему = переключение.
                     // Без этой ветки одиночный модификатор НЕ записывался → запись висела «бесконечно».
-                    settings.hotkeyMode = "modkey"
-                    settings.hotkeyKeyCode = peakKey
-                    settings.hotkeyModifiers = peak.rawValue
-                    settings.hotkeyKeyLabel = ""
-                    stopRecording()
+                    let p = peak, pk = peakKey
+                    pendingApply = { [weak self] in
+                        guard let s = self?.settings else { return }
+                        s.hotkeyMode = "modkey"
+                        s.hotkeyKeyCode = pk; s.hotkeyModifiers = p.rawValue; s.hotkeyKeyLabel = ""
+                    }
+                    freeze(HotkeyRecorderPanel.parts(mods: p))
                 } else { peak = []; peakKey = -1 }
             } else {
                 if peak.isEmpty, count(mods) == 1 { peakKey = Int(ev.keyCode) }  // ПЕРВЫЙ одиночный модификатор
                 if count(mods) >= count(peak) { peak = mods }
+                // Живое отображение: человек видит, что уже зажато.
+                live(HotkeyRecorderPanel.parts(mods: mods))
             }
         }
     }
@@ -367,8 +609,48 @@ final class VoiceHotkeyControl: NSView {
     private let settings = AppSettings.shared
     private let pop = NSPopUpButton(frame: .zero, pullsDown: false)
     private var monitor: Any?
+    /// Что применить, если человек нажмёт «Назначить» в окне записи. Пока nil — назначать нечего.
+    private var pendingApply: (() -> Void)?
+    /// Кандидат набран и ЗАМОРОЖЕН на экране: отпускание клавиш его больше не меняет.
+    private var frozen = false
+    /// Показали отказ, а клавиши ещё ФИЗИЧЕСКИ зажаты — ждём, пока отпустят всё. См. capture().
+    private var awaitingRelease = false
+    /// Предыдущий набор модификаторов — чтобы отличить «отпускает старое» от «начал новое».
+    private var lastMods: CGEventFlags = []
+
+    /// Человек начал набирать заново: модификаторы пошли вверх с нуля.
+    private func shouldRestart(_ mods: CGEventFlags) -> Bool { !mods.isEmpty && lastMods.isEmpty }
+
+    /// Сбросить замороженного кандидата перед новым набором.
+    private func restartIfFrozen() {
+        guard frozen else { return }
+        frozen = false
+        pendingApply = nil
+        resetPeaks()
+    }
+
+    /// Живое отображение, пока клавиши зажаты.
+    private func live(_ parts: [String]) {
+        HotkeyRecorderPanel.shared.render(parts: parts, complete: false)
+    }
+
+    /// Зафиксировать набранное: остаётся на экране, кнопка «Назначить» становится активной.
+    private func freeze(_ parts: [String]) {
+        frozen = true
+        HotkeyRecorderPanel.shared.render(parts: parts, complete: true)
+    }
+
+    /// Отказ БЕЗ прерывания записи: показываем причину в самом окне, человек жмёт другое сочетание.
+    private func warnInPanel(_ text: String, parts: [String]) {
+        frozen = false
+        pendingApply = nil
+        resetPeaks()
+        awaitingRelease = true
+        HotkeyRecorderPanel.shared.warn(text, parts: parts)
+    }
     private var pendingModKey: Int = -1
     private var pendingModFlag: CGEventFlags = []
+    private func resetPeaks() { pendingModKey = -1; pendingModFlag = [] }
 
     // (label, mode, keyCode, modifiers)
     private static var presets: [(String, String, Int, UInt64)] {
@@ -453,44 +735,87 @@ final class VoiceHotkeyControl: NSView {
     }
 
     private func startRecording() {
-        HotkeyRecording.active = true   // tap не трогает наши хоткеи, пока пишем
-        pendingModKey = -1; pendingModFlag = []
+        HotkeyRecording.begin(stop: { [weak self] in self?.stopRecording() }, in: self.window)   // tap не трогает наши хоткеи, пока пишем
+        pendingModKey = -1; pendingModFlag = []; pendingApply = nil
+        frozen = false; lastMods = []; awaitingRelease = false   // прошлую запись могли завершить с зажатыми модификаторами
         pop.item(at: Self.presets.count)?.title = L10n.t("hk.press")
         pop.synchronizeTitleAndSelectedItem()
+        HotkeyRecorderPanel.shared.show(what: L10n.t("hkrec.what.voice"), over: self.window,
+                                        onCommit: { [weak self] in self?.commitPending() },
+                                        onCancel: { [weak self] in self?.stopRecording() })
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] ev in
             self?.capture(ev); return nil
         }
     }
+    private func commitPending() {
+        let apply = pendingApply
+        stopRecording()
+        apply?()
+        rebuild()
+    }
     private func stopRecording() {
-        HotkeyRecording.active = false
+        HotkeyRecording.end()
+        HotkeyRecorderPanel.shared.hide()
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+        pendingApply = nil
         rebuild()
     }
 
     private func capture(_ ev: NSEvent) {
+        HotkeyRecording.noteActivity()   // продлеваем сторожа: человек перебирает варианты, это не простой
         if ev.type == .keyDown {
             if ev.keyCode == 53 { stopRecording(); return }   // Esc — отмена
-            if let busy = HotkeyGuard.rejection(keyCode: Int(ev.keyCode), mods: cg(ev.modifierFlags)) {
-                stopRecording(); HotkeyGuard.showRejected(busy); return
+            restartIfFrozen()
+            let mods = cg(ev.modifierFlags)
+            guard HotkeyKeys.modifiersSufficient(keyCode: Int(ev.keyCode), mods: mods) else {
+                warnInPanel(HotkeyGuard.needsModifierMessage(),
+                            parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
+                return
             }
-            settings.voiceHotkeyMode = "key"
-            settings.voiceHotkeyKeyCode = Int(ev.keyCode)
-            settings.voiceHotkeyModifiers = cg(ev.modifierFlags).rawValue
-            settings.voiceHotkeyKeyLabel = KeyLabels.symbol(forKeyCode: Int(ev.keyCode))
-            stopRecording()
+            if let busy = HotkeyGuard.rejection(keyCode: Int(ev.keyCode), mods: mods) {
+                warnInPanel(HotkeyGuard.busyMessage(busy),
+                            parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
+                return
+            }
+            let kc = Int(ev.keyCode), label = KeyLabels.symbol(forKeyCode: Int(ev.keyCode))
+            pendingApply = { [weak self] in
+                guard let s = self?.settings else { return }
+                s.voiceHotkeyMode = "key"; s.voiceHotkeyKeyCode = kc
+                s.voiceHotkeyModifiers = mods.rawValue; s.voiceHotkeyKeyLabel = label
+            }
+            freeze(HotkeyRecorderPanel.parts(mods: mods, keyLabel: label))
             return
         }
         // flagsChanged: одиночный модификатор = hold-to-talk (modkey).
+        // Замороженный кандидат отпусканием не сбрасываем — иначе не донести мышь до «Назначить».
+        let curMods = cg(ev.modifierFlags)
+        // ⚠️ Показали отказ, а клавиши всё ещё ФИЗИЧЕСКИ зажаты. Их отпускание по одной приходит
+        // сюда обычным flagsChanged, и накопитель принимает его за НАЧАЛО нового набора: в
+        // кандидат уходит keyCode ОТПУСКАЕМОЙ клавиши с маской от тех, что ещё внизу. Человек
+        // видит на экране «⌃», а записывается левый ⌥ с маской control: сочетание, которое не
+        // сработает никогда, но при этом глотает модификатор у всей системы. Ждём чистого нуля.
+        // (Найдено ревью 28.07 на сценарии «зажал ⌃⌥, нажал T, получил отказ, отпустил по одной».)
+        if awaitingRelease {
+            lastMods = curMods
+            if curMods.isEmpty { awaitingRelease = false; resetPeaks() }
+            return
+        }
+        if frozen, !shouldRestart(curMods) { lastMods = curMods; return }
+        restartIfFrozen()
+        lastMods = curMods
         let flag = Self.flagFor(Int(ev.keyCode))
         let isDown = !flag.isEmpty && cg(ev.modifierFlags).contains(flag)
         if isDown {
             pendingModKey = Int(ev.keyCode); pendingModFlag = flag
-        } else if pendingModKey == Int(ev.keyCode) {     // тот же модификатор отпущен → коммит
-            settings.voiceHotkeyMode = "modkey"
-            settings.voiceHotkeyKeyCode = pendingModKey
-            settings.voiceHotkeyModifiers = pendingModFlag.rawValue
-            settings.voiceHotkeyKeyLabel = ""
-            stopRecording()
+            live(HotkeyRecorderPanel.parts(mods: cg(ev.modifierFlags)))
+        } else if pendingModKey == Int(ev.keyCode) {     // тот же модификатор отпущен → предлагаем
+            let pk = pendingModKey, pf = pendingModFlag
+            pendingApply = { [weak self] in
+                guard let s = self?.settings else { return }
+                s.voiceHotkeyMode = "modkey"; s.voiceHotkeyKeyCode = pk
+                s.voiceHotkeyModifiers = pf.rawValue; s.voiceHotkeyKeyLabel = ""
+            }
+            freeze(HotkeyRecorderPanel.parts(mods: pf))
         }
     }
 
@@ -517,9 +842,50 @@ final class VoiceHotkeyControl: NSView {
 /// Контрол выбора хоткея ПЕРЕВОДА (key + модификаторы, напр. ⌃⌥T). Пресеты + запись своего.
 /// Перевод — это «тап» (не hold), поэтому только режим «key» (клавиша+модификаторы).
 final class TranslateHotkeyControl: NSView {
+    /// Копить нечего: здесь только «клавиша + модификаторы».
+    private func resetPeaks() {}
     private let settings = AppSettings.shared
     private let pop = NSPopUpButton(frame: .zero, pullsDown: false)
     private var monitor: Any?
+    /// Что применить, если человек нажмёт «Назначить» в окне записи. Пока nil — назначать нечего.
+    private var pendingApply: (() -> Void)?
+    /// Кандидат набран и ЗАМОРОЖЕН на экране: отпускание клавиш его больше не меняет.
+    private var frozen = false
+    /// Показали отказ, а клавиши ещё ФИЗИЧЕСКИ зажаты — ждём, пока отпустят всё. См. capture().
+    private var awaitingRelease = false
+    /// Предыдущий набор модификаторов — чтобы отличить «отпускает старое» от «начал новое».
+    private var lastMods: CGEventFlags = []
+
+    /// Человек начал набирать заново: модификаторы пошли вверх с нуля.
+    private func shouldRestart(_ mods: CGEventFlags) -> Bool { !mods.isEmpty && lastMods.isEmpty }
+
+    /// Сбросить замороженного кандидата перед новым набором.
+    private func restartIfFrozen() {
+        guard frozen else { return }
+        frozen = false
+        pendingApply = nil
+        resetPeaks()
+    }
+
+    /// Живое отображение, пока клавиши зажаты.
+    private func live(_ parts: [String]) {
+        HotkeyRecorderPanel.shared.render(parts: parts, complete: false)
+    }
+
+    /// Зафиксировать набранное: остаётся на экране, кнопка «Назначить» становится активной.
+    private func freeze(_ parts: [String]) {
+        frozen = true
+        HotkeyRecorderPanel.shared.render(parts: parts, complete: true)
+    }
+
+    /// Отказ БЕЗ прерывания записи: показываем причину в самом окне, человек жмёт другое сочетание.
+    private func warnInPanel(_ text: String, parts: [String]) {
+        frozen = false
+        pendingApply = nil
+        resetPeaks()
+        awaitingRelease = true
+        HotkeyRecorderPanel.shared.warn(text, parts: parts)
+    }
 
     // (label, keyCode, modifiers)
     private static let presets: [(String, Int, UInt64)] = [
@@ -589,33 +955,80 @@ final class TranslateHotkeyControl: NSView {
         }
     }
     private func startRecording() {
-        HotkeyRecording.active = true   // tap не трогает наши хоткеи, пока пишем
+        HotkeyRecording.begin(stop: { [weak self] in self?.stopRecording() }, in: self.window)   // tap не трогает наши хоткеи, пока пишем
+        pendingApply = nil
+        frozen = false; lastMods = []; awaitingRelease = false   // прошлую запись могли завершить с зажатыми модификаторами
         pop.item(at: Self.presets.count)?.title = L10n.t("hk.press")
         pop.synchronizeTitleAndSelectedItem()
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] ev in
+        HotkeyRecorderPanel.shared.show(what: L10n.t("hkrec.what.translate"), over: self.window,
+                                        onCommit: { [weak self] in self?.commitPending() },
+                                        onCancel: { [weak self] in self?.stopRecording() })
+        // Здесь ловим и flagsChanged — только ради живого показа зажатых модификаторов в окне.
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] ev in
             self?.capture(ev); return nil
         }
     }
+    private func commitPending() {
+        let apply = pendingApply
+        stopRecording()
+        apply?()
+        rebuild()
+    }
     private func stopRecording() {
-        HotkeyRecording.active = false
+        HotkeyRecording.end()
+        HotkeyRecorderPanel.shared.hide()
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+        pendingApply = nil
         rebuild()
     }
     private func capture(_ ev: NSEvent) {
-        if ev.keyCode == 53 { stopRecording(); return }   // Esc — отмена
+        HotkeyRecording.noteActivity()   // продлеваем сторожа: человек перебирает варианты, это не простой
         var m: CGEventFlags = []
         if ev.modifierFlags.contains(.option) { m.insert(.maskAlternate) }
         if ev.modifierFlags.contains(.shift) { m.insert(.maskShift) }
         if ev.modifierFlags.contains(.command) { m.insert(.maskCommand) }
         if ev.modifierFlags.contains(.control) { m.insert(.maskControl) }
-        guard !m.isEmpty else { return }   // нужен хотя бы один модификатор (иначе перехватит обычную T)
-        if let busy = HotkeyGuard.rejection(keyCode: Int(ev.keyCode), mods: m) {
-            stopRecording(); HotkeyGuard.showRejected(busy); return
+        if ev.type == .flagsChanged {
+            // ⚠️ Показали отказ, а клавиши всё ещё ФИЗИЧЕСКИ зажаты. Их отпускание по одной приходит
+            // сюда обычным flagsChanged, и накопитель принимает его за НАЧАЛО нового набора: в
+            // кандидат уходит keyCode ОТПУСКАЕМОЙ клавиши с маской от тех, что ещё внизу. Человек
+            // видит на экране «⌃», а записывается левый ⌥ с маской control: сочетание, которое не
+            // сработает никогда, но при этом глотает модификатор у всей системы. Ждём чистого нуля.
+            // (Найдено ревью 28.07 на сценарии «зажал ⌃⌥, нажал T, получил отказ, отпустил по одной».)
+            if awaitingRelease {
+                lastMods = m
+                if m.isEmpty { awaitingRelease = false; resetPeaks() }
+                return
+            }
+            if frozen, !shouldRestart(m) { lastMods = m; return }
+            restartIfFrozen()
+            lastMods = m
+            // ⚠️ Пустой набор НЕ рисуем: иначе отпускание модификаторов затирало бы предупреждение
+            // «комбинация занята системой», и человек получал бы «нажал, ничего не произошло» —
+            // то есть ровно то, ради устранения чего мы и убрали модальный алерт (ревью 28.07).
+            if !m.isEmpty { live(HotkeyRecorderPanel.parts(mods: m)) }
+            return
         }
-        settings.translateHotkeyKeyCode = Int(ev.keyCode)
-        settings.translateHotkeyModifiers = m.rawValue
-        settings.translateHotkeyKeyLabel = KeyLabels.symbol(forKeyCode: Int(ev.keyCode))
-        stopRecording()
+        if ev.keyCode == 53 { stopRecording(); return }   // Esc — отмена
+        restartIfFrozen()
+        guard !m.isEmpty else {                            // нужен хотя бы один модификатор
+            warnInPanel(HotkeyGuard.needsModifierMessage(),
+                        parts: HotkeyRecorderPanel.parts(mods: m, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
+            return
+        }
+        if let busy = HotkeyGuard.rejection(keyCode: Int(ev.keyCode), mods: m) {
+                warnInPanel(HotkeyGuard.busyMessage(busy),
+                            parts: HotkeyRecorderPanel.parts(mods: m, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
+                return
+            }
+        let kc = Int(ev.keyCode), label = KeyLabels.symbol(forKeyCode: Int(ev.keyCode))
+        pendingApply = { [weak self] in
+            guard let s = self?.settings else { return }
+            s.translateHotkeyKeyCode = kc
+            s.translateHotkeyModifiers = m.rawValue
+            s.translateHotkeyKeyLabel = label
+        }
+        freeze(HotkeyRecorderPanel.parts(mods: m, keyLabel: label))
     }
 }
 
@@ -631,8 +1044,48 @@ final class InstantSwitchControl: NSView {
     private let settings = AppSettings.shared
     private let pop = NSPopUpButton(frame: .zero, pullsDown: false)
     private var monitor: Any?
+    /// Что применить, если человек нажмёт «Назначить» в окне записи. Пока nil — назначать нечего.
+    private var pendingApply: (() -> Void)?
+    /// Кандидат набран и ЗАМОРОЖЕН на экране: отпускание клавиш его больше не меняет.
+    private var frozen = false
+    /// Показали отказ, а клавиши ещё ФИЗИЧЕСКИ зажаты — ждём, пока отпустят всё. См. capture().
+    private var awaitingRelease = false
+    /// Предыдущий набор модификаторов — чтобы отличить «отпускает старое» от «начал новое».
+    private var lastMods: CGEventFlags = []
+
+    /// Человек начал набирать заново: модификаторы пошли вверх с нуля.
+    private func shouldRestart(_ mods: CGEventFlags) -> Bool { !mods.isEmpty && lastMods.isEmpty }
+
+    /// Сбросить замороженного кандидата перед новым набором.
+    private func restartIfFrozen() {
+        guard frozen else { return }
+        frozen = false
+        pendingApply = nil
+        resetPeaks()
+    }
+
+    /// Живое отображение, пока клавиши зажаты.
+    private func live(_ parts: [String]) {
+        HotkeyRecorderPanel.shared.render(parts: parts, complete: false)
+    }
+
+    /// Зафиксировать набранное: остаётся на экране, кнопка «Назначить» становится активной.
+    private func freeze(_ parts: [String]) {
+        frozen = true
+        HotkeyRecorderPanel.shared.render(parts: parts, complete: true)
+    }
+
+    /// Отказ БЕЗ прерывания записи: показываем причину в самом окне, человек жмёт другое сочетание.
+    private func warnInPanel(_ text: String, parts: [String]) {
+        frozen = false
+        pendingApply = nil
+        resetPeaks()
+        awaitingRelease = true
+        HotkeyRecorderPanel.shared.warn(text, parts: parts)
+    }
     private var peak: CGEventFlags = []
     private var peakKey: Int = -1
+    private func resetPeaks() { peak = []; peakKey = -1 }
     /// Позвать после изменения — раздел настроек перерисует предупреждение под строкой.
     var onChange: (() -> Void)?
 
@@ -655,12 +1108,40 @@ final class InstantSwitchControl: NSView {
         return nil
     }
 
+    /// Одно и то же ли это нажатие. Сравниваем в первую очередь РЕЖИМ, а не пару (keyCode, mods).
+    ///
+    /// Для «голого модификатора» ключ сравнения — сама клавиша: маска из неё следует, а левый и
+    /// правый ⌥ дают ОДНУ маску при разных keyCode, так что сравнение по маске здесь и слепит
+    /// разные клавиши, и не различает одинаковые.
+    private func sameTrigger(_ mode: String, _ keyCode: Int, _ mods: UInt64,
+                             as other: (mode: String, keyCode: Int, mods: UInt64)) -> Bool {
+        guard mode == other.mode else { return false }
+        switch mode {
+        case "globe":  return true                       // 🌐 одна на всех, сравнивать нечего
+        case "modkey": return keyCode == other.keyCode
+        default:       return keyCode == other.keyCode && mods == other.mods
+        }
+    }
+
     /// Занята ли комбинация нашими же хоткеями (конверсия / диктовка / перевод).
+    ///
+    /// ⚠️ Проверки диктовки и перевода стояли под `mode == "key"` (исправлено 28.07). То есть режим
+    /// «голый модификатор» не проверялся ВООБЩЕ, а правый ⌥ (keyCode 61) — это заводская комбинация
+    /// диктовки. Назначив его же на мгновенную смену языка, человек получал два действия на одно
+    /// нажатие и ни одного предупреждения: правило проекта «одна комбинация = одна функция» молча
+    /// не работало ровно в том случае, ради которого писалось.
     private func collides(mode: String, keyCode: Int, mods: UInt64) -> String? {
         let s = settings
-        if mode == s.hotkeyMode, keyCode == s.hotkeyKeyCode, mods == s.hotkeyModifiers { return L10n.t("is.busy.convert") }
-        if mode == "key", keyCode == s.voiceHotkeyKeyCode, mods == s.voiceHotkeyModifiers { return L10n.t("is.busy.voice") }
-        if mode == "key", keyCode == s.translateHotkeyKeyCode, mods == s.translateHotkeyModifiers { return L10n.t("is.busy.translate") }
+        if sameTrigger(mode, keyCode, mods, as: (s.hotkeyMode, s.hotkeyKeyCode, s.hotkeyModifiers)) {
+            return L10n.t("is.busy.convert")
+        }
+        if sameTrigger(mode, keyCode, mods, as: (s.voiceHotkeyMode, s.voiceHotkeyKeyCode, s.voiceHotkeyModifiers)) {
+            return L10n.t("is.busy.voice")
+        }
+        // Перевод живёт только в режиме «клавиша + модификаторы», своего режима у него нет.
+        if sameTrigger(mode, keyCode, mods, as: ("key", s.translateHotkeyKeyCode, s.translateHotkeyModifiers)) {
+            return L10n.t("is.busy.translate")
+        }
         return nil
     }
 
@@ -732,21 +1213,33 @@ final class InstantSwitchControl: NSView {
     }
 
     private func startRecording() {
-        HotkeyRecording.active = true   // tap не трогает наши хоткеи, пока пишем
-        peak = []; peakKey = -1
+        HotkeyRecording.begin(stop: { [weak self] in self?.stopRecording() }, in: self.window)   // tap не трогает наши хоткеи, пока пишем
+        peak = []; peakKey = -1; pendingApply = nil
+        frozen = false; lastMods = []; awaitingRelease = false   // прошлую запись могли завершить с зажатыми модификаторами
         pop.item(at: Self.presets.count)?.title = L10n.t("hk.press")
         pop.synchronizeTitleAndSelectedItem()
+        HotkeyRecorderPanel.shared.show(what: L10n.t("hkrec.what.instant"), over: self.window,
+                                        onCommit: { [weak self] in self?.commitPending() },
+                                        onCancel: { [weak self] in self?.stopRecording() })
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] ev in
             self?.capture(ev); return nil
         }
     }
+    private func commitPending() {
+        let apply = pendingApply
+        stopRecording()
+        apply?()          // apply(mode:…) сам покажет алерт при коллизии и откатит выбор
+    }
     private func stopRecording() {
-        HotkeyRecording.active = false
+        HotkeyRecording.end()
+        HotkeyRecorderPanel.shared.hide()
         if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+        pendingApply = nil
         rebuild()
     }
 
     private func capture(_ ev: NSEvent) {
+        HotkeyRecording.noteActivity()   // продлеваем сторожа: человек перебирает варианты, это не простой
         var mods: CGEventFlags = []
         let f = ev.modifierFlags
         if f.contains(.option) { mods.insert(.maskAlternate) }
@@ -756,21 +1249,62 @@ final class InstantSwitchControl: NSView {
         if f.contains(.capsLock) { mods.insert(.maskAlphaShift) }
         if ev.type == .keyDown {
             if ev.keyCode == 53 { stopRecording(); return }   // Esc — отмена записи
-            if let busy = HotkeyGuard.rejection(keyCode: Int(ev.keyCode), mods: mods) {
-                stopRecording(); HotkeyGuard.showRejected(busy); return
+            restartIfFrozen()
+            guard HotkeyKeys.modifiersSufficient(keyCode: Int(ev.keyCode), mods: mods) else {
+                warnInPanel(HotkeyGuard.needsModifierMessage(),
+                            parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
+                return
             }
-            stopRecording()
-            apply(mode: "key", keyCode: Int(ev.keyCode), mods: mods.rawValue,
-                  label: KeyLabels.symbol(forKeyCode: Int(ev.keyCode)))
+            if let busy = HotkeyGuard.rejection(keyCode: Int(ev.keyCode), mods: mods) {
+                warnInPanel(HotkeyGuard.busyMessage(busy),
+                            parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
+                return
+            }
+            let kc = Int(ev.keyCode), label = KeyLabels.symbol(forKeyCode: Int(ev.keyCode))
+            // Занято НАШЕЙ же функцией — говорим об этом прямо в окне записи, не модальным алертом
+            // поверх него: запись продолжается, человек тут же жмёт другое сочетание.
+            if let busy = collides(mode: "key", keyCode: kc, mods: mods.rawValue) {
+                warnInPanel(String(format: L10n.t("hkrec.warn.ours"), busy),
+                            parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: label))
+                return
+            }
+            pendingApply = { [weak self] in
+                self?.apply(mode: "key", keyCode: kc, mods: mods.rawValue, label: label)
+            }
+            freeze(HotkeyRecorderPanel.parts(mods: mods, keyLabel: label))
         } else {
+            // ⚠️ Показали отказ, а клавиши всё ещё ФИЗИЧЕСКИ зажаты. Их отпускание по одной приходит
+            // сюда обычным flagsChanged, и накопитель принимает его за НАЧАЛО нового набора: в
+            // кандидат уходит keyCode ОТПУСКАЕМОЙ клавиши с маской от тех, что ещё внизу. Человек
+            // видит на экране «⌃», а записывается левый ⌥ с маской control: сочетание, которое не
+            // сработает никогда, но при этом глотает модификатор у всей системы. Ждём чистого нуля.
+            // (Найдено ревью 28.07 на сценарии «зажал ⌃⌥, нажал T, получил отказ, отпустил по одной».)
+            if awaitingRelease {
+                lastMods = mods
+                if mods.isEmpty { awaitingRelease = false; resetPeaks() }
+                return
+            }
+            if frozen, !shouldRestart(mods) { lastMods = mods; return }
+            restartIfFrozen()
+            lastMods = mods
             if mods.isEmpty {
                 if peak.rawValue != 0, peakKey >= 0 {
-                    stopRecording()
-                    apply(mode: "modkey", keyCode: peakKey, mods: peak.rawValue, label: "")
+                    let p = peak, pk = peakKey
+                    // Caps показываем его собственным символом: «⇪» понятнее пустоты.
+                    let shown = pk == 57 ? ["⇪"] : HotkeyRecorderPanel.parts(mods: p)
+                    if let busy = collides(mode: "modkey", keyCode: pk, mods: p.rawValue) {
+                        warnInPanel(String(format: L10n.t("hkrec.warn.ours"), busy), parts: shown)
+                        return
+                    }
+                    pendingApply = { [weak self] in
+                        self?.apply(mode: "modkey", keyCode: pk, mods: p.rawValue, label: "")
+                    }
+                    freeze(shown)
                 } else { peak = []; peakKey = -1 }
             } else {
                 if peak.isEmpty { peakKey = Int(ev.keyCode) }
                 peak = mods
+                live(HotkeyRecorderPanel.parts(mods: mods))
             }
         }
     }

@@ -72,7 +72,13 @@ final class Engine: EventTapHandler {
     private func noteSecureInput(_ on: Bool) {
         guard on != secureInputWasOn else { return }
         secureInputWasOn = on
+        AppHealth.secureInputOn = on
+        // ⚠️ Меню надо ПЕРЕРИСОВАТЬ прямо здесь (ревью 28.07). buildMenu() зовётся из onLayoutMaybeChanged,
+        // то есть по факту УДАЧНОЙ конверсии, а при Secure Input конверсий нет по определению —
+        // строка «что мешает» в своём главном случае просто не появлялась бы.
+        DispatchQueue.main.async { MenuBarController.shared?.refresh() }
         if !on {
+            AppHealth.secureInputHolder = nil
             let held = Int(ProcessInfo.processInfo.systemUptime - secureInputSince)
             kbLog("secure input СНЯТ (держали ~\(held)с) — Keyboop снова видит клавиатуру")
             return
@@ -97,6 +103,13 @@ final class Engine: EventTapHandler {
             }
             // NSRunningApplication знает только GUI-приложения; демоны (loginwindow и пр.) — по pid.
             let name = NSRunningApplication(processIdentifier: pid)?.localizedName ?? "не-GUI процесс"
+            // Пишем с main: читают отсюда меню и диагностика, оба на главном потоке (ревью 28.07 —
+            // раньше запись шла с фоновой очереди ioreg, а чтение с main, без синхронизации).
+            DispatchQueue.main.async {
+                guard AppHealth.secureInputOn else { return }   // за время ioreg (~0.7с) могли уже снять
+                AppHealth.secureInputHolder = name
+                MenuBarController.shared?.refresh()             // имя нашлось — обновляем строку в меню
+            }
             kbLog("secure input: держатель — \(name) (pid \(pid))")
         }
     }

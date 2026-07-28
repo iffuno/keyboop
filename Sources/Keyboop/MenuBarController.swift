@@ -308,6 +308,20 @@ final class MenuBarController: NSObject {
             menu.addItem(.separator())
         }
 
+        // ⚠️ СОСТОЯНИЕ «НЕ МОГУ РАБОТАТЬ» — ПЕРВОЙ СТРОКОЙ (разбор 34 репортов, 28.07). Главный вывод
+        // разбора: приложение молчит ровно в тех состояниях, где оно не работает, и человеку неоткуда
+        // узнать причину. Самый частый случай — Secure Input: пока его держит другое приложение,
+        // macOS СИСТЕМНО прячет клавиатуру от всех тапов, и мы мертвы не по своей вине. В логе одного
+        // репортёра держатель даже назван по имени, а человек об этом так и не узнал и написал
+        // «не работает» (причём написал в неверной раскладке — мы не сконвертировали, потому что были
+        // слепы). Показываем прямо в меню, с именем держателя, если успели его найти.
+        if let problem = AppHealth.blockingProblem {
+            let warn = NSMenuItem(title: "⚠︎ " + problem, action: nil, keyEquivalent: "")
+            warn.isEnabled = false
+            menu.addItem(warn)
+            menu.addItem(.separator())
+        }
+
         let auto = NSMenuItem(title: L10n.t("menu.auto"), action: #selector(toggleAuto), keyEquivalent: "")
         auto.target = self
         auto.state = settings.autoEnabled ? .on : .off

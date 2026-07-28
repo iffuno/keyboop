@@ -1200,7 +1200,15 @@ final class DetailVC: NSViewController {
         settings.silentAutoUpdate = (s.state == .on)
         // silent требует проверки → при включении форсим её ВКЛ; reshow перерисует раздел, и тумблер
         // «Проверять обновления» станет вкл+серым (а при выключении silent — снова доступным).
-        if settings.silentAutoUpdate { UpdaterController.shared.automaticChecks = true }
+        if settings.silentAutoUpdate {
+            UpdaterController.shared.automaticChecks = true
+            // Апдейт мог быть уже скачан и ждать нашего уведомления — в тихом режиме его не будет,
+            // поэтому запускаем ожидание простоя прямо сейчас (иначе он висит до перезапуска).
+            UpdaterController.shared.noteSilentModeEnabled()
+        } else {
+            // Передумали: гасим взведённое ожидание, иначе оно доработает и поставит вопреки «нет».
+            UpdaterController.shared.cancelSilentWait()
+        }
         // Откладываем на такт: reshow() сносит contentStack вместе с ЭТИМ ЖЕ NSSwitch, а на macOS 26
         // это teardown его SwiftUI-графа изнутри собственного sendAction/анимации (см. RowMetrics).
         DispatchQueue.main.async { [weak self] in self?.reshow() }
@@ -1321,6 +1329,13 @@ final class DetailVC: NSViewController {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 500),
                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             w.title = L10n.t("about.whatsNew")
+            // ⚠️ Краш при ВТОРОМ открытии (крэш-репорт 27.07, EXC_BAD_ACCESS/SIGSEGV на главном
+            // потоке с пометкой pointer authentication failure). У NSWindow по умолчанию
+            // isReleasedWhenClosed = true: после закрытия красной кнопкой AppKit объект освобождает,
+            // а наша переменная whatsNewWindow держит висячий указатель. Проверка «== nil» его не
+            // ловит (указатель не nil, он протух), и мы лезем в contentView освобождённого объекта.
+            // Само не чинится: владелец (DetailVC) живёт до конца работы приложения.
+            w.isReleasedWhenClosed = false
             w.titlebarAppearsTransparent = true
             w.center()
             let scroll = NSScrollView()
@@ -1342,6 +1357,12 @@ final class DetailVC: NSViewController {
             (whatsNewWindow?.contentView as? NSScrollView)?.documentView
                 .flatMap { $0 as? NSTextView }?.textStorage?.setAttributedString(changelogAttributed())
         }
+        // ⚠️ Ниже — общий хвост для ОБОИХ путей. Правка isReleasedWhenClosed оживила ветку else,
+        // которая раньше не выполнялась никогда (окно умирало при закрытии): без этого заголовок
+        // остался бы на прежнем языке, а список — прокрученным туда, где человек его бросил, то есть
+        // он открыл бы «Что нового» и увидел старые версии вместо свежих.
+        whatsNewWindow?.title = L10n.t("about.whatsNew")
+        (whatsNewWindow?.contentView as? NSScrollView)?.documentView?.scroll(.zero)
         whatsNewWindow?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
