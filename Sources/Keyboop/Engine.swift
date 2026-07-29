@@ -1343,10 +1343,34 @@ final class Engine: EventTapHandler {
         buffer.applyConversion(converted: prop.text)   // экран после замены = converted
         buffer.boundary("\n")                          // граница в модели: Enter уйдёт нашей синтетикой
         if !prop.rescue { UndoLearner.shared.noteConversion(original: word, converted: prop.text) }
-        settings.rescuedCount += 1
+
+        // ⚠️ ХВОСТ ЭТОГО МЕТОДА — САМОЕ ГОРЯЧЕЕ МЕСТО В ПРОЕКТЕ (правка 29.07).
+        // convertBeforeReturn работает СИНХРОННО внутри колбэка CGEventTap, то есть всё, что стоит
+        // ниже, система ждёт, держа клавиатуру. По логам из отзывов девять строк «МЕДЛЕННЫЙ колбэк
+        // tap» на шести разных машинах шли ровно за строкой enter-pre, худшая 394 мс. У одного
+        // человека система за это выключила тап и НАЖАТИЯ ЗА ЭТОТ ПРОМЕЖУТОК БЫЛИ ПОТЕРЯНЫ
+        // (EventTap.swift, ветка kCGEventTapDisabledByTimeout). Настройка включена по умолчанию.
+        //
+        // Что уносим в async и почему это безопасно: от счётчика, перерисовки меню и звука не
+        // зависит НИ ОДНО следующее событие — они чисто побочные. Порядок между собой сохраняется,
+        // потому что все три уходят одним блоком.
+        //
+        // Что НЕ уносим: layout.selectLayout. От него зависит декодирование следующего нажатия, а
+        // рядом живёт та самая гонка «мнение против реальности». Переставлять его на глаз нельзя —
+        // ровно в этом классе правок мы уже четыре раза записывали неверный диагноз. Вместо этого
+        // меряем и просим лог сказать правду: он же перечисляет все источники ввода через TIS, и
+        // если основная стоимость здесь, следующий отчёт это покажет числом, а не догадкой.
+        let tLayout = CACurrentMediaTime()
         layout.selectLayout(cyrillic: prop.toCyrillic)
-        onLayoutMaybeChanged?()
-        playSound()
+        let layoutMs = (CACurrentMediaTime() - tLayout) * 1000
+        if layoutMs > 5 { kbLog("enter-pre: selectLayout занял \(Int(layoutMs)) мс — внутри колбэка тапа") }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.settings.rescuedCount += 1
+            self.onLayoutMaybeChanged?()
+            self.playSound()
+        }
         return true
     }
 

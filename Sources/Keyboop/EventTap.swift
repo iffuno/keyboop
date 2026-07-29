@@ -36,6 +36,7 @@ final class EventTap {
     private var lastModTap: CFTimeInterval = 0
     private var otherKeyBetweenTaps = false
     private var voiceActive = false
+    private var voiceComboArmed = false             // комбинация модификаторов диктовки сейчас зажата целиком
     private var voiceKeyArmed = false
     private var lastVoiceToggle: TimeInterval = 0   // debounce toggle (не зависит от keyUp)
     private var deadState: UInt32 = 0               // состояние мёртвых клавиш для UCKeyTranslate-фолбэка
@@ -354,6 +355,34 @@ final class EventTap {
     private func handleFlags(_ flags: CGEventFlags, keyCode: Int64) -> Bool {
         if HotkeyRecording.active { return false }   // идёт запись комбинации — не перехватываем (см. keyDown)
         let s = AppSettings.shared
+        // ⚠️ SECURE INPUT ПРЯЧЕТ keyDown, НО НЕ ПРЯЧЕТ flagsChanged (разбор 29.07, репорт #46).
+        // Все четыре жеста «чистый тап» доказывают свою чистоту ОТСУТСТВИЕМ обычной клавиши между
+        // нажатием и отпусканием — а именно эти события macOS от нас и скрывает, пока держится
+        // Secure Input. Замерено по 46 отчётам: внутри таких окон сработало 77 действий по
+        // модификаторам и НОЛЬ строк, приходящих от нажатий клавиш.
+        // Для человека это выглядело так: мгновенное переключение висело на левом ⇧, он жал ⇧,
+        // печатал заглавную (мы её не видим), отпускал ⇧ — и мы считали это чистым тапом и меняли
+        // язык. Ровно его слова «переключает после первой буквы». Выключение автопереключения не
+        // помогало: этот путь его не проверяет вовсе.
+        // Решение честное: раз доказать чистоту нельзя, считаем, что клавиша БЫЛА. Взвод снимаем,
+        // «между тапами что-то было» ставим — и все четыре машины отказываются стрелять сами,
+        // без правок на местах срабатывания.
+        // Значение берём из кэша (опрос раз в 2.5с в Engine): холодный IsSecureEventInputEnabled()
+        // стоит до ~44 мс, а мы внутри колбэка тапа — там этого нельзя.
+        // Удержание диктовки НЕ трогаем: оно срабатывает по точному совпадению маски, а не по
+        // отсутствию посторонней клавиши, и этой дырой не задето. Гасить его здесь означало бы
+        // оставить запись включённой навсегда, потому что отпускание мы бы уже не обработали.
+        if AppHealth.secureInputOn {
+            // Пишем в лог ТОЛЬКО когда взвод действительно был: otherKey*-флаги в спокойном
+            // состоянии и так false, и проверка по ним дала бы строку почти на каждое событие.
+            if fnArmed || modkeyArmed {
+                kbLog("жест по модификатору снят со взвода: держится Secure Input, обычные клавиши от нас скрыты")
+            }
+            fnArmed = false
+            modkeyArmed = false
+            otherKeyBetweenTaps = true    // «между тапами что-то было» — доказать обратное нечем
+            otherKeyDuringCombo = true    // то же для комбинации
+        }
         // ⚠️ Гасим взвод одиночного модификатора ПЕРВЫМ ДЕЛОМ (ревью 28.07 — репорт #17 был закрыт
         // лишь наполовину). Если вторая клавиша комбинации это клавиша мгновенного переключения,
         // её flagsChanged уходит в `return true` ниже и до ветки «другой модификатор вмешался» не
@@ -412,6 +441,35 @@ final class EventTap {
                     voiceActive = true; VoiceGate.set(true)
                     onMain { [weak self] in self?.handler?.handleVoiceBegin() }
                 } else if !down && voiceActive {
+                    voiceActive = false; VoiceGate.set(false)
+                    onMain { [weak self] in self?.handler?.handleVoiceEnd() }
+                }
+            }
+            return false
+        }
+        // Voice combo (напр. ⌥⌘) — режима не существовало до 29.07, поэтому записать сочетание из
+        // двух модификаторов было нельзя в принципе: рекордер предлагал одиночную клавишу, а движок
+        // и такую комбинацию не понял бы. Репорт #21 (0.2.69) и повтор #44/#45 на 0.3.0.
+        // Семантика ровно как у modkey, только вместо одной клавиши — точное совпадение маски:
+        // «удерживать» = зажал комбинацию целиком → запись, разжал любой из них → стоп;
+        // «переключать» = тап по набору комбинации.
+        if s.voiceEnabled, s.voiceHotkeyMode == "combo" {
+            let target = relevantMods(CGEventFlags(rawValue: s.voiceHotkeyModifiers))
+            guard !target.isEmpty else { return false }
+            if relevantMods(flags) == target {
+                // Взводим один раз на набор: flagsChanged приходит на каждую клавишу комбинации,
+                // а совпадение с маской наступает только на последней.
+                if !voiceComboArmed {
+                    voiceComboArmed = true
+                    if s.voiceHoldMode == "toggle" { toggleVoice() }
+                    else if !voiceActive {
+                        voiceActive = true; VoiceGate.set(true)
+                        onMain { [weak self] in self?.handler?.handleVoiceBegin() }
+                    }
+                }
+            } else if voiceComboArmed {
+                voiceComboArmed = false
+                if s.voiceHoldMode != "toggle", voiceActive {
                     voiceActive = false; VoiceGate.set(false)
                     onMain { [weak self] in self?.handler?.handleVoiceEnd() }
                 }

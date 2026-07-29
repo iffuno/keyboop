@@ -648,9 +648,26 @@ final class VoiceHotkeyControl: NSView {
         awaitingRelease = true
         HotkeyRecorderPanel.shared.warn(text, parts: parts)
     }
-    private var pendingModKey: Int = -1
-    private var pendingModFlag: CGEventFlags = []
-    private func resetPeaks() { pendingModKey = -1; pendingModFlag = [] }
+    /// Накопитель, как у HotkeyControl. ДО 29.07 здесь лежала одна пара pendingModKey/pendingModFlag,
+    /// и каждый следующий нажатый модификатор ЗАТИРАЛ предыдущий: зажал ⌥, добавил ⌘ — про ⌥ забыли,
+    /// на отпускании предлагали ⌘ в одиночку. Пользователь видел ровно то, что описал в репорте #21:
+    /// «просто выбирает одну клавишу, которая была», и повторил на 0.3.0 (репорты #44/#45).
+    /// Копим пик и на полном отпускании решаем: ≥2 модификатора → combo, ровно один → modkey.
+    private var peak: CGEventFlags = []
+    private var peakKey: Int = -1   // keyCode ПЕРВОГО одиночного модификатора (для modkey)
+    private func resetPeaks() { peak = []; peakKey = -1 }
+    private func count(_ m: CGEventFlags) -> Int {
+        [.maskAlternate, .maskShift, .maskCommand, .maskControl].filter { m.contains($0) }.count
+    }
+
+    /// Занята ли эта комбинация модификаторов другим нашим хоткеем, живущим в режиме "combo".
+    /// Сравниваем только с такими же комбинациями: modkey и key — другие нажатия, они не конфликтуют.
+    private func comboCollision(_ mods: CGEventFlags) -> String? {
+        let s = settings
+        if s.hotkeyMode == "combo", s.hotkeyModifiers == mods.rawValue { return L10n.t("is.busy.convert") }
+        if s.instantSwitchMode == "combo", s.instantSwitchMods == mods.rawValue { return L10n.t("is.busy.instant") }
+        return nil
+    }
 
     // (label, mode, keyCode, modifiers)
     private static var presets: [(String, String, Int, UInt64)] {
@@ -736,7 +753,7 @@ final class VoiceHotkeyControl: NSView {
 
     private func startRecording() {
         HotkeyRecording.begin(stop: { [weak self] in self?.stopRecording() }, in: self.window)   // tap не трогает наши хоткеи, пока пишем
-        pendingModKey = -1; pendingModFlag = []; pendingApply = nil
+        resetPeaks(); pendingApply = nil
         frozen = false; lastMods = []; awaitingRelease = false   // прошлую запись могли завершить с зажатыми модификаторами
         pop.item(at: Self.presets.count)?.title = L10n.t("hk.press")
         pop.synchronizeTitleAndSelectedItem()
@@ -803,19 +820,40 @@ final class VoiceHotkeyControl: NSView {
         if frozen, !shouldRestart(curMods) { lastMods = curMods; return }
         restartIfFrozen()
         lastMods = curMods
-        let flag = Self.flagFor(Int(ev.keyCode))
-        let isDown = !flag.isEmpty && cg(ev.modifierFlags).contains(flag)
-        if isDown {
-            pendingModKey = Int(ev.keyCode); pendingModFlag = flag
-            live(HotkeyRecorderPanel.parts(mods: cg(ev.modifierFlags)))
-        } else if pendingModKey == Int(ev.keyCode) {     // тот же модификатор отпущен → предлагаем
-            let pk = pendingModKey, pf = pendingModFlag
-            pendingApply = { [weak self] in
-                guard let s = self?.settings else { return }
-                s.voiceHotkeyMode = "modkey"; s.voiceHotkeyKeyCode = pk
-                s.voiceHotkeyModifiers = pf.rawValue; s.voiceHotkeyKeyLabel = ""
-            }
-            freeze(HotkeyRecorderPanel.parts(mods: pf))
+        if curMods.isEmpty {
+            // Отпустили всё → предлагаем накопленный пик.
+            if count(peak) >= 2 {
+                // Комбинация модификаторов, напр. ⌥⌘. В режиме «удерживать» — зажал/разжал,
+                // в «переключать» — тап. Обрабатывается в EventTap, ветка voiceHotkeyMode == "combo".
+                //
+                // Раньше комбинацию сюда было не ввести в принципе, поэтому и столкнуться с чужой
+                // она не могла. Теперь может — а правило проекта «одна комбинация = одна функция»
+                // требует не арбитраж в момент нажатия, а запрет в интерфейсе.
+                if let busy = comboCollision(peak) {
+                    warnInPanel(HotkeyGuard.busyMessage(busy), parts: HotkeyRecorderPanel.parts(mods: peak))
+                    return
+                }
+                let p = peak
+                pendingApply = { [weak self] in
+                    guard let s = self?.settings else { return }
+                    s.voiceHotkeyMode = "combo"
+                    s.voiceHotkeyKeyCode = -1; s.voiceHotkeyModifiers = p.rawValue; s.voiceHotkeyKeyLabel = ""
+                }
+                freeze(HotkeyRecorderPanel.parts(mods: p))
+            } else if count(peak) == 1, peakKey >= 0 {
+                // Один модификатор (напр. правый ⌥) — прежнее поведение hold-to-talk.
+                let p = peak, pk = peakKey
+                pendingApply = { [weak self] in
+                    guard let s = self?.settings else { return }
+                    s.voiceHotkeyMode = "modkey"; s.voiceHotkeyKeyCode = pk
+                    s.voiceHotkeyModifiers = p.rawValue; s.voiceHotkeyKeyLabel = ""
+                }
+                freeze(HotkeyRecorderPanel.parts(mods: p))
+            } else { resetPeaks() }
+        } else {
+            if peak.isEmpty, count(curMods) == 1 { peakKey = Int(ev.keyCode) }   // ПЕРВЫЙ одиночный
+            if count(curMods) >= count(peak) { peak = curMods }
+            live(HotkeyRecorderPanel.parts(mods: curMods))
         }
     }
 
@@ -1292,6 +1330,18 @@ final class InstantSwitchControl: NSView {
                     let p = peak, pk = peakKey
                     // Caps показываем его собственным символом: «⇪» понятнее пустоты.
                     let shown = pk == 57 ? ["⇪"] : HotkeyRecorderPanel.parts(mods: p)
+                    // ⚠️ SHIFT НЕЛЬЗЯ (разбор 29.07, репорт #46). Shift нажимается перед КАЖДОЙ
+                    // заглавной буквой, то есть тысячи раз в день, и вся защита от ложных
+                    // срабатываний держится на одной улике «между нажатием и отпусканием не было
+                    // обычной клавиши». Стоит этой улике потеряться — а при залипшем Secure Input
+                    // macOS скрывает от нас ровно её, — и язык начинает переключаться после первой
+                    // же заглавной буквы. У человека это выглядело так, что он выключил главную
+                    // функцию продукта, лишь бы печатать. Запрет в интерфейсе надёжнее, чем
+                    // вычищать последствия по одному месту.
+                    if pk == 56 || pk == 60 {
+                        warnInPanel(L10n.t("is.noShift"), parts: shown)
+                        return
+                    }
                     if let busy = collides(mode: "modkey", keyCode: pk, mods: p.rawValue) {
                         warnInPanel(String(format: L10n.t("hkrec.warn.ours"), busy), parts: shown)
                         return

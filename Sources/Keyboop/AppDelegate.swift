@@ -145,6 +145,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             kbLog("first run: launchAtLogin=\(AppSettings.shared.launchAtLogin), voice=toggle")
         }
 
+        // ⚠️ МИГРАЦИЯ 29.07: снимаем мгновенное переключение с Shift, если оно там уже стоит.
+        // Запрет в рекордере (UIControls) закрывает только НОВЫЕ привязки, а у тех, кто повесил
+        // раньше, настройка лежит в defaults и продолжает работать. Shift нажимается перед каждой
+        // заглавной буквой, а весь жест держится на улике «между нажатием и отпусканием не было
+        // обычной клавиши» — улике, которую macOS от нас скрывает при залипшем Secure Input
+        // (репорт #46: язык переключался после первой же заглавной, человек в итоге выключил
+        // автопереключение целиком, лишь бы печатать).
+        // Выключаем саму функцию, а не подменяем клавишу молча: подмена — это тихое изменение
+        // поведения, а выключение человек увидит в настройках и выберет сам.
+        if AppSettings.shared.instantSwitchMode == "modkey",
+           AppSettings.shared.instantSwitchKeyCode == 56 || AppSettings.shared.instantSwitchKeyCode == 60 {
+            let kc = AppSettings.shared.instantSwitchKeyCode
+            AppSettings.shared.instantSwitchEnabled = false
+            kbLog("миграция: мгновенное переключение было на Shift (keyCode \(kc)) — выключено, оно ложно срабатывало после заглавных букв")
+        }
+
         // Первый запуск: окно-приветствие (онбординг) — один раз.
         if !AppSettings.shared.didShowWelcome
             && ProcessInfo.processInfo.environment["KEYBOOP_DUMP"] != "1"

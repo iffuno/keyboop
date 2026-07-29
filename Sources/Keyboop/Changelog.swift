@@ -6,6 +6,21 @@ enum Changelog {
     struct Release { let version: String; let ru: [String]; let en: [String] }
 
     static let releases: [Release] = [
+        Release(version: "0.3.1",
+            ru: [
+                "Язык больше не переключается сам после первой заглавной буквы. Если мгновенная смена языка висела на Shift, могло получаться «Cнова» вместо «Снова»: первая буква в одной раскладке, остальные в другой. Причина не в тексте, а в том, что macOS иногда прячет от программ нажатия клавиш (это защита полей ввода, и её умеет залипать чужой процесс). Модификаторы при этом видны, обычные клавиши нет, и мы принимали «Shift нажали и отпустили, а между ними ничего» за осознанный жест, хотя между ними была заглавная буква. Теперь, когда клавиши от нас скрыты, жесты по модификаторам просто молчат.",
+                "Заодно Shift больше нельзя назначить на мгновенную смену языка, а у кого он уже стоял, функция выключена. Shift нажимают перед каждой заглавной, и держать на нём переключение языка означает подписаться на ложные срабатывания.",
+                "Хоткей диктовки наконец принимает сочетания из нескольких клавиш. Раньше при попытке задать ⌃⌥ записывалась только одна из них, а кнопка «Назначить» оставалась серой. Caps Lock через HyperKey теперь тоже подходит. Спасибо за скринкаст, по нему это нашлось за минуту.",
+                "Отправка по Enter стала безопаснее. Мы доделывали слишком много работы прямо в момент нажатия, и в худших случаях система за это могла на время отключить нас от клавиатуры, теряя набранное. Лишнее убрано в сторону.",
+                "Мелочи: в отчёт об ошибке больше не сыплются десятки одинаковых строк про смену микрофона, а почта для связи теперь одна и та же везде, hi@keyboop.com.",
+            ],
+            en: [
+                "The language no longer switches by itself after the first capital letter. If instant switching was bound to Shift, you could get «Cнова» instead of «Снова»: the first letter in one layout, the rest in another. The cause was not in the text. macOS sometimes hides key presses from apps (it protects password fields, and a stray process can leave that stuck). Modifiers stay visible, ordinary keys do not, so «Shift pressed and released with nothing in between» looked like a deliberate gesture when in fact a capital letter was typed in between. Now, while keys are hidden from us, modifier gestures simply stay quiet.",
+                "Shift can no longer be assigned to instant switching, and if you already had it, the feature is off. Shift comes before every capital letter, and hanging a language switch on it means signing up for false triggers.",
+                "The dictation hotkey finally accepts combinations of several keys. Trying to set ⌃⌥ used to record only one of them and leave «Assign» greyed out. Caps Lock through HyperKey works now too. Thanks for the screencast, it took a minute to find with it.",
+                "Sending with Enter got safer. We were finishing too much work at the very moment of the keypress, and at worst the system could cut us off from the keyboard for a while, losing what you typed. The extra work moved aside.",
+                "Small things: bug reports no longer fill up with dozens of identical lines about the microphone changing, and there is now one contact address everywhere, hi@keyboop.com.",
+            ]),
         Release(version: "0.3.0",
             ru: [
                 "Настройки наконец разложены по полкам. Раньше в голосовом наборе было двенадцать разных строк подряд в одной куче: микрофон стоял в начале, а его же прогрев где-то в середине, между чужими пунктами. Теперь всё собрано по смыслу, а параметры, которые нужны не всем, прячутся под своими переключателями и выезжают, только когда вы их включаете.",

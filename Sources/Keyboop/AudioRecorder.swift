@@ -30,6 +30,9 @@ final class AudioRecorder: NSObject {
     private var runtimeErrorObserver: NSObjectProtocol?
     private var defaultInputListener: AudioObjectPropertyListenerBlock?
     private var rebuilding = false             // ре-энтранси-гард пересборки (main-only)
+    /// Последний увиденный UID системного входа. Нужен, чтобы отличить РЕАЛЬНУЮ смену устройства
+    /// от пачки нотификаций об одной и той же (main-only, как и rebuilding).
+    private var lastDefaultInputUID: String?
     private var watchdog: DispatchWorkItem?
     private var deadSignalWatchdog: DispatchWorkItem?   // «буферы идут, но в них ноль» (см. armWatchdog)
     private var rebuildStrikes = 0             // подряд «немых» пересборок (main-only); сброс в start()/при буфере
@@ -248,8 +251,20 @@ final class AudioRecorder: NSObject {
             self.handleDeviceChange(reason: "сессия упала")
         }
         if pinnedUID.isEmpty {
+            lastDefaultInputUID = AudioDevices.systemDefaultInputUID()
             defaultInputListener = AudioDevices.addDefaultInputListener { [weak self] in
-                self?.handleDeviceChange(reason: "сменился системный вход")
+                guard let self else { return }
+                // CoreAudio шлёт нотификацию на КАЖДЫЙ изменившийся адрес свойства, поэтому на одну
+                // реальную смену устройства прилетает пачка вызовов. Гард `rebuilding` их не ловит:
+                // он ставится и снимается внутри одного синхронного вызова, а блоки приходят
+                // отдельными тиками main. В отчётах @phelicks (#44/#45) это дало ДВАДЦАТЬ одинаковых
+                // строк с одной секундой — двадцать из двадцати четырёх строк лога, то есть человек
+                // прислал диагностику, в которой почти не осталось диагностики.
+                // Сравниваем фактический UID: если вход не менялся, это дубль, и делать нечего.
+                let now = AudioDevices.systemDefaultInputUID()
+                guard now != self.lastDefaultInputUID else { return }
+                self.lastDefaultInputUID = now
+                self.handleDeviceChange(reason: "сменился системный вход")
             }
         }
 
