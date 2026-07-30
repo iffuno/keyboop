@@ -260,6 +260,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        // Dev-хук: показать плашку об обновлении с ЖИВЫМИ кнопками, не дожидаясь настоящего апдейта.
+        // Появился 30.07 после срочного репорта «в плашке не нажимаются кнопки»: проверить починку
+        // иначе можно было бы только выпустив ещё один релиз. Обработчики ничего не ставят, только
+        // пишут в лог, так что кликать безопасно.
+        if ProcessInfo.processInfo.environment["KEYBOOP_BANNER"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                AppBanner.shared.show(
+                    title: String(format: L10n.t("upd.notifyTitle"), "0.0.0-проверка"),
+                    body: L10n.t("upd.notifyBody"),
+                    actions: [
+                        .init(title: L10n.t("upd.now"), coral: false) { kbLog("БАННЕР-ТЕСТ: сработала левая кнопка «Обновить»") },
+                        .init(title: L10n.t("upd.autoShort"), coral: true) { kbLog("БАННЕР-ТЕСТ: сработала правая кнопка «Обновлять автоматически»") }
+                    ])
+            }
+        }
         // Dev-хук: снять блок ввода формы отзыва и выйти (диагностика «не видно текст», см.
         // FeedbackWindowController.dumpFieldForDev).
         if ProcessInfo.processInfo.environment["KEYBOOP_FBDUMP"] == "1" {
@@ -351,6 +366,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Dev-хук: off-screen рендер образца баннера на ОБОИХ языках и выход (визуальная проверка).
         if ProcessInfo.processInfo.environment["KEYBOOP_BANNERSHOT"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                // ⚠️ ВЕРНУТЬ ЯЗЫК КАК БЫЛ (30.07). Хук снимает два образца и для этого переключает
+                // язык приложения. Раньше он оставлял его английским, и автор обнаружил свой Keyboop
+                // на английском после моей же диагностики. Инструмент не должен менять настройки
+                // человека — тем более незаметно.
+                let wasLanguage = AppSettings.shared.language
+                defer { AppSettings.shared.language = wasLanguage }
                 AppSettings.shared.language = "ru"
                 AppBanner.shared.renderSample(to: "/tmp/kb_banner_ru.png")
                 AppSettings.shared.language = "en"

@@ -655,8 +655,10 @@ enum L10n {
         "upd.auto":       [.ru: "Обновлять автоматически", .en: "Update automatically"],
         "upd.autoShort":  [.ru: "Обновлять автоматически", .en: "Update automatically"],
         "upd.notifyTitle":[.ru: "Keyboop %@ готов", .en: "Keyboop %@ is ready"],
-        "upd.notifyBody": [.ru: "Обе кнопки поставят обновление сразу. Правая ещё и включит автоматические, чтобы больше не спрашивать.",
-                           .en: "Both buttons install it right away. The right one also turns on automatic updates, so this stops asking."],
+        // ⚠️ Не длиннее двух строк: в плашке у подписи maximumNumberOfLines = 2, и длинный текст
+        // обрывался на полуслове (видно на dev-рендере KEYBOOP_BANNERSHOT).
+        "upd.notifyBody": [.ru: "Любая кнопка поставит сразу.",
+                           .en: "Either button installs it now."],
         "upd.foot":       [.ru: "Проверка шлёт только твой IP и номер версии — как любой заход на сайт. Ничего из набранного.",
                            .en: "The check sends only your IP and version number — like any website visit. Nothing you type."],
         "upd.onboard":    [.ru: "Keyboop сам находит новые версии и спрашивает, ставить ли, — одной кнопкой. Что-то не так — напиши, починим.",

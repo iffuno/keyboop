@@ -64,6 +64,11 @@ final class AppBanner {
 
         // Свайп вправо → закрыть (как у нативных уведомлений). Работает в обоих видах.
         let pan = NSPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        // ⚠️ НЕ ЗАДЕРЖИВАТЬ нажатие мыши (фикс 30.07). По умолчанию распознаватель придерживает
+        // mouseDown у себя, пока не решит, жест это или нет, и отдаёт вью только задним числом. Для
+        // кнопки внутри контейнера это означает сорванный цикл отслеживания нажатия: визуально
+        // «кнопка не реагирует». Свайпу вправо задержка не нужна, он опознаётся по движению.
+        pan.delaysPrimaryMouseButtonEvents = false
         content.addGestureRecognizer(pan)
         // Инфо-тост (без кнопок) — клик по нему тоже закрывает (кнопок нет, не конфликтует).
         if actions.isEmpty {
@@ -86,9 +91,9 @@ final class AppBanner {
     private func makeContent(title: String, body: String, actions: [Action], solidDarkBG: Bool = false) -> (NSView, CGFloat, CGFloat) {
         let compact = actions.isEmpty
         let maxW: CGFloat = 420
-        let pad: CGFloat = compact ? 14 : 20          // равные поля (сверху/снизу/слева)
-        let rightPad: CGFloat = compact ? 34 : 20     // справа чуть больше — под крестик
-        let iconSize: CGFloat = compact ? 40 : 72
+        let pad: CGFloat = compact ? 14 : 18          // равные поля (сверху/снизу/слева)
+        let rightPad: CGFloat = compact ? 34 : 22     // справа чуть больше — под крестик
+        let iconSize: CGFloat = compact ? 40 : 60
         let gap: CGFloat = compact ? 12 : 16
 
         let content: NSView
@@ -133,7 +138,7 @@ final class AppBanner {
             colRows.append(btnRow)
         }
         let rightCol = NSStackView(views: colRows); rightCol.orientation = .vertical
-        rightCol.alignment = .leading; rightCol.spacing = 14
+        rightCol.alignment = .leading; rightCol.spacing = 12
 
         let row = NSStackView(views: [icon, rightCol]); row.orientation = .horizontal
         row.spacing = gap; row.alignment = .centerY
@@ -148,15 +153,18 @@ final class AppBanner {
         ])
 
         // Ширина: с кнопками — фиксированные 420 (тексту есть где переноситься); тост — по контенту (до maxW).
+        // ⚠️ ШИРИНА ПО СОДЕРЖИМОМУ И ДЛЯ БАННЕРА С КНОПКАМИ (30.07). Раньше она была прибита к 420
+        // независимо от текста, и на коротких строках справа зияла пустота — заметно на английском,
+        // где всё короче русского («Either button installs it now»). Теперь ширину диктует контент,
+        // но в рамках: не шире maxW (иначе плашка растёт на пол-экрана и текст перестаёт переноситься)
+        // и не у́же minW (иначе две кнопки в ряд начинают тесниться и лепиться друг к другу).
+        let minW: CGFloat = compact ? 0 : 340
         var widthC: NSLayoutConstraint? = nil
-        if !compact {
-            widthC = content.widthAnchor.constraint(equalToConstant: maxW); widthC!.isActive = true
-        }
         content.layoutSubtreeIfNeeded()
-        var w = compact ? min(content.fittingSize.width, maxW) : maxW
-        if compact && content.fittingSize.width > maxW {   // длинный текст — упираем в maxW, перенос на 2 строки
-            widthC = content.widthAnchor.constraint(equalToConstant: maxW); widthC!.isActive = true
-            content.layoutSubtreeIfNeeded(); w = maxW
+        var w = min(max(content.fittingSize.width, minW), maxW)
+        if content.fittingSize.width > maxW || content.fittingSize.width < minW {
+            widthC = content.widthAnchor.constraint(equalToConstant: w); widthC!.isActive = true
+            content.layoutSubtreeIfNeeded()
         }
 
         // × — в правом верхнем углу (поверх, не влияет на раскладку). FirstMouseButton — иначе первый
@@ -185,16 +193,18 @@ final class AppBanner {
         b.tag = tag
         b.isBordered = false
         b.wantsLayer = true
-        b.layer?.cornerRadius = 10
+        b.layer?.cornerRadius = 8
         b.layer?.cornerCurve = .continuous
         b.layer?.backgroundColor = (coral ? DS.coral : NSColor.white.withAlphaComponent(0.14)).cgColor
-        let font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        let font = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
         b.attributedTitle = NSAttributedString(string: title, attributes: [
             .foregroundColor: coral ? NSColor.white : NSColor.labelColor, .font: font])
         let tw = ceil((title as NSString).size(withAttributes: [.font: font]).width)
         b.translatesAutoresizingMaskIntoConstraints = false
-        b.widthAnchor.constraint(equalToConstant: tw + 32).isActive = true
-        b.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        // Пилюля по тексту плюс воздух с боков, а не «кнопка на всю ширину»: две штуки в ряд
+        // должны укладываться в 420pt вместе с полями, иначе правая упирается в край плашки.
+        b.widthAnchor.constraint(equalToConstant: tw + 22).isActive = true
+        b.heightAnchor.constraint(equalToConstant: 28).isActive = true
         b.setContentHuggingPriority(.required, for: .horizontal)
         return b
     }
@@ -203,7 +213,9 @@ final class AppBanner {
     func renderSample(to path: String) {
         let (content, width, height) = makeContent(
             title: String(format: L10n.t("upd.notifyTitle"), "0.2.4"), body: L10n.t("upd.notifyBody"),
-            actions: [.init(title: L10n.t("upd.now"), coral: true) {}, .init(title: L10n.t("upd.autoShort"), coral: false) {}],
+            // ⚠️ Цвета КАК В БОЮ (30.07): левая серая, правая коралловая. Раньше образец рисовал
+            // наоборот и тихо врал — визуальную проверку по нему делать было нельзя.
+            actions: [.init(title: L10n.t("upd.now"), coral: false) {}, .init(title: L10n.t("upd.autoShort"), coral: true) {}],
             solidDarkBG: true)
         content.appearance = NSAppearance(named: .darkAqua)
         content.frame = NSRect(x: 0, y: 0, width: width, height: height)
@@ -243,15 +255,32 @@ final class AppBanner {
     }
 
     @objc private func actionTapped(_ s: NSButton) {
-        let h = actionHandlers[safe: s.tag]; dismiss(); h?()
+        // Лог, потому что «нажал и ничего» мы уже один раз разбирали вслепую: теперь видно, дошло
+        // нажатие до нас или нет, и был ли под кнопкой обработчик.
+        let h = actionHandlers[safe: s.tag]
+        kbLog("баннер: нажата кнопка \(s.tag)\(h == nil ? " — обработчика нет!" : "")")
+        dismiss(); h?()
     }
-    @objc private func closeTapped() { dismiss() }
+    @objc private func closeTapped() { kbLog("баннер: закрыт крестиком"); dismiss() }
 }
 
 /// Кнопка, реагирующая на ПЕРВЫЙ клик даже когда окно неактивно (.nonactivatingPanel).
 /// Без этого первый клик по × / кнопкам баннера macOS «съедает» — кнопка кажется мёртвой.
 private final class FirstMouseButton: NSButton {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// ⚠️ ВСЯ ПЛОЩАДЬ КНОПКИ КЛИКАБЕЛЬНА (фикс 30.07, срочный баг-репорт: «в плашке об обновлении
+    /// не нажимаются кнопки, работает только крестик»).
+    ///
+    /// У безрамочной NSButton (`isBordered = false`) зона попадания считается по СОДЕРЖИМОМУ ячейки,
+    /// то есть по нарисованному тексту. У наших кнопок-пилюль фон — это слой, а не рамка, и он
+    /// заметно шире надписи: человек целится в коралловый прямоугольник, попадает в пустоту вокруг
+    /// букв, и кнопка выглядит мёртвой. Крестик при этом работал и сбивал с толку: у него
+    /// содержимое — картинка, растянутая на все 16×16, то есть совпадает с рамкой.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, isEnabled else { return nil }
+        return bounds.contains(convert(point, from: superview)) ? self : nil
+    }
 }
 
 private extension Array {

@@ -51,6 +51,29 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        Release(version: "0.3.5",
+            ru: [
+                "Кнопки в уведомлении об обновлении наконец нажимаются. Работал только крестик, поэтому обновиться из плашки было нельзя вовсе: у безрамочной кнопки macOS считает зону нажатия по нарисованному тексту, а не по всей цветной пилюле, и клик рядом с буквами уходил в пустоту. Теперь ловится вся площадь кнопки.",
+                "Сама плашка стала аккуратнее: кнопки ниже и у́же, поля ровные со всех сторон, ширина подстраивается под текст, а не прибита к одной цифре. Раньше правая кнопка упиралась в край, а на английском справа зияла пустота.",
+                "В меню «История голосового набора» встала выше «Скопировать последнюю диктовку».",
+            ],
+            en: [
+                "The buttons in the update notification can finally be pressed. Only the close cross worked, so updating from the banner was impossible: for a borderless button macOS measures the click area by the drawn text rather than the whole coloured pill, so a click next to the letters went nowhere. The entire button now responds.",
+                "The banner itself got tidier: shorter and narrower buttons, even padding on every side, and a width that follows the text instead of being nailed to one number. The right button used to touch the edge, and in English there was dead space beside it.",
+                "In the menu, “Dictation history” now sits above “Copy last dictation”.",
+            ],
+            announce: """
+                Срочная заплатка, и стыдная. Во вчерашней плашке «доступно обновление» кнопки не \
+                нажимались: работал только крестик. То есть я выкатил обновление, которое нельзя \
+                поставить кнопкой из уведомления об обновлении.
+
+                Причина обидная: у кнопки без рамки macOS считает зону нажатия по самим буквам, а не \
+                по цветному прямоугольнику вокруг них. Попасть можно было буквально по тексту.
+                """,
+            announceEnd: """
+                Спасибо, что написали сразу, а не махнули рукой. Заодно причесал саму плашку: \
+                кнопки поменьше, поля ровные, ширина по тексту.
+                """),
         Release(version: "0.3.4",
             ru: [
                 "Починено ручное переключение слова у тех, кто назначил диктовке сочетание из двух модификаторов, например ⌥⌘. Оно переставало работать полностью: разбор хоткея конверсии до него просто не доходил. Спасибо @denis_kuprienko за точный отчёт, по нему это нашлось за минуту.",
