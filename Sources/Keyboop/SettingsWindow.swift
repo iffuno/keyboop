@@ -117,6 +117,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         let fixedW = window.frame.width
         window.minSize = NSSize(width: fixedW, height: 420)
         window.maxSize = NSSize(width: fixedW, height: 100_000)
+        // ПОЛНОЭКРАННЫЙ РЕЖИМ ЗАПРЕЩЁН (просьба автора 30.07). Настройки на весь экран — это полоса
+        // контента посередине и километры пустоты по бокам: ширина у окна фиксированная (строка выше),
+        // растягиваться ему некуда. `.fullScreenNone` убирает не только сам режим, но и превращает
+        // зелёную кнопку обратно в ZOOM — а он здесь как раз осмысленный: ширину зум не трогает
+        // (minSize.width == maxSize.width), высоту дотягивает до видимой части экрана. Ровно то, что
+        // нужно длинному списку настроек. Двойной клик по заголовку тоже зовёт зум, если у человека
+        // так настроено в системе, и это уже не наша забота — поведение стандартное.
+        window.collectionBehavior.insert(.fullScreenNone)
 
         sidebar.onSelect = { [weak self] s in self?.detail.show(s) }
         detail.onLanguageChanged = { [weak self] in
@@ -1512,7 +1520,12 @@ final class DetailVC: NSViewController {
                 switchRow(L10n.t("voice.on"), nil, settings.voiceEnabled, #selector(toggleVoice)),
                 controlRow(L10n.t("voice.hotkey"), voiceHotkeyRow()),
                 controlRow(L10n.t("voice.mode"), voiceModeControl(), subtitle: L10n.t("voice.modeSub")),
-                controlRow(L10n.t("voice.lang"), voiceLangControl()),
+                // Подпись + кружок «i»: настройка молча ломала диктовку двуязычным людям. Тест 30.07
+                // (четыре диктовки смешанной речи): на «Авто» и на «Русском» всё хорошо, а с
+                // принудительным English русский не распознаётся вовсе. Связать одно с другим человеку
+                // было неоткуда. Подпись однострочная и усекается (settingRow), длинное объяснение — в help.
+                controlRow(L10n.t("voice.lang"), voiceLangControl(),
+                           subtitle: L10n.t("voice.langSub"), help: L10n.t("voice.langHelp")),
             ]),
             group(6),
             sectionTitle(L10n.t("voice.grpMic")),

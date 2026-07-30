@@ -103,6 +103,67 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
         AppSettings.shared.betaChannel ? ["beta"] : []
     }
 
+    // MARK: Видимость проверки в логе
+    //
+    // ⚠️ До 29.07 в логе было ровно две строки на всю жизнь апдейтера: «started» при запуске и
+    // «скачан» уже перед установкой. Между ними — ничего. Поэтому жалоба «у меня не обновляется»
+    // была принципиально неразбираемой: мы не знали даже, ходило ли приложение за фидом. Разбор
+    // 29.07 пришлось вести по системному логу macOS (CFNetwork + os_log Sparkle), которого у
+    // пользователя в отчёте нет и быть не может. Ниже — весь путь проверки, по строке на событие,
+    // словами. Ни версии текста, ни адресов, ни идентификаторов — только наши же номера версий.
+
+    @objc(updater:didFinishLoadingAppcast:)
+    func updater(_ updater: SPUUpdater, didFinishLoading appcast: SUAppcast) {
+        let top = appcast.items.first?.displayVersionString ?? "?"
+        kbLog("updater: фид получен, записей \(appcast.items.count), верхняя \(top)")
+    }
+
+    @objc(updater:didFindValidUpdate:)
+    func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
+        kbLog("updater: найден апдейт \(item.displayVersionString)\(item.isCriticalUpdate ? " (критический)" : "")")
+    }
+
+    @objc(updaterDidNotFindUpdate:error:)
+    func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
+        let e = error as NSError
+        // Sparkle кладёт сюда ПРИЧИНУ отказа. Без неё «апдейта нет» неотличимо от «мы его отбраковали».
+        let why: String
+        switch e.userInfo[SPUNoUpdateFoundReasonKey] as? Int {
+        case Int(SPUNoUpdateFoundReason.onLatestVersion.rawValue):          why = "у нас уже свежая"
+        case Int(SPUNoUpdateFoundReason.onNewerThanLatestVersion.rawValue): why = "у нас новее, чем в фиде"
+        case Int(SPUNoUpdateFoundReason.systemIsTooOld.rawValue):           why = "версия требует более новой macOS"
+        case Int(SPUNoUpdateFoundReason.systemIsTooNew.rawValue):           why = "версия помечена как несовместимая с этой macOS"
+        case Int(SPUNoUpdateFoundReason.hardwareDoesNotSupportARM64.rawValue): why = "версия только для Apple Silicon"
+        default:                                                             why = "причина не указана"
+        }
+        let latest = (e.userInfo[SPULatestAppcastItemFoundKey] as? SUAppcastItem)?.displayVersionString
+        kbLog("updater: апдейта нет — \(why)\(latest.map { ", свежайшая в фиде \($0)" } ?? "")")
+    }
+
+    @objc(updater:willDownloadUpdate:withRequest:)
+    func updater(_ updater: SPUUpdater, willDownloadUpdate item: SUAppcastItem, with request: NSMutableURLRequest) {
+        kbLog("updater: качаю \(item.displayVersionString)")
+    }
+
+    @objc(updater:failedToDownloadUpdate:error:)
+    func updater(_ updater: SPUUpdater, failedToDownloadUpdate item: SUAppcastItem, error: Error) {
+        kbLog("updater: не скачалось \(item.displayVersionString) — \(error.localizedDescription)")
+    }
+
+    @objc(updater:willScheduleUpdateCheckAfterDelay:)
+    func updater(_ updater: SPUUpdater, willScheduleUpdateCheckAfterDelay delay: TimeInterval) {
+        kbLog("updater: следующая проверка через \(Int(delay / 60)) мин")
+    }
+
+    /// Любой обрыв цикла проверки. `noUpdateError` — это не обрыв, а нормальный ответ «нечего ставить»,
+    /// его уже написал `updaterDidNotFindUpdate`, второй раз не дублируем.
+    @objc(updater:didAbortWithError:)
+    func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        let e = error as NSError
+        guard e.code != Int(SUError.noUpdateError.rawValue) else { return }
+        kbLog("updater: проверка сорвалась — \(e.localizedDescription) (код \(e.code))")
+    }
+
     /// Sparkle скачал апдейт и готов ставить. Перехватываем: либо тихо в простое (если юзер выбрал
     /// «авто»), либо спрашиваем нашим уведомлением.
     ///
@@ -121,6 +182,11 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
     /// Sparkle: он и переспросит сам, и критические апдейты покажет сразу.
     /// `immediateInstallHandler` при `false` использовать НЕЛЬЗЯ (хедер, строка 437), поэтому в этой
     /// ветке мы его даже не сохраняем — кнопка «Обновить сейчас» идёт через обычную проверку.
+    /// ⚠️ Селектор пришпилен, как и у `allowedChannels`, и по той же причине: метод необязательный,
+    /// зовётся через ObjC. Разъедься имя на букву — компилятор смолчит, Sparkle поставит апдейт
+    /// молча при выходе, а наше уведомление «Обновить сейчас» не покажется никогда. Симптом при этом
+    /// ровно тот, с которым к нам приходят: «оно не обновляется само».
+    @objc(updater:willInstallUpdateOnQuit:immediateInstallationBlock:)
     func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
                  immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
         pendingVersion = item.displayVersionString

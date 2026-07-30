@@ -3,9 +3,77 @@ import Foundation
 /// Журнал изменений для пользователя («Что нового»). Дописывать сверху при заметных правках.
 /// Кратко, в нашем тоне — не дев-журнал.
 enum Changelog {
-    struct Release { let version: String; let ru: [String]; let en: [String] }
+    /// `announce` / `announceEnd` — личные вступление и концовка ТОЛЬКО для анонса в Telegram: в окне
+    /// «Что нового» они не показываются. Раньше анонс был дословно списком изменений
+    /// (announce-telegram.sh берёт верхнюю запись отсюда), и живому «сижу ночами и чиню» просто негде
+    /// было находиться: в приложении оно неуместно, а второго источника не было. Порядок в посте:
+    /// announce → список изменений → announceEnd. Пусто — анонс уходит как раньше, одним списком.
+    struct Release {
+        let version: String
+        let ru: [String]
+        let en: [String]
+        var announce: String? = nil
+        var announceEnd: String? = nil
+    }
+
+    /// ИМЕНА ВЕРСИЙ (решение автора 30.07). Как macOS называет релизы местами в Калифорнии, так мы
+    /// называем их мелкими безобидными зверями — той же породы, что наш маскот. Имя привязано к
+    /// ДЕСЯТКУ, а не к патчу: все 0.3.x живут под именем Pika, меняется оно семь раз за всю дорогу
+    /// до 1.0. Каждое имя проверено на непересечение с Ubuntu: у них двадцать лет на этой теме,
+    /// и Quokka с Numbat заняты их свежими релизами, а Pangolin, Meerkat, Koala и Narwhal — старыми.
+    ///
+    /// Не переводить: имя одинаковое во всех языках интерфейса, как Sonoma или Sequoia.
+    /// Незнакомая версия (например будущая 1.1) вернёт nil — шапка меню просто покажет номер.
+    private static let codenames: [String: String] = [
+        "0.3": "Pika",        // пищуха: пискнула один раз и спряталась — собственно, звук «буп»
+        "0.4": "Axolotl",     // аксолотль: всегда улыбается и отращивает обратно потерянное
+        "0.5": "Kinkajou",    // кинкажу: ночной, язык 12 см, интересуется только мёдом
+        "0.6": "Binturong",   // бинтуронг: пахнет попкорном, и это правда
+        "0.7": "Kakapo",      // какапо: нелетающий попугай, при опасности замирает и ждёт
+        "0.8": "Olinguito",   // олингито: сто лет лежал в музеях под чужим именем — зверь с не той раскладкой
+        "0.9": "Aye-aye",     // ай-ай: стучит по дереву одним длинным пальцем, буквально бупает
+        "1.0": "Capybara",    // капибара: ничего не делает и всем нравится, потому что уже всё работает
+    ]
+
+    /// Имя релиза по номеру версии («0.3.1» → «Pika»). nil, если имени для десятка нет.
+    static func codename(for version: String) -> String? {
+        let p = version.split(separator: ".")
+        guard p.count >= 2 else { return nil }
+        return codenames["\(p[0]).\(p[1])"]
+    }
 
     static let releases: [Release] = [
+        Release(version: "0.3.2",
+            ru: [
+                "В меню появился пункт «Скопировать последнюю диктовку». Раньше за последней расшифровкой приходилось открывать окно истории, теперь она уезжает в буфер обмена одним нажатием. Если на историю поставлен пароль, он спросится и здесь: отдавать последнюю фразу мимо пароля было бы странно.",
+                "Меню перебрано. Язык распознавания уехал в настройки, где он и так был, «Проверить обновления» и «Сообщить о проблеме» встали рядом внизу, и у каждого пункта теперь свой значок.",
+                "Окно настроек больше не разворачивается на весь экран. Зелёная кнопка вместо этого подгоняет его по высоте экрана, что для длинного списка настроек куда полезнее.",
+                "Настройка языка распознавания перестала молчать о подвохе. Если выбрать конкретный язык, речь на другом распознаётся заметно хуже, а иногда не распознаётся совсем. Теперь это написано прямо под настройкой, а «Авто» честно назван тем, что понимает смешанную речь.",
+                "Обновления проверяются раз в два часа вместо раза в сутки. И если с обновлением что-то пойдёт не так, теперь это можно разобрать: приложение записывает в свой лог, что именно ответил сервер обновлений. Раньше там было пусто, и на жалобу «у меня не обновляется» ответить было нечем.",
+                // Сухо и по делу: шутка про пищуху живёт в анонсе (announce), здесь она была бы повтором.
+                "У версий появились имена. Текущее видно в шапке меню, меняться оно будет раз в десяток версий.",
+            ],
+            en: [
+                "The menu now has “Copy last dictation”. Getting the last transcript used to mean opening the history window; now it goes to the clipboard in one click. If you put a password on the history, it is asked here too: handing out the last phrase around your own password would be odd.",
+                "The menu was rearranged. Recognition language moved to Settings, where it already lived, “Check for Updates” and “Report a problem” now sit together at the bottom, and every item has an icon.",
+                "The settings window no longer goes full screen. The green button fits it to the height of your display instead, which is far more useful for a long list of settings.",
+                "The recognition-language setting stopped hiding its catch. Pin a specific language and speech in another one comes out noticeably worse, sometimes not at all. That is now written right under the setting, and “Auto” is honestly described as the one that handles mixed speech.",
+                "Updates are checked every two hours instead of once a day. And if something goes wrong with an update, it can now be traced: the app writes down what the update server actually answered. That log used to be empty, which left “it never updates” impossible to answer.",
+                "Versions have names now. The current one shows in the menu header and changes once per decimal.",
+            ],
+            announce: """
+                У версий теперь есть имена, и вам с этим жить.
+
+                Каждый десяток получает своё. Сейчас идёт Pika, пищуха: маленькая, пискнула один раз \
+                и спряталась. По-моему, довольно точный портрет приложения. Имя видно в шапке меню, \
+                до 1.0 их будет семь.
+                """,
+            announceEnd: """
+                Сижу ночами и чиню всё, до чего дотягиваюсь. Сегодня уже засыпаю над клавиатурой, \
+                но очень хочется доделать.
+
+                Спасибо всем, кто пишет и присылает баги. Половину этого списка нашли вы.
+                """),
         Release(version: "0.3.1",
             ru: [
                 "Язык больше не переключается сам после первой заглавной буквы. Если мгновенная смена языка висела на Shift, могло получаться «Cнова» вместо «Снова»: первая буква в одной раскладке, остальные в другой. Причина не в тексте, а в том, что macOS иногда прячет от программ нажатия клавиш (это защита полей ввода, и её умеет залипать чужой процесс). Модификаторы при этом видны, обычные клавиши нет, и мы принимали «Shift нажали и отпустили, а между ними ничего» за осознанный жест, хотя между ними была заглавная буква. Теперь, когда клавиши от нас скрыты, жесты по модификаторам просто молчат.",

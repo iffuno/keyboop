@@ -292,6 +292,36 @@ final class MenuBarController: NSObject {
         button.imagePosition = .imageOnly
     }
 
+    /// Иконка пункта меню: монохромный SF Symbol как template — систему тонирует она сама, и в тёмной
+    /// теме, и на подсвеченном пункте. Размер берём от шрифта меню, а не константой: иначе на крупном
+    /// системном шрифте иконки окажутся мелкими марками.
+    ///
+    /// Имена перечисляем ОТ САМОГО НОВОГО К ЗАПАСНОМУ, берём первое, которое система знает. Так на
+    /// свежей macOS рисуются нынешние глифы (SF Symbols 6 приехал с macOS 15, 7 — с macOS 26), а на
+    /// старых сам собой берётся дедовский эквивалент. Наш пол — macOS 13 на Intel (арм-срез собран под
+    /// 14), поэтому жёстко требовать новые имена нельзя, а проверять версию системы руками незачем:
+    /// `NSImage(systemSymbolName:)` про незнакомое имя честно возвращает nil.
+    ///
+    /// ⚠️ Последним в цепочке всегда должно стоять имя из SF Symbols 1.0, иначе на macOS 13 пункт
+    /// останется без иконки. Это не падение, но дырка в ряду: AppKit резервирует колонку под иконку на
+    /// всю группу, и сосед без картинки выглядит съехавшим (эффект от 16.06). Иконка есть у КАЖДОГО
+    /// пункта в группе, либо ни у кого.
+    ///
+    /// `color` — только для состояний «не работает»: цветной значок видно боковым зрением, а ради него
+    /// эти строки в меню и появились (разбор 34 репортов, 28.07).
+    private func icon(_ names: String..., color: NSColor? = nil) -> NSImage? {
+        guard let base = names.lazy
+            .compactMap({ NSImage(systemSymbolName: $0, accessibilityDescription: nil) })
+            .first else { return nil }
+        // Конфигурации СКЛАДЫВАЕМ через applying(_:) — если применять их по очереди, вторая затирает
+        // первую, и цветной значок молча выходит монохромным.
+        var cfg = NSImage.SymbolConfiguration(pointSize: NSFont.menuFont(ofSize: 0).pointSize, weight: .regular)
+        if let color { cfg = cfg.applying(.init(paletteColors: [color])) }
+        let img = base.withSymbolConfiguration(cfg) ?? base
+        img.isTemplate = (color == nil)
+        return img
+    }
+
     private func buildMenu() {
         let menu = NSMenu()
 
@@ -302,6 +332,8 @@ final class MenuBarController: NSObject {
         let ver = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "—"
         let isDev = (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
         var headerTitle = "Keyboop \(ver)" + (isDev ? "-dev" : "")
+        // Имя версии (Changelog.codenames): в релизе шапка читается как «Keyboop 0.3.1 · Pika».
+        if let name = Changelog.codename(for: ver) { headerTitle += " · " + name }
         // В dev-сборке показываем ВРЕМЯ СБОРКИ прямо в шапке меню (просьба автора 24.07): за вечер
         // мы оба дважды путались, какую именно сборку тестируем. Дата не нужна — за день их много,
         // различает время. В релизе не показываем: пользователю штамп ни о чём не говорит.
@@ -317,6 +349,7 @@ final class MenuBarController: NSObject {
         if needsPermission {
             let perm = NSMenuItem(title: L10n.t("menu.perm"), action: #selector(openPermissions), keyEquivalent: "")
             perm.target = self
+            perm.image = icon("exclamationmark.triangle.fill", color: .systemOrange)
             menu.addItem(perm)
             menu.addItem(.separator())
         }
@@ -329,78 +362,104 @@ final class MenuBarController: NSObject {
         // «не работает» (причём написал в неверной раскладке — мы не сконвертировали, потому что были
         // слепы). Показываем прямо в меню, с именем держателя, если успели его найти.
         if let problem = AppHealth.blockingProblem {
-            let warn = NSMenuItem(title: "⚠︎ " + problem, action: nil, keyEquivalent: "")
+            // Значок вместо прежнего «⚠︎ » в тексте: символ рисуется цветным и стоит в общей колонке
+            // иконок, а не съедает начало строки, где важен сам текст проблемы.
+            let warn = NSMenuItem(title: problem, action: nil, keyEquivalent: "")
             warn.isEnabled = false
+            warn.image = icon("exclamationmark.triangle.fill", color: .systemOrange)
             menu.addItem(warn)
             menu.addItem(.separator())
         }
 
+        // Галочка состояния и иконка живут в РАЗНЫХ колонках, поэтому на переключателе уживаются обе.
         let auto = NSMenuItem(title: L10n.t("menu.auto"), action: #selector(toggleAuto), keyEquivalent: "")
         auto.target = self
         auto.state = settings.autoEnabled ? .on : .off
+        auto.image = icon("arrow.trianglehead.2.clockwise.rotate.90",   // SF 6, macOS 15
+                          "arrow.triangle.2.circlepath",                // SF 1
+                          "arrow.2.squarepath")
         menu.addItem(auto)
 
+        // Строка-подсказка, а не действие, но иконка ей нужна: без неё она одна в группе съедет вправо.
         let hot = NSMenuItem(title: String(format: L10n.t("menu.switchWord"), hotkeyDisplayString()),
                              action: nil, keyEquivalent: "")
         hot.isEnabled = false
+        hot.image = icon("keyboard")
         menu.addItem(hot)
 
         menu.addItem(.separator())
 
-        // Быстрый доступ (в духе OpenSuperWhisper): язык распознавания + микрофон.
-        menu.addItem(languageSubmenu())
+        // Быстрый доступ (в духе OpenSuperWhisper): микрофон.
+        // ЯЗЫК РАСПОЗНАВАНИЯ УБРАН ОТСЮДА 30.07 (задача T40). Он меняется редко, дефолт «Авто» и так
+        // стоит (AppSettings.voiceLanguage), а в настройках селектор уже есть — SettingsWindow
+        // .voiceLangControl(). В меню он занимал строку и целое подменю ради того, что человек трогает
+        // раз в жизни. Пункт микрофона остаётся: устройство меняется на ходу (наушники пришли/ушли).
         menu.addItem(microphoneSubmenu())
+
+        // «Скопировать последнюю диктовку» — ПЕРЕД историей: чаще нужна именно последняя расшифровка,
+        // а не окно со списком (в Handy это `copy last transcript`).
+        // Пункт БЕЗУСЛОВНЫЙ, хотя копировать иногда нечего. Причина: меню собирается не по
+        // menuNeedsUpdate, а по событиям (refresh() из onLayoutMaybeChanged), поэтому проверка «есть ли
+        // что копировать» на этапе сборки успела бы устареть — после первой же диктовки пункт бы не
+        // появился. Решаем в момент клика, там же и объясняем тостом, если пусто.
+        let copyLast = NSMenuItem(title: L10n.t("menu.copyLast"), action: #selector(copyLastDictation), keyEquivalent: "")
+        copyLast.target = self
+        copyLast.image = icon("document.on.document",   // SF 6, macOS 15 — переименование doc.* → document.*
+                              "doc.on.doc")
+        menu.addItem(copyLast)
 
         let vh = NSMenuItem(title: L10n.t("menu.voiceHistory"), action: #selector(showVoiceHistory), keyEquivalent: "")
         vh.target = self
+        vh.image = icon("clock.arrow.trianglehead.counterclockwise.rotate.90",   // SF 6, macOS 15
+                        "clock.arrow.circlepath")
         menu.addItem(vh)
-
-        // Проверить обновления — в ОДНОЙ группе с разделами выше (там иконок нет → пункт флешем влево),
-        // а НЕ рядом с «Настройки»: у «Настройки» macOS 26 рисует системную шестерёнку, и в её группе
-        // резервируется колонка под иконку → безиконочный сосед уезжал вправо (автор 16.06).
-        let upd = NSMenuItem(title: L10n.t("menu.checkUpdates"), action: #selector(checkUpdatesItem), keyEquivalent: "")
-        upd.target = self
-        menu.addItem(upd)
-
-        // Фидбэк — в один клик из места, где юзер живёт (та же безиконочная группа).
-        let report = NSMenuItem(title: L10n.t("menu.report"), action: #selector(reportProblem), keyEquivalent: "")
-        report.target = self
-        menu.addItem(report)
 
         menu.addItem(.separator())
 
         // Настройки — отдельной группой между двумя разделителями: системная шестерёнка не задевает соседей.
         let prefs = NSMenuItem(title: L10n.t("menu.settings"), action: #selector(openSettings), keyEquivalent: ",")
         prefs.target = self
+        // Шестерёнку ставим САМИ, хотя macOS 26 рисует её пункту настроек и без нас (наблюдение 16.06):
+        // на более старых системах она не появляется, и пункт остался бы единственным без иконки.
+        // Слот у пункта один, так что двух шестерёнок не будет — в худшем случае наша совпадёт с системной.
+        prefs.image = icon("gearshape")
         menu.addItem(prefs)
 
-        menu.addItem(.separator())   // отделяем «Выйти», чтобы не нажать случайно
+        menu.addItem(.separator())
+
+        // «Обслуживание»: сначала «Проверить обновления», потом «Сообщить о проблеме» (порядок автора,
+        // 30.07). Смысл порядка: человек, у которого что-то не так, сперва видит, что есть новая версия,
+        // и только потом идёт писать нам. Половина репортов приходит с уже починенного старого билда.
+        //
+        // ⚠️ Требование от 16.06 сохранено: «Проверить обновления» НЕ в одной группе с «Настройки».
+        // У «Настройки» macOS 26 рисует системную шестерёнку, и в её группе резервируется колонка под
+        // иконку → безиконочный сосед уезжал вправо. Здесь между ними разделитель, то есть это другая
+        // группа, и оба пункта тут безиконочные — сдвинуть их нечему.
+        let upd = NSMenuItem(title: L10n.t("menu.checkUpdates"), action: #selector(checkUpdatesItem), keyEquivalent: "")
+        upd.target = self
+        upd.image = icon("arrow.down.circle")
+        menu.addItem(upd)
+
+        let report = NSMenuItem(title: L10n.t("menu.report"), action: #selector(reportProblem), keyEquivalent: "")
+        report.target = self
+        report.image = icon("exclamationmark.bubble")
+        menu.addItem(report)
+
+        menu.addItem(.separator())   // «Выйти» снова один за разделителем, чтобы не нажать случайно
 
         let quit = NSMenuItem(title: L10n.t("menu.quit"), action: #selector(quit), keyEquivalent: "q")
         quit.target = self
+        quit.image = icon("power")
         menu.addItem(quit)
 
         statusItem.menu = menu
     }
 
-    /// Подменю «Язык распознавания» (Авто / Русский / English) — галочка на текущем.
-    private func languageSubmenu() -> NSMenuItem {
-        let item = NSMenuItem(title: L10n.t("voice.lang"), action: nil, keyEquivalent: "")
-        let sub = NSMenu()
-        let langs: [(String, String)] = [("auto", L10n.t("voice.langAuto")), ("ru", "Русский"), ("en", "English")]
-        for (code, label) in langs {
-            let it = NSMenuItem(title: label, action: #selector(selectLang(_:)), keyEquivalent: "")
-            it.target = self; it.representedObject = code
-            it.state = settings.voiceLanguage == code ? .on : .off
-            sub.addItem(it)
-        }
-        item.submenu = sub
-        return item
-    }
-
     /// Подменю «Микрофон» — список устройств ввода, галочка на выбранном.
     private func microphoneSubmenu() -> NSMenuItem {
         let item = NSMenuItem(title: L10n.t("menu.mic"), action: nil, keyEquivalent: "")
+        item.image = icon("microphone",   // SF 6, macOS 15 — переименование mic → microphone
+                          "mic")
         let sub = NSMenu()
         let def = NSMenuItem(title: L10n.t("menu.micDefault"), action: #selector(selectMic(_:)), keyEquivalent: "")
         def.target = self; def.representedObject = ""
@@ -434,15 +493,40 @@ final class MenuBarController: NSObject {
         buildMenu()
     }
 
-    @objc private func selectLang(_ s: NSMenuItem) {
-        if let code = s.representedObject as? String { settings.voiceLanguage = code; buildMenu() }
-    }
     @objc private func selectMic(_ s: NSMenuItem) {
         if let uid = s.representedObject as? String { settings.voiceMicUID = uid; buildMenu() }
     }
     @objc private func openSettings() { onOpenSettings?() }
     @objc private func showVoiceHistory() { onShowVoiceHistory?() }
     @objc private func checkUpdatesItem() { onCheckUpdates?() }
+
+    /// «Скопировать последнюю диктовку» (задача T40).
+    ///
+    /// ⚠️ Единственное место во всём приложении, где мы СОЗНАТЕЛЬНО и НЕОБРАТИМО пишем в буфер обмена.
+    /// Принцип №1 запрещает трогать буфер ради своих нужд (поэтому и замена текста идёт печатью
+    /// Unicode, а чтение выделения через ⌘C восстанавливает буфер — SelectionText.swift). Здесь запись
+    /// буфера и ЕСТЬ то, о чём человек попросил, поэтому ничего не восстанавливаем.
+    @objc private func copyLastDictation() {
+        // Пароль на историю (HistoryGate) действует и на этот пункт. Иначе последнюю расшифровку можно
+        // было бы забрать из меню в один клик, минуя пароль, который человек поставил именно на её
+        // чтение — то есть мы сами сделали бы дырку в своей же защите от любопытных глаз.
+        guard HistoryGate.enabled else { Self.copyLastDictationNow(); return }
+        HistoryGate.promptUnlock { ok in if ok { Self.copyLastDictationNow() } }
+    }
+
+    private static func copyLastDictationNow() {
+        // Новая запись всегда в конце: VoiceHistory.add() делает append (VoiceHistory.swift:27).
+        guard let text = VoiceHistory.shared.all().last?.text, !text.isEmpty else {
+            // Пусто по одной из двух причин: ещё не диктовали, либо история выключена в настройках
+            // (VoiceHistory.add() молча выходит при voiceHistoryEnabled == false). Молчать нельзя:
+            // человек нажал пункт и должен понять, почему ничего не произошло.
+            VoiceIndicator.shared.showToast(L10n.t("menu.copyLastEmpty"))
+            return
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        VoiceIndicator.shared.showToast(L10n.t("menu.copyLastDone"))
+    }
     @objc private func reportProblem() { FeedbackWindowController.shared.show() }
     @objc private func openPermissions() { Permissions.openAccessibilitySettings() }
     @objc private func quit() {

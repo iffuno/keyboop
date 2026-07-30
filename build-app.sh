@@ -144,8 +144,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key>            <string>Keyboop</string>
     <key>CFBundleDisplayName</key>     <string>Keyboop</string>
     <key>CFBundleIdentifier</key>      <string>ru.keyboop.app</string>
-    <key>CFBundleVersion</key>         <string>0.3.1</string>
-    <key>CFBundleShortVersionString</key> <string>0.3.1</string>
+    <key>CFBundleVersion</key>         <string>0.3.2</string>
+    <key>CFBundleShortVersionString</key> <string>0.3.2</string>
     <!-- Штамп сборки: подставляется ниже (sed по __BUILD_STAMP__). Логируется при запуске, чтобы по
          логу было ВИДНО, какую именно сборку гоняем. Прецедент 21.07: диагностировали баг по логу
          процесса, стартовавшего на 11 минут РАНЬШЕ пересборки, — то есть по коду без свежих правок. -->
@@ -187,7 +187,25 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>SUEnableSystemProfiling</key>         <false/>
     <key>SUVerifyUpdateBeforeExtraction</key>  <true/>
     <key>SURequireSignedFeed</key>             <true/>
-    <key>SUScheduledCheckInterval</key>        <integer>86400</integer>
+    <!-- Раз в 2 часа. Было раз в сутки, 29.07 стало 6 часов, 30.07 — 2 часа (решение автора).
+         При суточном интервале момент проверки у каждого свой и сдвигается вслед за пробуждением
+         Мака: релиз, выложенный днём, доезжал до части людей только на следующие сутки, и это
+         выглядело как «автообновление не работает».
+         Чем НЕ платим за учащение, по порядку:
+         • Трафик — 12 запросов по 15 КБ в сутки на человека вместо одного. Это меньше, чем одна
+           открытая вкладка делает за минуту.
+         • Батарея — короткий GET, Мак от него не просыпается: Sparkle планирует проверку на время
+           бодрствования, а не будильником.
+         • Назойливость — и это главное, чего можно было бы бояться, но её нет. Найдя апдейт, Sparkle
+           СКАЧИВАЕТ его и зовёт `willInstallUpdateOnQuit`; мы там возвращаем true и паркуем цикл
+           (UpdaterController.swift:189), показав СВОЁ уведомление один раз. Пока человек не решил,
+           дальнейшие проверки ничего не показывают, сколько бы их ни было. То есть интервал влияет
+           только на скорость ПЕРВОГО обнаружения.
+         Ниже часа опускать нельзя: Sparkle поднимет значение до своего минимума. 2 часа с запасом.
+         Персонального значения в user defaults ни у кого нет (проверено: `defaults read ru.keyboop.app
+         SUScheduledCheckInterval` → does not exist), поэтому новая цифра из Info.plist доедет до всех
+         на ближайшем обновлении, а не только до новых установок. -->
+    <key>SUScheduledCheckInterval</key>        <integer>7200</integer>
     <!-- Spotlight-алиасы: приложение находится по «лунищщз» (keyboop вслепую на RU-раскладке) и по
          функциональным синонимам. Видимое имя (CFBundleName/DisplayName) НЕ меняется — это отдельное
          метаполе индекса. macOS-ключ MDItemKeywords (без k-префикса; kMDItemKeywords — iOS). Внутри

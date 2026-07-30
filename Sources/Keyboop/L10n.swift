@@ -571,6 +571,10 @@ enum L10n {
                                  .en: "The download froze at %d%% — the connection to Hugging Face can be moody. Relaunch Keyboop and hit Download again: it resumes where it left off."],
         "voice.lang":     [.ru: "Язык распознавания", .en: "Recognition language"],
         "voice.langAuto": [.ru: "Авто (по речи)", .en: "Auto (detect)"],
+        "voice.langSub":  [.ru: "«Авто» понимает смешанную речь",
+                           .en: "“Auto” handles mixed speech"],
+        "voice.langHelp": [.ru: "«Авто» определяет язык по самой речи и спокойно относится к английским словам внутри русской фразы. Конкретный язык стоит выбирать, только если вы диктуете на нём одном: речь на другом языке распознаётся заметно хуже, а иногда не распознаётся совсем.",
+                           .en: "“Auto” picks the language from the speech itself and copes with English words inside a Russian sentence. Choose a specific language only if you dictate in that one language: speech in another language comes out noticeably worse, sometimes not at all."],
         "voice.model":    [.ru: "Модель распознавания", .en: "Recognition model"],
         "voice.engine":   [.ru: "Движок распознавания", .en: "Recognition engine"],
         "voice.soon":     [.ru: "Скоро", .en: "Soon"],
@@ -704,6 +708,12 @@ enum L10n {
         "fb.doneClose":   [.ru: "Закрыть", .en: "Close"],
         "fb.tooShort":    [.ru: "Напиши хоть пару слов )", .en: "Give me at least a couple of words )"],
         "menu.voiceHistory":[.ru: "История голосового набора…", .en: "Dictation history…"],
+        "menu.copyLast":  [.ru: "Скопировать последнюю диктовку", .en: "Copy last dictation"],
+        "menu.copyLastDone": [.ru: "Скопировано", .en: "Copied"],
+        // Пусто = либо ещё не диктовали, либо история выключена. Тост объясняет оба случая сразу:
+        // иначе человек решит, что пункт сломан.
+        "menu.copyLastEmpty": [.ru: "Нечего копировать: диктовок нет или история выключена",
+                               .en: "Nothing to copy: no dictations yet, or history is off"],
         "voice.foot":     [.ru: "Аудио и распознавание не покидают Mac. История шифруется и остаётся только у вас.",
                            .en: "Audio and recognition never leave the Mac. History is encrypted and stays only on this device."],
         "voice.hkRopt":   [.ru: "Правый ⌥  (right Option)", .en: "Right ⌥  (right Option)"],
@@ -729,7 +739,8 @@ enum L10n {
         "menu.checkUpdates": [.ru: "Проверить обновления…", .en: "Check for Updates…"],
         "menu.settings":  [.ru: "Настройки…", .en: "Settings…"],
         "menu.quit":      [.ru: "Выйти", .en: "Quit"],
-        "menu.perm":      [.ru: "⚠︎ Нужен доступ (Accessibility)…", .en: "⚠︎ Needs access (Accessibility)…"],
+        // Без «⚠︎» в тексте: с 30.07 у пункта есть цветной значок-треугольник (MenuBarController.icon).
+        "menu.perm":      [.ru: "Нужен доступ (Accessibility)…", .en: "Needs access (Accessibility)…"],
         "menu.switchWord":[.ru: "Переключить слово:  %@", .en: "Switch word:  %@"],
         "menu.mic":       [.ru: "Микрофон", .en: "Microphone"],
         "menu.micDefault":[.ru: "По умолчанию (система)", .en: "Default (system)"],
