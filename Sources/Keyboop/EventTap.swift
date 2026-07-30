@@ -453,9 +453,17 @@ final class EventTap {
         // Семантика ровно как у modkey, только вместо одной клавиши — точное совпадение маски:
         // «удерживать» = зажал комбинацию целиком → запись, разжал любой из них → стоп;
         // «переключать» = тап по набору комбинации.
-        if s.voiceEnabled, s.voiceHotkeyMode == "combo" {
-            let target = relevantMods(CGEventFlags(rawValue: s.voiceHotkeyModifiers))
-            guard !target.isEmpty else { return false }
+        // ⚠️ НЕ ВЫХОДИТЬ ИЗ ФУНКЦИИ ПОСЛЕ ЭТОГО БЛОКА (фикс 30.07, репорт #55 на 0.3.3).
+        // Здесь стоял `return false`, и он делал недостижимым ВЕСЬ разбор хоткея конверсии ниже:
+        // достаточно было назначить диктовке комбинацию, и ручное переключение слова умирало молча.
+        // В репорте это выглядело как конфликт ⌥ с ⌥⌘, но дело не в пересечении — сломался бы любой
+        // modkey-хоткей конверсии, хоть правый ⌘. Баг живёт с 29.07, когда появился режим combo.
+        //
+        // Пересечение при этом разруливается само и правильно: на нажатии одиночного ⌥ взводится
+        // modkeyArmed, а пришедший следом ⌘ имеет другой keyCode и гасит взвод в ветке else ниже.
+        // То есть ⌥⌘ не порождает ложной конверсии, а одиночный ⌥ работает как задумано.
+        if s.voiceEnabled, s.voiceHotkeyMode == "combo",
+           case let target = relevantMods(CGEventFlags(rawValue: s.voiceHotkeyModifiers)), !target.isEmpty {
             if relevantMods(flags) == target {
                 // Взводим один раз на набор: flagsChanged приходит на каждую клавишу комбинации,
                 // а совпадение с маской наступает только на последней.
@@ -474,7 +482,7 @@ final class EventTap {
                     onMain { [weak self] in self?.handler?.handleVoiceEnd() }
                 }
             }
-            return false
+            // Провал ВНИЗ, к хоткею конверсии. См. предупреждение над блоком.
         }
         switch s.hotkeyMode {
         case "modkey":

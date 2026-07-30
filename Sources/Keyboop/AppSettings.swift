@@ -256,6 +256,16 @@ final class AppSettings {
     /// Исправлять «КОгда» → «Когда» (T28). ВЫКЛЮЧЕНО по умолчанию: это правка текста, а не раскладки.
     var twoCapsFix: Bool { get { d.bool(forKey: "twoCapsFix") } set { d.set(newValue, forKey: "twoCapsFix") } }
 
+    /// Приглушать системную громкость на время диктовки. Выключено по умолчанию: трогать громкость
+    /// чужого Mac без спроса нельзя, человек должен включить это сам.
+    var voiceDuck: Bool { get { d.bool(forKey: "voiceDuck") } set { d.set(newValue, forKey: "voiceDuck") } }
+    /// До скольких процентов приглушать (0 = полная тишина). По умолчанию 20%: музыку слышно, но
+    /// говорить она не мешает. Значение всегда осмысленное, даже если ключа ещё нет.
+    var voiceDuckLevel: Int {
+        get { d.object(forKey: "voiceDuckLevel") == nil ? 20 : max(0, min(100, d.integer(forKey: "voiceDuckLevel"))) }
+        set { d.set(max(0, min(100, newValue)), forKey: "voiceDuckLevel") }
+    }
+
     /// Сколько слов зверёк «расколдовал» за всё время (счётчик спасённых раскладок). Растёт на
     /// каждой удачной конверсии — авто, ручной, группа, выделение, мид-слово. Чисто локальный счётчик.
     var rescuedCount: Int { get { d.integer(forKey: "rescuedCount") } set { d.set(newValue, forKey: "rescuedCount") } }

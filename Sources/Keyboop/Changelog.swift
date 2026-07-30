@@ -51,6 +51,32 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        Release(version: "0.3.4",
+            ru: [
+                "Починено ручное переключение слова у тех, кто назначил диктовке сочетание из двух модификаторов, например ⌥⌘. Оно переставало работать полностью: разбор хоткея конверсии до него просто не доходил. Спасибо @denis_kuprienko за точный отчёт, по нему это нашлось за минуту.",
+                "Пока вы диктуете, звук можно приглушать. Музыка и видео перестают перекрикивать, а после диктовки громкость возвращается на прежнее место. Насколько убавлять, выбираете сами, вплоть до полной тишины. Если вы сами покрутите громкость во время диктовки, мы не станем спорить и оставим ваше значение. Выключено по умолчанию, включается в настройках голоса.",
+                "Потоковый набор перестал молчать. Он показывает распознанное прямо на плашке «Слушаю», пока вы говорите, а в документ текст по-прежнему попадает один раз, в конце. Печатать по ходу речи мы намеренно не стали: модель переписывает уже сказанное, и в вашем тексте это выглядело бы как буквы, которые сами себя стирают. Заодно настройка теперь честно пишет, что ей нужен движок Parakeet: раньше на другом движке тумблер включался и не делал ничего.",
+                "Обновление стало на одно нажатие короче. Раньше в уведомлении надо было нажать «Обновить», а потом ещё раз то же самое в отдельном окне. Теперь любая из двух кнопок ставит версию и перезапускает приложение сразу. Правая заодно включает автоматические обновления, чтобы это уведомление больше не появлялось.",
+            ],
+            en: [
+                "Fixed manual word switching for anyone who assigned a two-modifier combination to dictation, such as ⌥⌘. It stopped working entirely: the conversion hotkey was never even examined. Thanks to @denis_kuprienko for a report precise enough to find it in a minute.",
+                "The volume can now duck while you dictate. Music and video stop talking over you, and the level returns afterwards. How far down is your choice, all the way to silence. If you change the volume yourself mid-dictation, we won't argue and keep your value. Off by default, switched on in the voice settings.",
+                "Streaming dictation stopped being invisible. It shows what it recognises right on the “Listening” panel while you speak, while the text still lands in your document once, at the end. We deliberately do not type as you go: the model rewrites what it already said, and in your text that would look like letters erasing themselves. The setting now also admits that it needs the Parakeet engine, where before it switched on and did nothing.",
+                "Updating is one click shorter. The notification used to ask you to press “Update”, then ask again in a separate window. Now either button installs the version and relaunches straight away. The right one also turns on automatic updates, so the notification stops appearing.",
+            ],
+            announce: """
+                Быстрая заплатка. Если вы ставили диктовку на сочетание вроде ⌥⌘, у вас молча \
+                переставало работать ручное переключение слова. Ломалось это с 29 июля, то есть \
+                ровно с того дня, как я добавил сочетания по вашей же просьбе. Извините.
+
+                И ещё раз для тех, у кого версия старше 0.3: она сама не обновится. Нажмите \
+                «Проверить обновления» в меню, а если в ответ тишина или бодрое «у вас всё свежее», \
+                не верьте и скачайте с keyboop.com. Дальше всё поедет само.
+                """,
+            announceEnd: """
+                Нашлось за минуту, потому что человек прислал отчёт с логом прямо из приложения. \
+                Это лучший способ мне помочь: «Сообщить о проблеме», и всё видно.
+                """),
         Release(version: "0.3.3",
             ru: [
                 "«Скопировать последнюю диктовку» теперь появляется в меню, только когда копировать действительно есть что. Пункт брал текст из истории диктовок, другого источника у него нет, поэтому при выключенной истории он был мёртвым, а после истечения срока хранения обещал то, чего уже не существует. Теперь он просто исчезает.",

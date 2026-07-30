@@ -138,6 +138,9 @@ final class Engine: EventTapHandler {
     /// и выполняем, когда синтетика отыграла (muted снят). Иначе «отмена иногда ничего не делает»
     /// (баг H4, синтетический тест 2026-06-19): нажатие попадало в muted-окно и просто терялось.
     private var pendingManual = false
+    /// Когда отложили ручное нажатие. Нужен СРОК ГОДНОСТИ — см. drainPendingManual.
+    private var pendingManualAt: TimeInterval = 0
+    private let pendingManualTTL: TimeInterval = 2.0
 
     /// «Дренаж» после постинга синтетики, перед снятием muted. Синтетика отыгрывает на serial-очереди
     /// и проходит через session-tap за единицы мс; этого хватает, чтобы хвостовые синтетические события
@@ -518,6 +521,17 @@ final class Engine: EventTapHandler {
     private func drainPendingManual() {
         guard pendingManual, !muted else { return }
         pendingManual = false
+        // ⚠️ СРОК ГОДНОСТИ (30.07). Отложенное нажатие относилось к слову, на которое человек смотрел
+        // в тот момент. Если синтетика задержалась и с тех пор прошли секунды, буфер уже пуст или там
+        // другое слово, и выполнять намерение поздно: конверсии не будет, а язык переключится со
+        // звуком. Именно так и выглядела жалоба пользователя «периодически слышу звук смены раскладки на
+        // старте диктовки» — он жал ⌥⇧ под нашу же синтетику, а всплывало это через минуты, потому
+        // что диктовка вставляет текст, тот запускает конверсию, и на её завершении drain срабатывал.
+        let age = ProcessInfo.processInfo.systemUptime - pendingManualAt
+        guard age <= pendingManualTTL else {
+            kbLog("хоткей отложенный просрочен (\(String(format: "%.1f", age))с) — отменяю, чтобы не менять язык со звуком на пустом буфере")
+            return
+        }
         convertFromBuffer(manual: true)
     }
 
@@ -1123,7 +1137,16 @@ final class Engine: EventTapHandler {
         // Ручной хоткей в muted-окно НЕ теряем: откладываем до снятия muted (drainPendingManual).
         // Авто (manual=false) повторять не нужно — оно само придёт со следующим словом/границей.
         guard !mutedStuckCheck() else {
-            if manual { pendingManual = true } else { silentLog("muted", "авто молчит: синтетика в полёте (muted)") }
+            if manual {
+                pendingManual = true
+                pendingManualAt = ProcessInfo.processInfo.systemUptime
+                // ⚠️ Эта ветка до 30.07 не писала В ЛОГ НИЧЕГО, и из-за этого баг «звук смены
+                // раскладки на старте диктовки» был неразбираем: причина (нажатие под muted) и
+                // следствие (отложенная конверсия) разнесены во времени, а следа не оставалось.
+                kbLog("хоткей отложен: синтетика в полёте, выполню после её завершения")
+            } else {
+                silentLog("muted", "авто молчит: синтетика в полёте (muted)")
+            }
             return
         }
         // Ручной хоткей (вкл. group/selection с buffer.clear()) рвёт текущее слово → якорь self-heal

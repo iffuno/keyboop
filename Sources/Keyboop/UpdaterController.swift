@@ -78,13 +78,36 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
         controller?.checkForUpdates(nil)
     }
 
-    /// Поставить отложенный апдейт сейчас (кнопка «Обновить сейчас»).
+    /// Как долго держим у себя право установить, если человек не нажал ни одной кнопки в плашке.
+    /// По истечении — отпускаем и перезаводим цикл Sparkle, иначе плановые проверки не возобновятся
+    /// (см. большой комментарий в делегате). Десять минут: плашка живёт на экране куда меньше.
+    private let pendingTTL: TimeInterval = 600
+    private var pendingSafety: DispatchWorkItem?
+
+    /// Страховка от «плашку закрыли, а установку никто не позвал». Без неё возврат `true` из делегата
+    /// убивает ВСЕ будущие проверки обновлений — тот самый механизм, из-за которого люди сидят на
+    /// 0.2.69 до сих пор.
+    private func armPendingSafety() {
+        pendingSafety?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.pendingInstall != nil else { return }
+            self.pendingInstall = nil
+            kbLog("updater: плашку \(self.pendingVersion) не тронули за \(Int(self.pendingTTL / 60)) мин — "
+                  + "отпускаю установку и перезавожу расписание")
+            self.controller?.updater.resetUpdateCycle()
+        }
+        pendingSafety = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + pendingTTL, execute: work)
+    }
+
+    /// Поставить отложенный апдейт сейчас (левая кнопка плашки, «Обновить»).
     ///
-    /// Тихий режим: у нас на руках `immediateInstallHandler` — подменяем и перезапускаем сами.
-    /// Обычный режим: handler'а нет и быть не может (мы вернули `false`, см. делегат), поэтому
-    /// отдаём человека штатному окну Sparkle. Апдейт уже скачан, так что это один клик, а не
-    /// повторная загрузка.
+    /// Обработчик установки у нас на руках в ЛЮБОМ режиме (см. делегат), поэтому ставим и
+    /// перезапускаемся сразу, без второго окна и без повторного вопроса. Ветка с `checkNow()` ниже
+    /// остаётся только на случай, когда обработчика нет: например плашка провисела дольше pendingTTL
+    /// и мы уже отпустили установку, а человек нажал кнопку на старой плашке.
     func installPendingNow() {
+        pendingSafety?.cancel(); pendingSafety = nil
         IdleMonitor.shared.stop()
         guard let block = pendingInstall else {
             kbLog("updater: показываю штатное окно установки \(pendingVersion)")
@@ -221,9 +244,21 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
         let silent = AppSettings.shared.silentAutoUpdate
         kbLog("updater: \(pendingVersion) скачан, готов к установке (silent=\(silent))")
         guard silent else {
-            pendingInstall = nil
+            // ⚠️ ТЕПЕРЬ ДЕРЖИМ УСТАНОВКУ У СЕБЯ И В ОБЫЧНОМ РЕЖИМЕ (30.07, просьба автора).
+            // Раньше здесь было `pendingInstall = nil; return false`, и кнопка «Обновить» в нашей
+            // плашке не могла поставить апдейт сама — она отдавала человека штатному окну Sparkle,
+            // где надо было нажать «обновить» ВТОРОЙ раз. автор прошёл этот путь вживую и попросил
+            // убрать лишний шаг: одна кнопка, одно нажатие, приложение перезапускается.
+            //
+            // Но `true` здесь означает «я беру установку на себя», и Sparkle в ответ паркует не
+            // только текущий цикл, но и ВСЕ БУДУЩИЕ проверки. Именно так люди застревали на 0.2.69
+            // навсегда: плашку закрыли, обработчик никто не позвал, расписание умерло. Поэтому
+            // держать обработчик можно ТОЛЬКО вместе со страховкой, которая ниже: не позвали за
+            // pendingTTL — отпускаем установку и перезаводим цикл. Без неё не возвращать true.
+            pendingInstall = immediateInstallHandler
+            armPendingSafety()
             DispatchQueue.main.async { [weak self] in self?.onUpdateReady?(self?.pendingVersion ?? "") }
-            return false
+            return true
         }
         // Юзер выбрал «авто» → ставим тихо, когда отошёл (5 мин без ввода, не идёт диктовка/окно).
         pendingInstall = immediateInstallHandler

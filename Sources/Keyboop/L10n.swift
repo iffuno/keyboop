@@ -80,7 +80,13 @@ enum L10n {
 
         "switch.title":   [.ru: "Переключение раскладки", .en: "Layout switching"],
         "switch.sub":     [.ru: "Бупни клавишу — кракозябры исчезнут.", .en: "Boop a key — the gibberish vanishes."],
-        "switch.auto":    [.ru: "Авто-переключение", .en: "Auto-switch"],
+        // ⚠️ ПРАВИЛО ИМЁН (T44, решение автора 30.07). Три настройки годами звучали как одно и то
+        // же «переключение», и люди путали их в отчётах (#20 и не только). Различаются они двумя
+        // вещами: правят ТЕКСТ или только РАСКЛАДКУ, и когда срабатывают. Поэтому:
+        //   всё, что правит текст  → начинается с «Исправлять»
+        //   всё, что меняет только раскладку → начинается с «Менять раскладку»
+        // Тогда первые две читаются как родственники, а разница видна в хвосте. Держаться правила.
+        "switch.auto":    [.ru: "Исправлять слово после пробела", .en: "Fix the word after a space"],
         "switch.autoSub": [.ru: "Двусторонне, RU ↔ EN", .en: "Two-way, RU ↔ EN"],
         "switch.translate":[.ru: "Перевод выделенного · ⌃⌥T", .en: "Translate selection · ⌃⌥T"],
         "switch.translateSub":[.ru: "Выдели СВОЙ текст в поле ввода и нажми ⌃⌥T — он заменится переводом RU↔EN. Там, где печатаешь (письмо, чат, заметка), а не на чужой веб-странице. Локально, macOS 15+.",
@@ -110,7 +116,7 @@ enum L10n {
         "tr.sound":       [.ru: "Звук перевода", .en: "Translation sound"],
         "tr.soundVol":    [.ru: "Громкость звука", .en: "Sound volume"],
         "sound.keyboopTr": [.ru: "Keyboop", .en: "Keyboop"],   // звук ПЕРЕВОДА
-        "switch.live":    [.ru: "Чинить на лету", .en: "Fix on the fly"],
+        "switch.live":    [.ru: "Исправлять не дожидаясь пробела", .en: "Fix without waiting for a space"],
         // Подпись переписана вместе со сменой дефолта на ВКЛ (21.07): пометка «(агрессивно)» пугала
         // ровно там, где тумблер теперь включён из коробки. Объясняем пользу, а не пугаем.
         "switch.liveSub": [.ru: "Не ждать пробела: чиню прямо посреди слова, как только сочетание стало невозможным в этом языке", .en: "Don’t wait for the space: I fix mid-word as soon as the combo becomes impossible in this language"],
@@ -287,8 +293,8 @@ enum L10n {
         "gen.title":      [.ru: "Общие", .en: "General"],
         "gen.sub":        [.ru: "Язык интерфейса, автозапуск и доступ к системе.",
                            .en: "Interface language, launch at login, and system access."],
-        "is.title":       [.ru: "Мгновенная смена языка (бета)", .en: "Instant language switch (beta)"],
-        "is.enable":      [.ru: "Переключать язык мгновенно", .en: "Switch language instantly"],
+        "is.title":       [.ru: "Менять раскладку без задержки (бета)", .en: "Change layout with no delay (beta)"],
+        "is.enable":      [.ru: "Менять раскладку без задержки", .en: "Change layout with no delay"],
         "is.enableSub":   [.ru: "Меняет язык без задержки системы. Набранное не трогаем — это просто смена раскладки, отдельно от ручного исправления слова.",
                            .en: "Changes the language with none of the system's delay. Your text isn't touched — it's just the layout, separate from fixing a word by hand."],
         "is.combo":       [.ru: "Комбинация", .en: "Shortcut"],
@@ -509,8 +515,8 @@ enum L10n {
                               .en: "After you finish, the mic stays on for the time you set instead of shutting down. The next dictation within that window starts instantly, with no device warm-up. While the mic is on, macOS shows an orange dot in the menu bar. That indicator is the system's, not ours: it appears for any app holding the microphone open."],
         "voice.escHelp":     [.ru: "Escape во время записи обрывает её, и ничего не вставляется — сказанное просто пропадает. Выключите, если Escape нужен самой программе, в которой вы диктуете: тогда он уйдёт туда, а диктовку останавливайте тем же сочетанием, которым начали.",
                               .en: "Escape during recording drops it and inserts nothing — what you said is discarded. Turn it off if the app you dictate into needs Escape itself: it will pass through, and you stop dictation with the same shortcut you started it with."],
-        "voice.streamHelp":  [.ru: "Текст появляется по ходу речи, не дожидаясь конца фразы. Модель при этом переписывает уже показанное, когда понимает фразу лучше, поэтому буквы могут дёргаться. Экспериментально: если мешает, выключите и текст будет вставляться один раз, целиком.",
-                              .en: "Text appears as you speak instead of waiting for the end of the phrase. The model rewrites what it already showed once it understands the phrase better, so letters can twitch. Experimental: turn it off and the text is inserted once, whole."],
+        "voice.streamHelp":  [.ru: "Распознанное показывается прямо на плашке «Слушаю», пока вы говорите, а в документ вставляется один раз, в конце. Печатать по ходу речи мы намеренно не стали: модель переписывает уже сказанное, когда понимает фразу лучше, и в чужом тексте это выглядело бы как буквы, которые сами себя стирают. Работает только с движком Parakeet и требует отдельной небольшой модели.",
+                              .en: "What is recognised shows up right on the “Listening” panel while you speak, and goes into your document once, at the end. We deliberately do not type as you go: the model rewrites what it already said once it understands the phrase better, and inside your own text that would look like letters erasing themselves. Works only with the Parakeet engine and needs a separate small model."],
 
         "voice.outputGroupNote": [.ru: "Эти правила применяются к уже распознанному тексту, поэтому работают одинаково на любой модели.",
                                   .en: "These rules apply to the finished text, so they work the same on every model."],
@@ -533,8 +539,11 @@ enum L10n {
         "voice.soundVol": [.ru: "Громкость звука", .en: "Sound volume"],
         "voice.streaming":   [.ru: "Потоковый набор — очень экспериментально",
                               .en: "Streaming dictation — very experimental"],
-        "voice.streamingSub": [.ru: "Печатает, пока вы ещё говорите",
-                          .en: "Types while you are still speaking"],
+        "voice.streamingSub": [.ru: "Показывает речь на плашке, пока вы говорите",
+                          .en: "Shows your speech on the panel as you talk"],
+        // Условие, о котором тумблер раньше молчал: на whisper он включался и не делал НИЧЕГО.
+        "voice.streamNeedsPk":[.ru: "Нужен движок Parakeet — выберите его в списке моделей выше",
+                               .en: "Needs the Parakeet engine — pick it in the model list above"],
         "voice.streamDlTitle":[.ru: "Скачать модель потокового набора?",
                                .en: "Download the streaming dictation model?"],
         "voice.streamDlSub": [.ru: "Это отдельная модель (~120 МБ), едет один раз. Без неё потоковый набор не заведётся — пока качается, диктовка работает по-старому.",
@@ -640,12 +649,14 @@ enum L10n {
         "is.enableHelp":  [.ru: "Обычная смена языка в macOS идёт с задержкой: система ждёт, не окажется ли нажатие началом сочетания. Мы перехватываем клавишу раньше и меняем язык сразу. Набранное при этом не трогаем — это именно смена раскладки, а не починка слова.",
                            .en: "Switching language in macOS has a delay: the system waits to see whether your press is the start of a combination. We intercept the key earlier and switch immediately. Nothing you typed is touched — this is a layout switch, not a word fix."],
         "upd.check":      [.ru: "Проверить сейчас", .en: "Check now"],
-        "upd.now":        [.ru: "Обновить сейчас", .en: "Update now"],
+        // Кнопки плашки об апдейте. Обе ставят СРАЗУ, поэтому «сейчас» из левой убрано: оно
+        // подразумевало, что правая поставит когда-нибудь потом, а она тоже ставит сейчас.
+        "upd.now":        [.ru: "Обновить", .en: "Update"],
         "upd.auto":       [.ru: "Обновлять автоматически", .en: "Update automatically"],
-        "upd.autoShort":  [.ru: "Включить авто", .en: "Auto-update"],
+        "upd.autoShort":  [.ru: "Обновлять автоматически", .en: "Update automatically"],
         "upd.notifyTitle":[.ru: "Keyboop %@ готов", .en: "Keyboop %@ is ready"],
-        "upd.notifyBody": [.ru: "Поставить сейчас или включить авто?",
-                           .en: "Install now, or turn on auto?"],
+        "upd.notifyBody": [.ru: "Обе кнопки поставят обновление сразу. Правая ещё и включит автоматические, чтобы больше не спрашивать.",
+                           .en: "Both buttons install it right away. The right one also turns on automatic updates, so this stops asking."],
         "upd.foot":       [.ru: "Проверка шлёт только твой IP и номер версии — как любой заход на сайт. Ничего из набранного.",
                            .en: "The check sends only your IP and version number — like any website visit. Nothing you type."],
         "upd.onboard":    [.ru: "Keyboop сам находит новые версии и спрашивает, ставить ли, — одной кнопкой. Что-то не так — напиши, починим.",
@@ -728,6 +739,13 @@ enum L10n {
         "fb.tooShort":    [.ru: "Напиши хоть пару слов )", .en: "Give me at least a couple of words )"],
         "menu.voiceHistory":[.ru: "История голосового набора…", .en: "Dictation history…"],
         "menu.copyLast":  [.ru: "Скопировать последнюю диктовку", .en: "Copy last dictation"],
+        "voice.grpDuck":  [.ru: "Пока вы диктуете", .en: "While you dictate"],
+        "voice.duck":     [.ru: "Приглушать звук на время диктовки", .en: "Turn the volume down while dictating"],
+        "voice.duckSub":  [.ru: "Музыка и видео не будут перекрикивать", .en: "Music and video stop talking over you"],
+        "voice.duckHelp": [.ru: "Пока идёт запись, громкость системы убавляется, а после неё возвращается на прежнее место. Если вы покрутите её сами во время диктовки, мы не станем спорить и оставим ваше значение. Паузу медиа мы намеренно не жмём: клавиша паузы уходит в то приложение, которое система считает главным, а когда открыты вкладка с видео, музыка и созвон, угадать это нельзя. Громкость же принадлежит наушникам и ведёт себя одинаково всегда.",
+                           .en: "While recording, the system volume goes down and returns afterwards. If you change it yourself mid-dictation, we won't argue and will leave your value. We deliberately don't press pause: the pause key goes to whichever app the system considers primary, and with a video tab, music and a call all open, that is a coin toss. Volume belongs to the output device and behaves the same way every time."],
+        "voice.duckLevel":[.ru: "Насколько убавлять", .en: "How far down"],
+        "voice.duckMute": [.ru: "До тишины", .en: "All the way"],
         "voice.retentionSub": [.ru: "По нему же пропадает копирование из меню",
                                .en: "Also drops copy-from-menu"],
         "voice.retentionHelp": [.ru: "Через это время записи удаляются, и вместе с ними пропадает пункт «Скопировать последнюю диктовку» в меню: копировать ему становится нечего. Если диктуете подолгу и возвращаетесь к сказанному через час, ставьте срок побольше. «Не удалять» хранит последние 50 записей, пока вы сами их не сотрёте.",

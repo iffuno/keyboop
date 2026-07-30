@@ -576,9 +576,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppBanner.shared.show(
             title: String(format: L10n.t("upd.notifyTitle"), version),
             body: L10n.t("upd.notifyBody"),
+            // ПОРЯДОК И ЦВЕТ — РЕШЕНИЕ ИВАНА 30.07. Слева серая «Обновить», справа коралловая
+            // «Обновлять автоматически». Обе ставят апдейт СРАЗУ, без второго окна; правая вдобавок
+            // включает тихие автообновления. Коралл на правой намеренно: это подсказка, куда нажать,
+            // чтобы больше не видеть эту плашку никогда. Раньше акцент стоял на «обновить один раз»,
+            // то есть мы сами уводили людей от автообновлений и потом удивлялись застрявшим версиям.
             actions: [
-                .init(title: L10n.t("upd.now"), coral: true) { UpdaterController.shared.installPendingNow() },
-                .init(title: L10n.t("upd.autoShort"), coral: false) { UpdaterController.shared.enableSilentAndInstall() }
+                .init(title: L10n.t("upd.now"), coral: false) { UpdaterController.shared.installPendingNow() },
+                .init(title: L10n.t("upd.autoShort"), coral: true) { UpdaterController.shared.enableSilentAndInstall() }
             ]
         )
     }

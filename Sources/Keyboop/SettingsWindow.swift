@@ -1549,7 +1549,15 @@ final class DetailVC: NSViewController {
             card([
                 switchRow(L10n.t("voice.escCancel"), L10n.t("voice.escCancelSub"), settings.escCancelsDictation, #selector(toggleEscCancel),
                           help: L10n.t("voice.escHelp")),
-                switchRow(L10n.t("voice.streaming"), L10n.t("voice.streamingSub"), settings.voiceStreaming, #selector(toggleVoiceStreaming),
+                // ⚠️ Подпись МЕНЯЕТСЯ, когда движок не тот (30.07). Потоковый путь требует Parakeet
+                // (VoiceController.useStreaming), и на whisper тумблер включался, а не делал ничего:
+                // автор включил, продиктовал, не увидел ничего и решил, что фича сломана. Сам тумблер
+                // при этом НЕ гасим: человек мог включить его заранее, до выбора движка, и отнимать
+                // у него переключатель было бы грубее, чем честно сказать, чего не хватает.
+                switchRow(L10n.t("voice.streaming"),
+                          settings.voiceEngine == "parakeet" ? L10n.t("voice.streamingSub")
+                                                            : L10n.t("voice.streamNeedsPk"),
+                          settings.voiceStreaming, #selector(toggleVoiceStreaming),
                           help: L10n.t("voice.streamHelp")),
                 switchRow(L10n.t("voice.sound"), L10n.t("voice.soundSub"), settings.voiceSoundEnabled, #selector(toggleVoiceSound),
                           help: L10n.t("voice.soundHelp")),
@@ -1593,6 +1601,14 @@ final class DetailVC: NSViewController {
         views.append(contentsOf: [hint(L10n.t("voice.intelNote")), group(6)])
         #endif
         views.append(contentsOf: [
+            group(6),
+            sectionTitle(L10n.t("voice.grpDuck")),
+            group(8),
+            card([
+                switchRow(L10n.t("voice.duck"), L10n.t("voice.duckSub"), settings.voiceDuck,
+                          #selector(toggleDuck), help: L10n.t("voice.duckHelp")),
+                controlRow(L10n.t("voice.duckLevel"), duckLevelControl(), enabled: settings.voiceDuck),
+            ]),
             group(6),
             sectionTitle(L10n.t("voice.grpHistory")),
             group(8),
@@ -2355,6 +2371,26 @@ final class DetailVC: NSViewController {
     @objc private func toggleTTab(_ s: NSButton) { settings.triggerTab = (s.state == .on) }
     @objc private func toggleArrows(_ s: NSSwitch) { settings.arrowsCancel = (s.state == .on) }
     @objc private func toggleTwoCaps(_ s: NSSwitch) { settings.twoCapsFix = (s.state == .on) }
+
+    /// Насколько приглушать. Проценты, а не «тихо/громко»: у людей очень разные наушники, и «тихо»
+    /// у одного громче, чем «громко» у другого. Ноль — полная тишина, вынесен отдельным пунктом,
+    /// потому что это не «очень тихо», а другое поведение.
+    private let duckLevels = [0, 10, 20, 30, 50]
+    private func duckLevelControl() -> NSView {
+        let pop = NSPopUpButton()
+        pop.addItems(withTitles: [L10n.t("voice.duckMute")] + duckLevels.dropFirst().map { "\($0)%" })
+        pop.selectItem(at: duckLevels.firstIndex(of: settings.voiceDuckLevel) ?? 2)
+        pop.target = self; pop.action = #selector(duckLevelChanged(_:))
+        return pop
+    }
+    @objc private func duckLevelChanged(_ s: NSPopUpButton) {
+        let i = max(0, min(s.indexOfSelectedItem, duckLevels.count - 1))
+        settings.voiceDuckLevel = duckLevels[i]
+    }
+    @objc private func toggleDuck(_ s: NSSwitch) {
+        settings.voiceDuck = (s.state == .on)
+        DispatchQueue.main.async { [weak self] in self?.reshow() }   // строка уровня гаснет/зажигается
+    }
     /// «Написать разработчику» — теперь наша форма (mailto хрупок: у многих Mail.app не настроен,
     /// кнопка открывала пустоту, и фидбэк умирал молча). Почта осталась фолбэком ВНУТРИ формы.
     @objc private func openFeedback() { FeedbackWindowController.shared.show() }

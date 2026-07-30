@@ -424,6 +424,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // вышел, и пункт исчезает. Мёртвая строка, всегда отвечающая «нечего копировать», хуже, чем её
         // отсутствие. Проверка честна именно потому, что меню пересобирается при открытии (см.
         // menuNeedsUpdate выше); без этого пункт появлялся и пропадал бы с опозданием.
+        // Порядок: сначала история, потом копирование (решение автора 30.07 — было наоборот).
+        let vh = NSMenuItem(title: L10n.t("menu.voiceHistory"), action: #selector(showVoiceHistory), keyEquivalent: "")
+        vh.target = self
+        vh.image = icon("clock.arrow.trianglehead.counterclockwise.rotate.90",   // SF 6, macOS 15
+                        "clock.arrow.circlepath")
+        menu.addItem(vh)
+
         if VoiceHistory.shared.lastVisible() != nil {
             let copyLast = NSMenuItem(title: L10n.t("menu.copyLast"), action: #selector(copyLastDictation), keyEquivalent: "")
             copyLast.target = self
@@ -431,12 +438,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                                   "doc.on.doc")
             menu.addItem(copyLast)
         }
-
-        let vh = NSMenuItem(title: L10n.t("menu.voiceHistory"), action: #selector(showVoiceHistory), keyEquivalent: "")
-        vh.target = self
-        vh.image = icon("clock.arrow.trianglehead.counterclockwise.rotate.90",   // SF 6, macOS 15
-                        "clock.arrow.circlepath")
-        menu.addItem(vh)
 
         menu.addItem(.separator())
 

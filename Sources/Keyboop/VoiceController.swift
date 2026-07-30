@@ -31,7 +31,18 @@ final class VoiceController {
     private var streamFinalize: Task<Void, Never>?     // финализация прошлой сессии (finish/reset) — новая ждёт её
     /// Использовать потоковый путь: фича ВКЛ + движок parakeet + EOU-модель скачана.
     private var useStreaming: Bool {
-        settings.voiceStreaming && settings.voiceEngine == "parakeet" && StreamingEouEngine.modelInstalled
+        guard settings.voiceStreaming else { return false }
+        // ⚠️ Молчаливый отказ здесь читался как «фича не работает» (автор 30.07: включил, продиктовал,
+        // ничего не увидел). Условий два, и оба невидимы из интерфейса, поэтому называем их в логе.
+        guard settings.voiceEngine == "parakeet" else {
+            kbLog("потоковый набор пропущен: он только для Parakeet, а выбран \(settings.voiceEngine)")
+            return false
+        }
+        guard StreamingEouEngine.modelInstalled else {
+            kbLog("потоковый набор пропущен: модель потокового распознавания не скачана")
+            return false
+        }
+        return true
     }
 
     enum State { case idle, recording, processing }
@@ -484,10 +495,20 @@ final class VoiceController {
     /// Единая точка смены состояния: статус-бар (onStateChange) + плашка у курсора.
     private func setState(_ s: State) {
         onStateChange?(s)
+        // ГРОМКОСТЬ ПРИГЛУШАЕМ ЗДЕСЬ, а не рядом с recorder.start()/stop() (30.07). Выходов из
+        // записи много: обычный конец, Escape, слишком короткое нажатие, тишина, смерть устройства,
+        // прерванный старт. Развесить restore() по каждому — гарантированно забыть один и оставить
+        // человеку тихий Mac. Смена состояния же одна на всех: ушли из .recording — вернули громкость.
         switch s {
-        case .recording:  VoiceIndicator.shared.showRecording()
-        case .processing: VoiceIndicator.shared.showProcessing()
-        case .idle:       VoiceIndicator.shared.hide()
+        case .recording:
+            if settings.voiceDuck { SystemVolume.duck(to: Float(settings.voiceDuckLevel) / 100) }
+            VoiceIndicator.shared.showRecording()
+        case .processing:
+            SystemVolume.restore()          // распознавание идёт в фоне, слушать музыку уже можно
+            VoiceIndicator.shared.showProcessing()
+        case .idle:
+            SystemVolume.restore()
+            VoiceIndicator.shared.hide()
         }
     }
 
