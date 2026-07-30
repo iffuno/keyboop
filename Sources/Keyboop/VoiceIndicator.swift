@@ -22,8 +22,41 @@ final class VoiceIndicator {
     private let pad: CGFloat = 13       // боковые отступы
     private let gap: CGFloat = 9        // зазор иконка↔текст
     private let waveW: CGFloat = 54     // ширина waveform
+    private let maxLiveW: CGFloat = 460 // потолок для живого текста стриминга (дальше режем хвостом)
 
     func showRecording() { DispatchQueue.main.async { self.present(L10n.t("voice.listening"), .recording) } }
+
+    /// Живой текст потоковой диктовки прямо на плашке, вместо слова «Слушаю».
+    ///
+    /// Зачем не печатать его сразу в поле (решение автора 30.07): потоковая расшифровка ПОСТОЯННО
+    /// переписывается, пока модель уточняет гипотезу. На плашке меняющаяся строка — это норма, а в
+    /// чужом документе это значит писать и стирать чужой текст. Плюс в Electron-приложениях наша
+    /// синтетика молча игнорируется, и «печать на лету» там не работала вовсе. Финальный текст
+    /// вставляется один раз, в конце.
+    ///
+    /// Показываем ХВОСТ строки: интересны последние сказанные слова, а не начало фразы, уехавшее за
+    /// край. Ширину ограничиваем, иначе плашка растёт на весь экран и перестаёт быть плашкой.
+    func showLive(_ text: String) {
+        DispatchQueue.main.async {
+            guard self.mode == .recording, let p = self.panel, p.isVisible else { return }
+            let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.label.stringValue = t.isEmpty ? L10n.t("voice.listening") : self.tail(t)
+            // Позицию НЕ пересчитываем: плашка уже стоит у каретки, а переставлять её на каждом
+            // уточнении текста значит дёргать её под рукой у говорящего. Растём только вправо.
+            self.relayout(text: self.label.stringValue, showWave: true, panel: p)
+        }
+    }
+
+    /// Обрезать слева до maxLiveW, добавив «…». Считаем по фактической ширине шрифта, а не по числу
+    /// символов: у кириллицы и латиницы разная ширина, и счёт «по буквам» дал бы прыгающую плашку.
+    private func tail(_ s: String) -> String {
+        let font = label.font ?? .systemFont(ofSize: 12, weight: .medium)
+        func w(_ x: String) -> CGFloat { (x as NSString).size(withAttributes: [.font: font]).width }
+        guard w(s) > maxLiveW else { return s }
+        var chars = Array(s)
+        while !chars.isEmpty, w("…" + String(chars)) > maxLiveW { chars.removeFirst() }
+        return "…" + String(chars)
+    }
     func showProcessing() { DispatchQueue.main.async { self.present(L10n.t("voice.recognizing"), .processing) } }
     func hide() {
         DispatchQueue.main.async {

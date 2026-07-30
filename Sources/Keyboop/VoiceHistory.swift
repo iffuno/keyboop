@@ -47,6 +47,20 @@ final class VoiceHistory {
         if prune() { save(); notifyChanged() }
     }
     func all() -> [Entry] { cache }
+
+    /// Последняя диктовка, которую ПРЯМО СЕЙЧАС законно показать: история включена и запись ещё не
+    /// просрочена по сроку хранения. Ничего не меняет и не пишет на диск — зовётся из сборки меню.
+    ///
+    /// Отдельно от `all().last`, потому что `cache` вычищается только в `prune()` (на добавлении и при
+    /// смене срока в настройках), а между этими моментами в нём спокойно лежит запись, срок которой
+    /// уже вышел. Пункт «Скопировать последнюю диктовку» опирается именно на этот метод, иначе он
+    /// предлагал бы скопировать то, что человек велел удалить полчаса назад.
+    func lastVisible() -> Entry? {
+        guard settings.voiceHistoryEnabled, let e = cache.last else { return nil }
+        let mins = settings.voiceHistoryMinutes
+        guard mins > 0 else { return e }                       // 0 = хранить всё
+        return e.date >= Date().addingTimeInterval(-Double(mins) * 60) ? e : nil
+    }
     func remove(date: Date, text: String) {
         cache.removeAll { $0.date == date && $0.text == text }
         save()

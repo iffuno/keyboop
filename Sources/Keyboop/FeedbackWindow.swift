@@ -27,6 +27,7 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let diagCheck = NSButton(checkboxWithTitle: "", target: nil, action: nil)
     private let status = NSTextField(labelWithString: "")
     private let sendBtn = NSButton()
+    private let tgBtn = NSButton()
     private let mailBtn = NSButton()
     /// Экран формы и экран «отправлено» — меняем целиком, а не подписью у кнопки (см. showDone).
     private var formContent: NSView?
@@ -49,6 +50,17 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         window?.center()
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(textView)
+        // ДИАГНОСТИКА ГЕОМЕТРИИ (30.07). Жалоба «не видно текст» живёт с 25.07 и пережила уже одну
+        // «починку», потому что чинили вслепую. Если она вернётся, следующий отчёт должен принести
+        // ответ с собой: размеры вью и его текстового контейнера в момент открытия окна. Нулевая или
+        // крошечная высота здесь = диагноз, без переписки и догадок.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let f = self.textView.frame, c = self.textView.textContainer?.containerSize ?? .zero
+            kbLog(String(format: "feedback: поле %.0f×%.0f, контейнер %.0f×%.0f, скролл %.0f×%.0f",
+                         f.width, f.height, c.width, c.height,
+                         self.textScroll.frame.width, self.textScroll.frame.height))
+        }
     }
 
     private func build() {
@@ -82,6 +94,28 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         // посимвольно через insertText): и с канонной настройкой, и без неё результат идентичен —
         // контейнер 426 пунктов, все 300 глифов размещены, перенос на 6 строк. Назначение
         // documentView само доводит вью до ума. Не тратить время на этот путь повторно.
+        // ⚠️ ГЕОМЕТРИЯ ПОЛЯ — КАНОНИЧЕСКАЯ НАСТРОЙКА NSTextView В NSScrollView (30.07).
+        //
+        // Ревью 28.07 эту гипотезу проверяло и отвергло: на стенде глифы размещались, и вывод был
+        // «documentView сам доводит вью до ума». Возвращаюсь к ней из-за НОВОЙ улики от автора,
+        // которой у того разбора не было: «перешёл в поле контакта и обратно вернуться уже нельзя».
+        // Мышь — это hit-test, а hit-test — это ФРЕЙМ. В вырожденный по высоте вью попасть нельзя,
+        // и это ровно то, что человек описывает. При открытии окна фокус ставится программно
+        // (makeFirstResponder), там фрейм не нужен, поэтому первый вход работает, а возврат нет.
+        //
+        // Та же причина объясняет и первый симптом, четыре репорта подряд (#12, #20, #25, #26):
+        // «каретка двигается, текста не видно». Размещённые глифы рисуются за границей видимой
+        // области, а каретка видна, потому что её рисуют в начале координат. Цвета тут ни при чём,
+        // их выставили явно ещё в июле, и не помогло — потому что лечили не то.
+        textView.frame = NSRect(x: 0, y: 0, width: 468, height: 150)
+        textView.minSize = NSSize(width: 0, height: 150)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.containerSize = NSSize(width: 468, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = true
+
         textScroll.documentView = textView
         textScroll.hasVerticalScroller = true
         textScroll.borderType = .bezelBorder
@@ -137,7 +171,13 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         mailBtn.target = self
         mailBtn.action = #selector(sendMail)
         mailBtn.isHidden = true
-        let btnRow = NSStackView(views: [status, NSView(), mailBtn, sendBtn])
+        // Второй канал: файл + бот. Не замена форме, а выбор — см. sendViaTelegram().
+        tgBtn.title = L10n.t("fb.tg")
+        tgBtn.bezelStyle = .rounded
+        tgBtn.target = self
+        tgBtn.action = #selector(sendViaTelegram)
+        tgBtn.toolTip = L10n.t("fb.tgTip")
+        let btnRow = NSStackView(views: [status, NSView(), mailBtn, tgBtn, sendBtn])
         btnRow.orientation = .horizontal
         btnRow.spacing = 10
 
@@ -372,4 +412,94 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     @objc private func sendMail() { Permissions.openFeedbackMail() }
+
+    /// DEV-ХУК (`KEYBOOP_FBDUMP=1`): напечатать в поле образец и отрисовать сам блок ввода в PNG.
+    ///
+    /// Зачем понадобился инструмент. Жалоба «печатаю и не вижу текста» пришла ЧЕТЫРЕ раза
+    /// (#12, #20, #25, #26) и живёт до сих пор — репорт #53 пришёл уже с 0.3.2, буквально «ФЫФЫВФЫВ»
+    /// от человека, печатавшего вслепую. Её дважды чинили вслепую: сперва явными цветами, потом
+    /// прозрачным для мыши плейсхолдером. Обе правки разумны, обе не помогли, потому что причину
+    /// никто не ВИДЕЛ. Рендерим ровно то, на что смотрит пользователь.
+    ///
+    /// Снимаем `textScroll`, а не окно целиком: `cacheDisplay` по окну отдаёт белый лист
+    /// (проверено на WINSHOT), а по вложенному вью работает — на этом же держится дамп настроек.
+    func dumpFieldForDev(to path: String) {
+        textView.string = "Проверка видимости: ЖЖЫ ghbdtn 123\nВторая строка, чтобы был перенос."
+        textDidChange(Notification(name: NSText.didChangeNotification, object: textView))
+        textScroll.layoutSubtreeIfNeeded()
+        textView.layoutSubtreeIfNeeded()
+        let b = textScroll.bounds
+        kbLog(String(format: "FBDUMP: скролл %.0f×%.0f, поле %.0f×%.0f, текст %d симв.",
+                     b.width, b.height, textView.frame.width, textView.frame.height,
+                     textView.string.count))
+        guard b.width > 1, b.height > 1, let rep = textScroll.bitmapImageRepForCachingDisplay(in: b) else {
+            kbLog("FBDUMP: нечего рисовать"); return
+        }
+        textScroll.cacheDisplay(in: b, to: rep)
+        if let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+            kbLog("FBDUMP: записан \(path)")
+        }
+    }
+
+    /// Второй способ отправки: ФАЙЛОМ через @keyboop_bot (просьба автора 30.07). Форма остаётся,
+    /// это выбор, а не замена.
+    ///
+    /// Зачем вообще: форма отправляет отчёт сама, и человеку приходится верить нам на слово, что
+    /// именно ушло. Здесь всё наоборот — мы кладём файл, человек его открывает, читает и отправляет
+    /// сам. Ничего не уходит без его действия, и видно ровно то, что уходит.
+    ///
+    /// ⚠️ Почему файлом, а не сообщением. Диагностика — это 300+ строк. В сообщение Telegram влезает
+    /// 4096 символов, а в deep-link `t.me/bot?start=…` вообще 64. То есть «нажал и лог улетел» здесь
+    /// технически невозможно ни в каком виде: лог передаётся только вложением.
+    @objc private func sendViaTelegram() {
+        let text = textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count >= 3 else { status.stringValue = L10n.t("fb.tooShort"); return }
+        let ver = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "?"
+        var parts = ["Keyboop \(ver)", "", text]
+        let c = contact.stringValue.trimmingCharacters(in: .whitespaces)
+        if !c.isEmpty { parts += ["", "Контакт: \(c)"] }
+        if diagCheck.state == .on { parts += ["", "--- диагностика ---", Self.buildDiagnostics()] }
+
+        // Имя файла со временем: человек отправляет несколько отчётов подряд, и одинаковые имена в
+        // «Загрузках» превращаются в «Keyboop-отчёт 2», по которому потом не понять, какой из них какой.
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd-HHmm"
+        let name = "Keyboop-\(ver)-\(fmt.string(from: Date())).txt"
+        let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let url = dir.appendingPathComponent(name)
+        do {
+            try parts.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            status.textColor = .systemOrange
+            status.stringValue = L10n.t("fb.tgFileFail")
+            kbLog("feedback: файл для Telegram не записался: \(error)")
+            return
+        }
+        // ⚠️ СНАЧАЛА ОБЪЯСНЯЕМ, ПОТОМ ОТКРЫВАЕМ (замечание автора 30.07). Первая версия молча
+        // распахивала Finder и чат: человек оставался с двумя чужими окнами и без понимания, что
+        // от него хотят. Показываем ровно три шага и НАЗЫВАЕМ ИМЯ ФАЙЛА — в «Загрузках» у людей
+        // сотни файлов, «тот, что мы только что положили» там не находится.
+        let alert = NSAlert()
+        alert.messageText = L10n.t("fb.tgHowTitle")
+        alert.informativeText = String(format: L10n.t("fb.tgHowBody"), name)
+        alert.addButton(withTitle: L10n.t("fb.tgHowGo"))
+        alert.addButton(withTitle: L10n.t("fb.tgHowCancel"))
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            // Отказался — файл всё равно оставляем: он уже сохранён и может пригодиться, а молча
+            // удалять то, что человек, возможно, пошёл смотреть, невежливо.
+            status.stringValue = L10n.t("fb.tgSaved")
+            return
+        }
+        // Показать в Finder И открыть чат: без первого человек не найдёт файл, без второго не поймёт,
+        // куда его нести. Порядок такой, чтобы поверх остался Telegram, а Finder ждал под ним.
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+        // `?start=report` — метка для бота: по ней он встречает человека инструкцией про файл, а не
+        // обычной подпиской на обновления (см. TG_REPORT_WELCOME на сервере).
+        if let tg = URL(string: "https://t.me/keyboop_bot?start=report") { NSWorkspace.shared.open(tg) }
+        status.textColor = .secondaryLabelColor
+        status.stringValue = L10n.t("fb.tgReady")
+        kbLog("feedback: отчёт сохранён файлом для отправки ботом (длина только — принцип №2)")
+    }
 }

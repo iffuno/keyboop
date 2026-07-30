@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import Carbon
+import AppKit   // замена в НАШЕМ собственном поле ввода идёт через AppKit (см. replaceInOwnField)
 
 /// Маркер «это наша синтетика» в поле `.eventSourceUserData` каждого синтетического события.
 /// EventTap фильтрует наши события ПО ЭТОМУ МАРКЕРУ (а не по временно́му флагу muted) → различение
@@ -114,9 +115,52 @@ enum TextReplacer {
     /// `thenReturn` — после замены отпустить ЗАДЕРЖАННЫЙ Enter (enter-pre конверсия, см.
     /// Engine.convertBeforeReturn): синтетический Return в ТОМ ЖЕ synth-задании — строго после
     /// всех Backspace/Unicode, ничто не может вклиниться между заменой и отправкой.
+    /// Замена в НАШЕМ собственном поле ввода, через AppKit. true — сделали, синтетика не нужна.
+    ///
+    /// Работает только когда наше приложение активно и первый откликающийся — редактируемый текст:
+    /// NSTextView (форма отзыва) или полевой редактор NSTextField (поле контакта, поля настроек).
+    /// Во всех остальных случаях возвращаем false и уходим обычным путём.
+    ///
+    /// Удаляем ровно `deleteCount` символов ПЕРЕД кареткой и вставляем новый текст одной операцией:
+    /// `insertText(_:replacementRange:)` проходит через штатный ввод, поэтому Undo (⌘Z) продолжает
+    /// работать, а делегаты поля (у нас на нём висит плейсхолдер) получают своё уведомление.
+    private static func replaceInOwnField(deleteCount: Int, with text: String) -> Bool {
+        guard Thread.isMainThread else {
+            // Вызывают и с фоновых очередей. Синхронный прыжок на main здесь безопасен: замена
+            // короткая, а решение «наше ли окно» иначе не принять — AppKit только на главном.
+            return DispatchQueue.main.sync { replaceInOwnField(deleteCount: deleteCount, with: text) }
+        }
+        guard NSApp?.isActive == true, let responder = NSApp?.keyWindow?.firstResponder else { return false }
+        guard let tv = responder as? NSTextView, tv.isEditable else { return false }
+        let sel = tv.selectedRange()
+        let n = max(0, deleteCount)
+        guard sel.length == 0, sel.location >= n else { return false }   // выделение — не наш случай
+        let range = NSRange(location: sel.location - n, length: n)
+        guard tv.shouldChangeText(in: range, replacementString: text) else { return false }
+        tv.insertText(text, replacementRange: range)
+        tv.didChangeText()
+        kbLog("synth: своё поле — заменили напрямую (-\(n)+\(text.count)), без синтетики")
+        return true
+    }
+
     static func replace(deleteCount: Int, with text: String,
                         firstKeySettleMicros: UInt32? = nil, thenReturn: Bool = false,
                         completion: (() -> Void)? = nil) {
+        // СВОЁ ОКНО — ЗАМЕНЯЕМ НАПРЯМУЮ, БЕЗ СИНТЕТИКИ (30.07).
+        //
+        // Когда фронт — мы сами (форма отзыва, настройки, редактор сниппетов), бить по своему же полю
+        // бэкспейсами и синтетическим Unicode бессмысленно и вредно: мы держим это поле в руках и
+        // можем отредактировать его текст вызовом API. Синтетика здесь давала худший из миров — гонки
+        // с собственным тапом и, судя по пяти репортам «печатаю в форме и не вижу текста», съеденные
+        // символы.
+        //
+        // Была промежуточная правка (тем же утром): движок в своих окнах выключался целиком. Она
+        // симптом убрала, но вместе с ним и пользу — автор сразу заметил, что в «Написать
+        // разработчику» перестало работать авто-переключение. Это возврат пользы без синтетики.
+        if replaceInOwnField(deleteCount: deleteCount, with: text) {
+            if let completion { DispatchQueue.main.async(execute: completion) }
+            return
+        }
         // Замер пути (репорт 23.07: «конвертация стала чуть дольше»): ожидание очереди + синтез.
         // Одна строка на замену — это редкое событие, зато жалоба «дольше» становится цифрой.
         let tEnq = ProcessInfo.processInfo.systemUptime

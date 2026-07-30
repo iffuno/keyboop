@@ -538,7 +538,11 @@ final class Engine: EventTapHandler {
     func refreshFrontmostAppCache() {
         let app = NSWorkspace.shared.frontmostApplication
         let bid = app?.bundleIdentifier ?? ""
-        frontAppMode = ExceptionStore.shared.appMode(bid)
+        // ⚠️ ЧЕРЕЗ ОБЩИЙ ИСТОЧНИК, не напрямую в ExceptionStore. Здесь живёт кэш для ГОРЯЧЕГО пути
+        // (мид-слово, pause-fix), и когда 30.07 мы исключили собственные окна в frontmostAppMode,
+        // эта строка тихо осталась в обход — то есть правка закрыла границу слова, но не закрыла
+        // ровно тот путь, который стирает символы посреди набора. Один источник, чтобы не разошлись.
+        frontAppMode = Engine.appMode(for: bid)
         frontAppIsDev = Engine.devApps.contains(bid) || bid.hasPrefix("com.jetbrains")
         frontAppIsChromium = Engine.chromiumFamily.contains(bid)
             || bid.hasPrefix("com.microsoft.edgemac") || bid.hasPrefix("org.chromium")
@@ -1184,7 +1188,14 @@ final class Engine: EventTapHandler {
         } else {
             // ЕДИНАЯ точка авто-решения (session-protect + mixed-rescue + детектор + soft-фильтр +
             // smartConvert) — общая с enter-pre путём (convertBeforeReturn): логика не расходится.
-            guard let prop = autoConversionProposal(word: word, soft: soft, completed: true) else { return }
+            guard let prop = autoConversionProposal(word: word, soft: soft, completed: true) else {
+                // Раскладку трогать не надо — самое время посмотреть, не «КОгда» ли это.
+                // ⚠️ Именно ЗДЕСЬ, а не выше: до конверсии слово может лежать в чужой раскладке
+                // («RJulf»), и там шаблон «две заглавные + строчная» тоже совпадает, но исправлять
+                // его нельзя — мы испортили бы то, что через миг переключит конверсия.
+                fixTwoLeadingCaps(word: word, item: item)
+                return
+            }
             autoProp = prop
             toCyrillic = prop.toCyrillic
         }
@@ -1241,6 +1252,51 @@ final class Engine: EventTapHandler {
         onLayoutMaybeChanged?()
         playSound()
         // muted снимается в completion TextReplacer выше (после постинга синтетики).
+    }
+
+    /// Слова, которые ВЫГЛЯДЯТ как опечатка «две заглавные», но ею не являются. См. fixTwoLeadingCaps.
+    private static let twoCapsKeep: Set<String> = [
+        "iphone", "ipad", "ipod", "imac", "icloud", "itunes", "imessage", "ibooks", "iwork", "ebay",
+    ]
+
+    /// ДВЕ ЗАГЛАВНЫЕ ПОДРЯД в начале слова: «КОгда» → «Когда» (задача T28, просьба #14).
+    /// Выключено по умолчанию — это правка ТЕКСТА, а не раскладки, и включать её людям за спиной
+    /// нельзя: у кого-то «ФБр» осмысленно.
+    ///
+    /// Причина опечатки механическая: Shift отпущен на миллисекунду позже, чем нажата вторая буква.
+    /// Поэтому и условие узкое, ровно под этот случай:
+    ///   • ровно ДВЕ первые буквы заглавные, третья строчная («КОгда» да, «ГОСТ» нет, «USB» нет);
+    ///   • от трёх букв, иначе «ДА» и «ОК» попали бы под раздачу;
+    ///   • только буквы, без цифр и знаков — «RGB2» и «X-Ray» не наши;
+    ///   • обе заглавные из одного алфавита, чтобы не лезть в смешанные огрызки;
+    ///   • слово не в исключениях пользователя.
+    /// Caps Lock отдельно ловить не нужно: при нём слово будет заглавным целиком, а такое мы и так
+    /// не трогаем из-за требования строчной третьей буквы.
+    private func fixTwoLeadingCaps(word: String, item: (word: String, tail: String, deleteCount: Int)) {
+        guard settings.twoCapsFix else { return }
+        let ch = Array(word)
+        guard ch.count >= 3 else { return }
+        guard ch.allSatisfy({ $0.isLetter }) else { return }
+        guard ch[0].isUppercase, ch[1].isUppercase, ch[2].isLowercase else { return }
+        // Обе заглавные в одном алфавите: «ПРivet» — это мусор смешанного набора, не наш случай.
+        guard word.hasCyrillic != word.hasLatinLetter else { return }
+        let fixed = String(ch[0]) + String(ch[1]).lowercased() + String(ch[2...])
+        guard fixed != word, !ExceptionStore.shared.ignored.contains(word.lowercased()) else { return }
+        // Жёсткий стоп-список (просьба автора 30.07). «IPhone» шаблону подходит идеально, но человек
+        // имел в виду «iPhone», и «Iphone» неверно ровно так же. Список НАМЕРЕННО крошечный и
+        // закрытый: под наше условие (две заглавные + строчная третья) вообще попадает почти только
+        // семейство «I+заглавная». Не расширять его до каталога брендов — вот это как раз протухнет.
+        guard !Self.twoCapsKeep.contains(word.lowercased()) else {
+            kbLog("две заглавные: слово в стоп-списке, не трогаю")
+            return
+        }
+        muted = true
+        kbLog("две заглавные: \(item.deleteCount) симв. исправлено")   // без контента (принцип №2)
+        TextReplacer.replace(deleteCount: item.deleteCount, with: fixed + item.tail) { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
+        }
+        buffer.applyCompletedConversion(converted: fixed)
     }
 
     /// ЧИСТОЕ авто-решение для слова (без побочных эффектов): текст замены + направление + признак
@@ -1465,6 +1521,27 @@ final class Engine: EventTapHandler {
     /// включается (builtinAppMode тут НЕ подмешиваем, иначе удаление не сработало бы).
     static func frontmostAppMode() -> String {
         guard let bid = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return "" }
+        return appMode(for: bid)
+    }
+
+    /// Режим для конкретного бандла. ЕДИНЫЙ источник для обоих потребителей: синхронного
+    /// `frontmostAppMode()` и кэша горячего пути `refreshFrontmostAppCache()`.
+    static func appMode(for bid: String) -> String {
+        // ⚠️ ИСТОРИЯ ЭТОГО МЕСТА, чтобы не ходить по кругу третий раз.
+        //
+        // Утром 30.07 здесь стояло `if bid == Bundle.main.bundleIdentifier { return "off" }` — движок
+        // целиком выключался в наших собственных окнах. Причина была верной: в форме отзыва он бил
+        // по нашему же полю бэкспейсами и синтетикой, и это единственный кандидат на жалобу «печатаю
+        // и не вижу текста», переживший пять репортов и две другие правки.
+        //
+        // Но лекарство оказалось шире болезни: автор в тот же час заметил, что в «Написать
+        // разработчику» пропало авто-переключение — а человек, пишущий нам жалобу на раскладку,
+        // хочет его там едва ли не больше, чем где-либо ещё.
+        //
+        // Поэтому запрет снят, а вредная часть убрана точечно и на уровень ниже: в своём же поле
+        // ввода замена идёт напрямую через AppKit, без синтетики вообще
+        // (`TextReplacer.replaceInOwnField`). НЕ возвращать сюда «off»: это лечило симптом ценой
+        // функции.
         return ExceptionStore.shared.appMode(bid)
     }
 

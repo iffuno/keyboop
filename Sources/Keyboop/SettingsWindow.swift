@@ -290,7 +290,8 @@ final class SidebarVC: NSViewController {
         let ver = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "—"
         verLabel.isBordered = false
         verLabel.bezelStyle = .inline
-        verLabel.attributedTitle = NSAttributedString(string: "v\(ver)", attributes: [
+        // С именем версии, как в шапке меню и в «О программе» (Changelog.versionWithName).
+        verLabel.attributedTitle = NSAttributedString(string: "v" + Changelog.versionWithName(ver), attributes: [
             .foregroundColor: NSColor.tertiaryLabelColor,
             .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)])
         verLabel.target = self
@@ -690,7 +691,9 @@ final class DetailVC: NSViewController {
             card([
                 controlRow(L10n.t("switch.trigAfter"), trigKeys),
                 switchRow(L10n.t("switch.arrows"), L10n.t("switch.arrowsSub"), settings.arrowsCancel, #selector(toggleArrows),
-                          help: L10n.t("switch.arrowsHelp"))
+                          help: L10n.t("switch.arrowsHelp")),
+                switchRow(L10n.t("switch.twoCaps"), L10n.t("switch.twoCapsSub"), settings.twoCapsFix,
+                          #selector(toggleTwoCaps), help: L10n.t("switch.twoCapsHelp"))
             ]),
             group(6),
             card([
@@ -1352,7 +1355,7 @@ final class DetailVC: NSViewController {
             card([ buttonRow([tg]) ]),
             group(10),
             card([
-                controlRow(L10n.t("about.version"), versionValue(ver)),
+                controlRow(L10n.t("about.version"), versionValue(Changelog.versionWithName(ver))),
                 controlRow(L10n.t("about.license"), valueText(L10n.t("about.licenseVal"))),
                 controlRow(L10n.t("about.rescued"), valueText(rescuedDisplay())),
                 controlRow(L10n.t("about.dictated"), valueText(dictatedDisplay())),
@@ -1597,7 +1600,11 @@ final class DetailVC: NSViewController {
                 switchRow(L10n.t("voice.history"), L10n.t("voice.historySub"), settings.voiceHistoryEnabled, #selector(toggleVoiceHistory)),
                 switchRow(L10n.t("hist.lock.toggle"), L10n.t("hist.lock.toggleSub"), HistoryGate.enabled, #selector(toggleHistoryLock),
                           help: L10n.t("hist.lockHelp")),
-                controlRow(L10n.t("voice.retention"), historyRetentionControl()),
+                // Срок хранения управляет не только окном истории: по нему же исчезает пункт меню
+                // «Скопировать последнюю диктовку» (MenuBarController → VoiceHistory.lastVisible).
+                // Связка неочевидная, поэтому названа вслух.
+                controlRow(L10n.t("voice.retention"), historyRetentionControl(),
+                           subtitle: L10n.t("voice.retentionSub"), help: L10n.t("voice.retentionHelp")),
                 buttonRow([histShow, histClear])
             ]),
             group(2),
@@ -1750,6 +1757,12 @@ final class DetailVC: NSViewController {
             settings.voiceEngine = "whisper"
             settings.voiceModel = m.id
         }
+        // ⚠️ ГРЕЕМ НОВЫЙ ДВИЖОК СРАЗУ (фикс 30.07). Прогрев жил только в старте приложения
+        // (AppDelegate → VoiceController.preload) и грел тот движок, который выбран НА ТОТ МОМЕНТ.
+        // Человек менял движок в настройках, новый оставался холодным, и за это платила первая же
+        // диктовка: у паракита загрузка под ANE занимает больше полуминуты. Момент переключения —
+        // идеальное время греть: человек в настройках, диктовать прямо сейчас не собирается.
+        VoiceController.shared.preload()
         // Кнопка «Использовать» живёт в ПЕРЕСОБИРАЕМОЙ строке — снос из её же action это тот самый
         // класс, который на macOS 26 роняет приложение (см. toggleSilentUpdate). Откладываем на такт.
         DispatchQueue.main.async { [weak self] in self?.reshow() }
@@ -2341,6 +2354,7 @@ final class DetailVC: NSViewController {
     @objc private func toggleTEnter(_ s: NSButton) { settings.triggerEnter = (s.state == .on) }
     @objc private func toggleTTab(_ s: NSButton) { settings.triggerTab = (s.state == .on) }
     @objc private func toggleArrows(_ s: NSSwitch) { settings.arrowsCancel = (s.state == .on) }
+    @objc private func toggleTwoCaps(_ s: NSSwitch) { settings.twoCapsFix = (s.state == .on) }
     /// «Написать разработчику» — теперь наша форма (mailto хрупок: у многих Mail.app не настроен,
     /// кнопка открывала пустоту, и фидбэк умирал молча). Почта осталась фолбэком ВНУТРИ формы.
     @objc private func openFeedback() { FeedbackWindowController.shared.show() }

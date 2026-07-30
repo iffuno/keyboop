@@ -36,13 +36,59 @@ enum Changelog {
     ]
 
     /// Имя релиза по номеру версии («0.3.1» → «Pika»). nil, если имени для десятка нет.
+    /// Суффиксы третьего разряда не мешают: «0.3.2-dev» тоже даёт «Pika», потому что смотрим десяток.
     static func codename(for version: String) -> String? {
         let p = version.split(separator: ".")
         guard p.count >= 2 else { return nil }
         return codenames["\(p[0]).\(p[1])"]
     }
 
+    /// «0.3.2 · Pika» — версия вместе с именем. ЕДИНЫЙ формат для всех мест, где мы показываем версию:
+    /// шапка меню, низ левого списка настроек, «О программе». Через один помощник, чтобы разделитель и
+    /// порядок не разъехались по трём файлам. Имени для десятка нет — вернётся просто номер.
+    static func versionWithName(_ version: String) -> String {
+        codename(for: version).map { "\(version) · \($0)" } ?? version
+    }
+
     static let releases: [Release] = [
+        Release(version: "0.3.3",
+            ru: [
+                "«Скопировать последнюю диктовку» теперь появляется в меню, только когда копировать действительно есть что. Пункт брал текст из истории диктовок, другого источника у него нет, поэтому при выключенной истории он был мёртвым, а после истечения срока хранения обещал то, чего уже не существует. Теперь он просто исчезает.",
+                "Срок хранения истории перестал умалчивать о последствиях: под ним написано, что вместе с записями пропадает и копирование последней диктовки из меню.",
+                "Первая диктовка после смены движка в настройках больше не теряется. Parakeet при первом запуске готовит модель под нейродвижок Mac, и это занимает больше полуминуты, а ждали мы пятнадцать секунд и выбрасывали готовый результат. Теперь новый движок прогревается сразу при выборе, а ожидание считается честно.",
+                "В форме «Сообщить о проблеме» появился второй способ отправки, через Telegram. Отчёт сохраняется файлом, открывается чат с ботом, дальше вы отправляете сами. Видно ровно то, что уходит, и ничего не уходит без вашего участия. Прежняя кнопка осталась на месте.",
+                "Keyboop больше не трогает текст в собственных окнах. Раньше он обрабатывал форму отзыва и настройки как любое чужое приложение: копил слово и на границе мог его «починить», стерев набранное. Отсюда и жалобы, что в форме обратной связи не видно, что печатаешь.",
+                "Появилось исправление двух заглавных подряд: «КОгда» становится «Когда». Так выходит, когда Shift отпущен на миг позже, чем нажата вторая буква. Слова целиком заглавными, вроде ГОСТ и USB, не трогаются. Выключено по умолчанию, включается в настройках переключения: это правка самого текста, а не раскладки.",
+                "Имя версии теперь видно везде, где показан её номер: в меню, внизу списка настроек и в «О программе».",
+                "Меню в строке меню обновляется в момент открытия. Раньше список микрофонов и предупреждения о неполадках показывали состояние на момент последней смены раскладки.",
+            ],
+            en: [
+                "“Copy last dictation” now appears in the menu only when there is something to copy. The item reads from the dictation history and has no other source, so with history off it was dead, and once the retention time ran out it promised something that no longer existed. Now it simply disappears.",
+                "The history retention setting stopped hiding its consequence: it now says that copying the last dictation from the menu goes away together with the entries.",
+                "The first dictation after switching engines in settings is no longer lost. On its first run Parakeet prepares its model for the Mac's neural engine, which takes over half a minute, while we waited fifteen seconds and threw away the finished result. The new engine is now warmed up the moment you pick it, and the wait is counted honestly.",
+                "“Report a problem” has a second way to send, via Telegram. The report is saved to a file, the bot chat opens, and you send it yourself. You see exactly what is leaving, and nothing leaves without you. The old button stays where it was.",
+                "Keyboop no longer touches text in its own windows. It used to treat the feedback form and the settings like any other app: it collected the word and could “fix” it at the boundary, erasing what you had typed. That is where the reports about not seeing what you type in the feedback form came from.",
+                "Two leading capitals can now be fixed: “WHen” becomes “When”. That happens when Shift is released a moment after the second letter. All-caps words like USB are left alone. Off by default, switched on in the layout settings, because it edits your text rather than its layout.",
+                "The version name is now visible everywhere the number is: in the menu, at the bottom of the settings list, and in About.",
+                "The menu-bar menu refreshes when it opens. The microphone list and the “something is wrong” warnings used to show whatever was true at the last layout change.",
+            ],
+            announce: """
+                Если вы читаете это со сборки старше 0.3, ваше приложение, скорее всего, не умеет \
+                обновляться само. И виновато не оно, а я: в старых версиях проверка обновлений \
+                залипала намертво, а починка уехала в следующую версию, скачать которую залипший \
+                апдейтер уже не мог. Идеальное преступление, жертва я же.
+
+                Лечится за пять секунд руками: значок Keyboop в строке меню, «Проверить обновления». \
+                Если он бодро скажет, что у вас всё свежее, а версия при этом старше 0.3, он врёт, \
+                берите с keyboop.com. Дальше всё поедет само, честное слово.
+                """,
+            announceEnd: """
+                И повторю, потому что это единственное, что правда важно в этом посте: если у вас \
+                старая версия, обновитесь руками. Всё, что я тут чиню по ночам, до вас иначе просто \
+                не доедет, и мы оба зря стараемся.
+
+                Спасибо всем, кто пишет. Половину этого списка нашли вы.
+                """),
         Release(version: "0.3.2",
             ru: [
                 "В меню появился пункт «Скопировать последнюю диктовку». Раньше за последней расшифровкой приходилось открывать окно истории, теперь она уезжает в буфер обмена одним нажатием. Если на историю поставлен пароль, он спросится и здесь: отдавать последнюю фразу мимо пароля было бы странно.",

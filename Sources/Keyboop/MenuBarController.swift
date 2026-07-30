@@ -1,7 +1,7 @@
 import AppKit
 
 /// Иконка в статус-баре рядом с часами + меню.
-final class MenuBarController: NSObject {
+final class MenuBarController: NSObject, NSMenuDelegate {
     /// Единственный экземпляр (для уровня микрофона из VoiceController в живой waveform статус-бара).
     static weak var shared: MenuBarController?
 
@@ -324,16 +324,36 @@ final class MenuBarController: NSObject {
 
     private func buildMenu() {
         let menu = NSMenu()
+        menu.delegate = self
+        populate(menu)
+        statusItem.menu = menu
+    }
 
+    /// ⚠️ ПЕРЕСБОРКА В МОМЕНТ ОТКРЫТИЯ (30.07). Раньше меню собиралось только по событиям — смена
+    /// раскладки, пара переключателей — и его содержимое было свежим лишь случайно. Пока все пункты
+    /// были статичными, это сходило с рук. Как только появился пункт, зависящий от состояния истории
+    /// диктовок, стало видно: после первой диктовки он бы не появился, а после истечения срока
+    /// хранения не исчез бы, потому что между этими моментами никто меню не трогал.
+    ///
+    /// Перезаполняем ТОТ ЖЕ объект меню, который macOS сейчас открывает (`removeAllItems` + populate),
+    /// а не подменяем `statusItem.menu` — подмена открывающегося меню на лету и есть способ получить
+    /// пустое или мигающее меню.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        populate(menu)
+    }
+
+    private func populate(_ menu: NSMenu) {
         // Заголовок меню = ВЕРСИЯ, а не слоган (просьба автора 21.07: «раскладка под контролем» —
         // приятно, но бесполезно; версию хочется видеть сразу). Плюс два по-настоящему полезных
         // индикатора: «-dev» (чтобы никогда больше не диагностировать не ту сборку — инцидент 21.07)
         // и «авто выкл» — состояние, из-за которого человек решает, что программа сломалась.
         let ver = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "—"
         let isDev = (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
-        var headerTitle = "Keyboop \(ver)" + (isDev ? "-dev" : "")
-        // Имя версии (Changelog.codenames): в релизе шапка читается как «Keyboop 0.3.1 · Pika».
-        if let name = Changelog.codename(for: ver) { headerTitle += " · " + name }
+        // Имя версии подставляет Changelog.versionWithName — тот же помощник, что у низа списка
+        // настроек и у «О программе», чтобы формат не разъехался. В релизе шапка читается как
+        // «Keyboop 0.3.2 · Pika», в dev как «Keyboop 0.3.2-dev · Pika».
+        var headerTitle = "Keyboop " + Changelog.versionWithName(ver + (isDev ? "-dev" : ""))
         // В dev-сборке показываем ВРЕМЯ СБОРКИ прямо в шапке меню (просьба автора 24.07): за вечер
         // мы оба дважды путались, какую именно сборку тестируем. Дата не нужна — за день их много,
         // различает время. В релизе не показываем: пользователю штамп ни о чём не говорит.
@@ -398,15 +418,19 @@ final class MenuBarController: NSObject {
 
         // «Скопировать последнюю диктовку» — ПЕРЕД историей: чаще нужна именно последняя расшифровка,
         // а не окно со списком (в Handy это `copy last transcript`).
-        // Пункт БЕЗУСЛОВНЫЙ, хотя копировать иногда нечего. Причина: меню собирается не по
-        // menuNeedsUpdate, а по событиям (refresh() из onLayoutMaybeChanged), поэтому проверка «есть ли
-        // что копировать» на этапе сборки успела бы устареть — после первой же диктовки пункт бы не
-        // появился. Решаем в момент клика, там же и объясняем тостом, если пусто.
-        let copyLast = NSMenuItem(title: L10n.t("menu.copyLast"), action: #selector(copyLastDictation), keyEquivalent: "")
-        copyLast.target = self
-        copyLast.image = icon("document.on.document",   // SF 6, macOS 15 — переименование doc.* → document.*
-                              "doc.on.doc")
-        menu.addItem(copyLast)
+        // Пункта НЕТ, когда копировать нечего (решение автора 30.07). Своего хранилища у него не
+        // существует: копировать можно только из истории диктовок. Поэтому он живёт ровно столько,
+        // сколько живёт последняя запись — история выключена, ещё не диктовали или срок хранения уже
+        // вышел, и пункт исчезает. Мёртвая строка, всегда отвечающая «нечего копировать», хуже, чем её
+        // отсутствие. Проверка честна именно потому, что меню пересобирается при открытии (см.
+        // menuNeedsUpdate выше); без этого пункт появлялся и пропадал бы с опозданием.
+        if VoiceHistory.shared.lastVisible() != nil {
+            let copyLast = NSMenuItem(title: L10n.t("menu.copyLast"), action: #selector(copyLastDictation), keyEquivalent: "")
+            copyLast.target = self
+            copyLast.image = icon("document.on.document",   // SF 6, macOS 15 — переименование doc.* → document.*
+                                  "doc.on.doc")
+            menu.addItem(copyLast)
+        }
 
         let vh = NSMenuItem(title: L10n.t("menu.voiceHistory"), action: #selector(showVoiceHistory), keyEquivalent: "")
         vh.target = self
@@ -451,8 +475,6 @@ final class MenuBarController: NSObject {
         quit.target = self
         quit.image = icon("power")
         menu.addItem(quit)
-
-        statusItem.menu = menu
     }
 
     /// Подменю «Микрофон» — список устройств ввода, галочка на выбранном.
@@ -515,11 +537,10 @@ final class MenuBarController: NSObject {
     }
 
     private static func copyLastDictationNow() {
-        // Новая запись всегда в конце: VoiceHistory.add() делает append (VoiceHistory.swift:27).
-        guard let text = VoiceHistory.shared.all().last?.text, !text.isEmpty else {
-            // Пусто по одной из двух причин: ещё не диктовали, либо история выключена в настройках
-            // (VoiceHistory.add() молча выходит при voiceHistoryEnabled == false). Молчать нельзя:
-            // человек нажал пункт и должен понять, почему ничего не произошло.
+        // Тот же источник, по которому пункт вообще решает показываться (VoiceHistory.lastVisible):
+        // история включена и запись не просрочена. Тост здесь — страховка на редкий случай, когда срок
+        // хранения истёк между открытием меню и кликом, а не штатный путь: обычно пункта просто нет.
+        guard let text = VoiceHistory.shared.lastVisible()?.text, !text.isEmpty else {
             VoiceIndicator.shared.showToast(L10n.t("menu.copyLastEmpty"))
             return
         }

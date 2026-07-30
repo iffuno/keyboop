@@ -249,7 +249,15 @@ final class VoiceController {
         let useParakeet = settings.voiceEngine == "parakeet" && ParakeetEngine.modelInstalled
         // Холодный whisper (модели нет в памяти): загрузка крупной модели с незакэшированного
         // диска — секунды-десятки секунд, и она не должна съедать бюджет сторожа транскрипции.
-        let gen = beginTranscription(duration: recorder.duration, coldLoad: !useParakeet && whisper == nil)
+        // ⚠️ ХОЛОДНАЯ ЗАГРУЗКА СЧИТАЕТСЯ ДЛЯ ОБОИХ ДВИЖКОВ (фикс 30.07). Раньше здесь стояло
+        // `!useParakeet && whisper == nil`, то есть бюджет на загрузку получал ТОЛЬКО whisper, а у
+        // паракита флаг не поднимался никогда. Между тем именно его первая загрузка самая долгая:
+        // CoreML компилирует модель под ANE, замеры 37.5с (30.07) и 43с (21.07). Сторож при этом
+        // давал 15 секунд, и первая диктовка после холодного паракита была не «медленной», а
+        // ГАРАНТИРОВАННО потерянной: текст распознавался и приходил, но его отбрасывали как поздний.
+        // Воспроизводится не на старте (там греет preload), а при смене движка в настройках на ходу.
+        let cold = useParakeet ? !ParakeetEngine.shared.ready : (whisper == nil)
+        let gen = beginTranscription(duration: recorder.duration, coldLoad: cold)
         setState(.processing)
         // Диагностика «почему медленно»: сразу видно, на каком движке распознаём и почему НЕ Parakeet
         // (whisper на CPU/Metal растёт с длиной аудио; Parakeet на ANE — почти мгновенный). Если тут
@@ -385,8 +393,19 @@ final class VoiceController {
     /// Применить новый полный транскрипт: стираем разошедшийся хвост, допечатываем новый.
     /// Печать — нашей синтетикой (маркер kbSyntheticMarker) → live-fix её не трогает.
     /// deleteCount ≤ typedTail.count (только наш текст) — дотекстовый ввод пользователя НЕ стираем.
-    @MainActor private func streamStep(_ full: String) {
+    /// `commit: false` (по ходу речи) — только показываем текст на плашке, в поле НЕ пишем.
+    /// `commit: true` (финал) — печатаем разницу, то есть весь текст сразу, раз до этого не печатали.
+    ///
+    /// ⚠️ ПОЧЕМУ БОЛЬШЕ НЕ ПЕЧАТАЕМ НА ЛЕТУ (решение автора 30.07). Потоковая расшифровка постоянно
+    /// переписывается, пока модель уточняет гипотезу, и печать «в реальном времени» означала писать
+    /// и тут же стирать текст в чужом документе. К тому же в Electron-приложениях наша синтетика
+    /// игнорируется, поэтому там фича не работала вовсе: автор включил её, продиктовал и не увидел
+    /// ничего. Диффу это ничего не ломает — `typedTail` остаётся пустым до финала, и финальный вызов
+    /// печатает всю фразу одним куском, ровно как обычная батч-диктовка.
+    @MainActor private func streamStep(_ full: String, commit: Bool = false) {
         guard streamingActive else { return }
+        VoiceIndicator.shared.showLive(full)
+        guard commit else { return }
         let common = typedTail.commonPrefix(with: full).count
         let deleteCount = typedTail.count - common
         let toType = String(Array(full).suffix(full.count - common))
@@ -412,7 +431,7 @@ final class VoiceController {
             await task?.value                                 // дождаться, пока скормятся все чанки
             let final = await StreamingEouEngine.shared.finishSession()
             await MainActor.run {
-                self.streamStep(final)                         // довести экран до финального текста (флаг ещё true)
+                self.streamStep(final, commit: true)           // ЕДИНСТВЕННОЕ место, где стрим печатает
                 let clean = self.typedTail.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !clean.isEmpty {
                     if TextReplacer.secureInputActive {

@@ -629,6 +629,10 @@ enum L10n {
                             .en: "Normally a word is fixed at its boundary, on space or Enter. With this on it is fixed mid-word, as soon as the letter combination becomes impossible in the current layout. The replacement happens at the exact moment you press the key, so your next character cannot slip into it."],
         "switch.devHelp": [.ru: "В коде полно коротких сочетаний, которые выглядят как опечатка, но опечаткой не являются: имена переменных, флаги, команды. Режим оставляет их в покое — одиночные буквы и короткие сочетания не трогаются. В программах из списка исключений он не нужен, там правило и так отключено.",
                            .en: "Code is full of short sequences that look like typos but are not: variable names, flags, commands. This mode leaves them alone — single letters and short sequences are not touched. Apps on your exceptions list do not need it, the rule is already off there."],
+        "switch.twoCaps":    [.ru: "Две заглавные подряд", .en: "Two leading capitals"],
+        "switch.twoCapsSub": [.ru: "«КОгда» превращается в «Когда»", .en: "“WHen” becomes “When”"],
+        "switch.twoCapsHelp": [.ru: "Так выходит, когда Shift отпущен на миг позже, чем нажата вторая буква. Keyboop чинит только этот случай: ровно две первые буквы заглавные, третья строчная, и в слове одни буквы. Слова целиком заглавными, вроде ГОСТ или USB, а также короткие «ДА» и «ОК» не трогаются. Выключено по умолчанию, потому что это правка самого текста, а не раскладки.",
+                              .en: "This happens when Shift is released a moment after the second letter is pressed. Keyboop fixes only that case: exactly the first two letters capital, the third lowercase, and nothing but letters in the word. All-caps words like USB, and short ones like OK, are left alone. Off by default, because this edits your text rather than its layout."],
         "switch.arrowsHelp": [.ru: "Речь о четырёх клавишах курсора. Пока вы печатаете слово, Keyboop держит его в памяти, чтобы починить. Стрелка означает, что курсор уехал и слово, скорее всего, уже не то — поэтому память сбрасывается. Выключите, если часто двигаете курсор посреди слова и хотите, чтобы починка всё равно сработала.",
                               .en: "This is about the four cursor keys. While you type a word, Keyboop keeps it in memory so it can fix it. An arrow means the caret moved and the word is probably no longer the one you meant, so the memory is dropped. Turn this off if you often move the caret mid-word and still want the fix."],
         "hist.lockHelp":  [.ru: "Окно истории будет спрашивать пароль при каждом открытии. Сам пароль хранится в связке ключей macOS, а записи шифруются — мы их не видим и восстановить не сможем. Защита от того, кто сядет за ваш незаблокированный Mac, а не от кражи диска.",
@@ -686,10 +690,11 @@ enum L10n {
         "fb.placeholder": [.ru: "Что сломалось, что бесит, чего не хватает…", .en: "What broke, what annoys you, what's missing…"],
         "fb.contact":     [.ru: "Телеграм или почта — необязательно",
                            .en: "Telegram or email — optional"],
-        // Мотивация оставить контакт: без него ответить некуда, а автор отвечает лично
-        // (просьба 25.07: «хочу поблагодарить того, кто нашёл багу, и сказать, что починил»).
-        "fb.contactWhy":  [.ru: "Без него я прочитаю, но ответить будет некуда. С ним — напишу лично: что починил и когда.",
-                           .en: "Without it I'll still read this, but I'll have nowhere to reply. With it — I'll write you personally: what got fixed and when."],
+        // Мотивация оставить контакт. ⚠️ Обещание «напишу лично» убрано 30.07 по просьбе автора: он
+        // отвечает не всем, а там, где это действительно нужно, и обещать личный ответ каждому —
+        // значит расставлять ожидания, которые он не собирается выполнять. Осталась честная причина.
+        "fb.contactWhy":  [.ru: "Без него я прочитаю, но ответить будет некуда.",
+                           .en: "Without it I'll still read this, but I'll have nowhere to reply."],
         "fb.diag":        [.ru: "Приложить диагностику (версия, настройки, хвост лога)",
                            .en: "Attach diagnostics (version, settings, log tail)"],
         "fb.diagShow":    [.ru: "показать, что уйдёт", .en: "see what's sent"],
@@ -700,6 +705,20 @@ enum L10n {
         "fb.sending":     [.ru: "Отправляю…", .en: "Sending…"],
         "fb.fail":        [.ru: "Сеть не отвечает. Можно почтой:", .en: "Network isn't answering. Email works:"],
         "fb.mail":        [.ru: "Отправить почтой", .en: "Send by email"],
+        "fb.tg":          [.ru: "Через Telegram", .en: "Via Telegram"],
+        "fb.tgTip":       [.ru: "Сохраним отчёт файлом и откроем чат с ботом. Вы увидите, что именно отправляете, и отправите сами",
+                           .en: "Saves the report to a file and opens the bot chat. You see exactly what you are sending, and you send it yourself"],
+        "fb.tgReady":     [.ru: "Файл в «Загрузках», перетащите его боту",
+                           .en: "File is in Downloads, drop it to the bot"],
+        "fb.tgSaved":     [.ru: "Отчёт сохранён в «Загрузки»", .en: "Report saved to Downloads"],
+        "fb.tgHowTitle":  [.ru: "Отчёт готов, осталось отправить",
+                           .en: "The report is ready, one step left"],
+        // %@ — имя файла. Называем его прямо: в «Загрузках» у человека сотни файлов.
+        "fb.tgHowBody":   [.ru: "Сейчас откроются два окна: чат с ботом Keyboop и папка «Загрузки», где уже лежит файл %@\n\n1. Перетащите этот файл в чат (или приложите скрепкой).\n2. Можно дописать пару слов о том, что случилось.\n3. Отправьте.\n\nНичего не уходит само: отчёт отправляете вы, и видите, что именно отправляете.",
+                           .en: "Two windows are about to open: the Keyboop bot chat and your Downloads folder, where the file %@ is already waiting.\n\n1. Drag that file into the chat (or attach it with the paperclip).\n2. Add a couple of words about what happened, if you like.\n3. Send.\n\nNothing goes anywhere on its own: you send the report, and you see exactly what you send."],
+        "fb.tgHowGo":     [.ru: "Открыть Telegram", .en: "Open Telegram"],
+        "fb.tgHowCancel": [.ru: "Не сейчас", .en: "Not now"],
+        "fb.tgFileFail":  [.ru: "Не получилось сохранить файл", .en: "Could not save the file"],
         "fb.doneTitle":   [.ru: "Улетело", .en: "Off it goes"],
         "fb.doneWithContact": [.ru: "Спасибо. Прочитаю всё до последней буквы, и если понадобится уточнить — напишу вам сам.",
                               .en: "Thank you. I'll read every word, and if I need details I'll get in touch."],
@@ -709,11 +728,15 @@ enum L10n {
         "fb.tooShort":    [.ru: "Напиши хоть пару слов )", .en: "Give me at least a couple of words )"],
         "menu.voiceHistory":[.ru: "История голосового набора…", .en: "Dictation history…"],
         "menu.copyLast":  [.ru: "Скопировать последнюю диктовку", .en: "Copy last dictation"],
+        "voice.retentionSub": [.ru: "По нему же пропадает копирование из меню",
+                               .en: "Also drops copy-from-menu"],
+        "voice.retentionHelp": [.ru: "Через это время записи удаляются, и вместе с ними пропадает пункт «Скопировать последнюю диктовку» в меню: копировать ему становится нечего. Если диктуете подолгу и возвращаетесь к сказанному через час, ставьте срок побольше. «Не удалять» хранит последние 50 записей, пока вы сами их не сотрёте.",
+                                .en: "After this time entries are deleted, and the menu item “Copy last dictation” goes with them: there is nothing left for it to copy. If you dictate over long sessions and come back to what you said an hour later, pick a longer period. “Keep” holds the last 50 entries until you erase them yourself."],
         "menu.copyLastDone": [.ru: "Скопировано", .en: "Copied"],
-        // Пусто = либо ещё не диктовали, либо история выключена. Тост объясняет оба случая сразу:
-        // иначе человек решит, что пункт сломан.
-        "menu.copyLastEmpty": [.ru: "Нечего копировать: диктовок нет или история выключена",
-                               .en: "Nothing to copy: no dictations yet, or history is off"],
+        // Редкий случай: срок хранения истёк между открытием меню и кликом. В остальных ситуациях
+        // пункта в меню просто нет, поэтому объяснять «история выключена» здесь уже не нужно.
+        "menu.copyLastEmpty": [.ru: "Последняя диктовка уже удалена по сроку хранения",
+                               .en: "The last dictation is gone, its retention time ran out"],
         "voice.foot":     [.ru: "Аудио и распознавание не покидают Mac. История шифруется и остаётся только у вас.",
                            .en: "Audio and recognition never leave the Mac. History is encrypted and stays only on this device."],
         "voice.hkRopt":   [.ru: "Правый ⌥  (right Option)", .en: "Right ⌥  (right Option)"],

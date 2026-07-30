@@ -253,6 +253,8 @@ final class AppSettings {
 
     /// Экспериментально: конвертировать несколько слов группой по хоткею (выключено по умолчанию).
     var groupConvert: Bool { get { d.bool(forKey: "groupConvert") } set { d.set(newValue, forKey: "groupConvert") } }
+    /// Исправлять «КОгда» → «Когда» (T28). ВЫКЛЮЧЕНО по умолчанию: это правка текста, а не раскладки.
+    var twoCapsFix: Bool { get { d.bool(forKey: "twoCapsFix") } set { d.set(newValue, forKey: "twoCapsFix") } }
 
     /// Сколько слов зверёк «расколдовал» за всё время (счётчик спасённых раскладок). Растёт на
     /// каждой удачной конверсии — авто, ручной, группа, выделение, мид-слово. Чисто локальный счётчик.

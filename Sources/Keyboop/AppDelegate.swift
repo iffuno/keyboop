@@ -229,10 +229,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // не стартуем (без сетевых проверок).
         UpdaterController.shared.onUpdateReady = { [weak self] v in self?.notifyUpdateReady(v) }
         let env = ProcessInfo.processInfo.environment
-        if (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev") {
+        if (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev"), env["KEYBOOP_UPDATER"] != "1" {
             // Dev-сборка НЕ проверяет прод-апкаст: Sparkle иначе может «обновить» dev-бандл
             // прод-DMG — подмена под ногами + диалог с паролем посреди работы (23.07.2026).
             // Прод-поведение Sparkle тестируем на прод-бандле из /Applications.
+            //
+            // KEYBOOP_UPDATER=1 снимает запрет для ОТЛАДКИ самого апдейтера: дважды за 30.07 правки в
+            // расписании проверок нельзя было увидеть иначе как выкатив релиз. Дыру 23.07 это не
+            // возвращает: в этом режиме UpdaterController принудительно гасит скачивание, то есть
+            // Sparkle может только спросить фид и записать в лог, но не принести и не подменить файл.
             kbLog("updater: dev-сборка — автопроверка обновлений выключена")
         } else if env["KEYBOOP_DUMP"] != "1", env["KEYBOOP_WINSHOT"] != "1",
            env["KEYBOOP_LIVEDIAG"] != "1", env["KEYBOOP_HISTDUMP"] != "1" {
@@ -252,6 +257,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4 * Double(i + 1)) {
                         self.settingsWC?.dump(section: i, to: "/tmp/kb_\(name).pdf")
                     }
+                }
+            }
+        }
+        // Dev-хук: снять блок ввода формы отзыва и выйти (диагностика «не видно текст», см.
+        // FeedbackWindowController.dumpFieldForDev).
+        if ProcessInfo.processInfo.environment["KEYBOOP_FBDUMP"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                FeedbackWindowController.shared.show()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    FeedbackWindowController.shared.dumpFieldForDev(to: "/tmp/kb_feedback.png")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exit(0) }
                 }
             }
         }

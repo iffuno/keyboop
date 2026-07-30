@@ -28,8 +28,36 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
     func start() {
         guard controller == nil else { return }
         controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
-        controller?.updater.automaticallyDownloadsUpdates = automaticChecks   // качаем заранее, если проверки вкл
-        kbLog("updater: started (check=\(automaticChecks) silent=\(AppSettings.shared.silentAutoUpdate))")
+        // ⚠️ В dev-режиме отладки апдейтера (KEYBOOP_UPDATER=1) скачивание ЗАПРЕЩЕНО: пусть Sparkle
+        // спрашивает фид и пишет в лог, но не приносит прод-DMG в dev-бандл (инцидент 23.07).
+        let debugDev = (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
+        controller?.updater.automaticallyDownloadsUpdates = automaticChecks && !debugDev
+        kbLog("updater: started (check=\(automaticChecks) silent=\(AppSettings.shared.silentAutoUpdate)"
+              + (debugDev ? ", DEV: скачивание запрещено" : "") + ")")
+
+        // ПРОВЕРКА ПРИ ЗАПУСКЕ (просьба автора 30.07). Сам Sparkle этого не делает: он помнит время
+        // прошлой проверки (SULastCheckTime переживает перезапуск) и досиживает ОСТАТОК интервала.
+        // В логе это видно дословно — «launched» и сразу «следующая проверка через 119 мин», то есть
+        // запуск проверку не вызвал. Для человека, который открыл Мак утром, разницы нет: интервал
+        // давно истёк и проверка случится сама. А вот «вышел и зашёл» её не даёт, и релиз, вышедший
+        // десять минут назад, ждёт лишние два часа без причины.
+        //
+        // Задержка в 25 секунд намеренная: старт и так занят прогревом модели распознавания и
+        // установкой тапа, лезть туда же с сетью незачем. Пользователь этой секунды не замечает.
+        guard automaticChecks else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in
+            guard let u = self?.controller?.updater, u.automaticallyChecksForUpdates else { return }
+            // Не дублируем Sparkle. Если интервал к моменту запуска уже истёк, он проверяет сам, и
+            // тогда наша проверка была бы вторым запросом за полминуты (наблюдалось при отладке
+            // 30.07: его проверка в 08:55:47, наша в 08:56:12). Спрашиваем у него самого, когда он
+            // ходил в последний раз, вместо того чтобы вести свой счёт.
+            if let last = u.lastUpdateCheckDate, Date().timeIntervalSince(last) < 300 {
+                kbLog("updater: проверку при запуске пропускаю — Sparkle только что проверял сам")
+                return
+            }
+            kbLog("updater: проверка при запуске")
+            u.checkForUpdatesInBackground()
+        }
     }
 
     /// Мастер-тумблер «Проверять обновления» (Sparkle хранит стейт в UserDefaults сам).
