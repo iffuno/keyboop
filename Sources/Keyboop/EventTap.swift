@@ -67,6 +67,31 @@ final class EventTap {
         return nil
     }
 
+    // MARK: - Дребезг клавиши (T18 / просьба #7)
+
+    private var lastDownKey: Int64 = -1
+    private var lastDownAt: CFTimeInterval = 0
+    /// Порог дребезга. 30 мс — это 33 нажатия в секунду ПО ОДНОЙ И ТОЙ ЖЕ клавише; человек так не
+    /// умеет даже на «сс» в «ссоре» (у быстрых машинисток выходит 60–90 мс). Всё, что быстрее,
+    /// физически не может быть вторым осознанным нажатием, а значит это износ переключателя.
+    ///
+    /// ⚠️ Порог НЕ поднимать «на всякий случай». Съесть настоящую двойную букву хуже, чем пропустить
+    /// дребезг: первое портит текст молча, второе человек видит и стирает сам. Если кто-то сообщит,
+    /// что дребезг проходит и при 30 мс, поднимать только по его логу и точечно.
+    private let chatterWindow: CFTimeInterval = 0.030
+
+    /// Второе нажатие той же клавиши в пределах окна = дребезг, глотаем.
+    ///
+    /// Автоповтор (зажатая клавиша) исключён по флагу события, а не по времени: у macOS интервал
+    /// повтора настраивается и на быстрых настройках попадает в то же окно, так что «отличать по
+    /// времени» здесь нельзя — иначе зажатый дефис перестал бы рисовать линию.
+    private func isChatter(keyCode: Int64, event: CGEvent) -> Bool {
+        guard event.getIntegerValueField(.keyboardEventAutorepeat) == 0 else { return false }
+        let now = CACurrentMediaTime()
+        defer { lastDownKey = keyCode; lastDownAt = now }
+        return keyCode == lastDownKey && (now - lastDownAt) < chatterWindow
+    }
+
     func start() -> Bool {
         if let tap = tap {
             CGEvent.tapEnable(tap: tap, enable: true)
@@ -168,6 +193,13 @@ final class EventTap {
             if type == .tapDisabledByTimeout { (handler as? Engine)?.disableInlineAfterTapTimeout() }
         case .keyDown:
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            // ДРЕБЕЗГ КЛАВИШИ — ДО всего остального (T18). Фантомное нажатие не должно ни печататься,
+            // ни попадать в буфер, ни сбивать взводы хоткеев: для нас его как будто не было.
+            // Наша синтетика сюда не доходит, она отсеяна по маркеру выше.
+            if s.dedupeChatter, isChatter(keyCode: keyCode, event: event) {
+                kbLog("дребезг: повтор клавиши \(keyCode) быстрее \(Int(chatterWindow * 1000)) мс — проглочен")
+                return swallowDown(keyCode)
+            }
             // УЧЁТ ДЛЯ МОДИФИКАТОРНЫХ ЖЕСТОВ — ДО всех ранних return'ов. Раньше он жил в конце
             // ветки, и клавиши, проглоченные выше (голосовой ⌥`, мгновенное переключение, перевод),
             // его ПРОПУСКАЛИ: взведённое комбо ⌥⇧ не узнавало, что между нажатием и отпусканием
@@ -522,6 +554,19 @@ final class EventTap {
                 otherKeyBetweenTaps = false
             }
         case "combo":
+            // ⚠️ СТРЕЛЯЕМ ТОЛЬКО КОГДА МОДИФИКАТОРЫ ОТПУЩЕНЫ ПОЛНОСТЬЮ (фикс 31.07, репорты #55/#58
+            // и жалоба пользователя «нажал диктовку — конвертнулось последнее слово»).
+            //
+            // Раньше условием выстрела было просто `now != target`, то есть ЛЮБОЙ уход набора
+            // модификаторов от маски. Но уход из маски ≠ конец жеста. Классический случай: ⇧ остался
+            // зажатым с набора, накатом жмётся ⌥ (маска ⌥⇧ собралась → взвод), дальше человек тянется
+            // к хоткею диктовки ⌥+`, которому нужен РОВНО {⌥} — значит ⇧ он обязан отпустить. Вот это
+            // отпускание и стреляло конверсией, за миллисекунды ДО того, как ` вообще доедет до тапа.
+            // Поэтому учёт `otherKeyDuringCombo` (строка 209) этот класс не закрывал: он проверяется
+            // на нажатии клавиши, а выстрел уже произошёл. Доказано логом: «convert-word(хоткей)» и
+            // «voice rec: сессия поднята» в одну и ту же секунду; на 618 стартов диктовки таких
+            // совпадений 2, а на 569 остановок — 1, потому что старту предшествует печать (⇧ зажат),
+            // а остановке нет. Тот же корень молча конвертил слово на любом аккорде ⌥⇧⌘X.
             let target = relevantMods(CGEventFlags(rawValue: s.hotkeyModifiers))
             guard !target.isEmpty else { return false }
             let now = relevantMods(flags)
@@ -529,8 +574,16 @@ final class EventTap {
                 comboArmed = true
                 otherKeyDuringCombo = false
             } else if comboArmed {
-                if !otherKeyDuringCombo { onMain { [weak self] in self?.handler?.handleSwitchHotkey() } }
-                comboArmed = false
+                if now.isEmpty {
+                    // Жест закончен: всё отпущено и посторонних клавиш не было — это наш хоткей.
+                    if !otherKeyDuringCombo { onMain { [weak self] in self?.handler?.handleSwitchHotkey() } }
+                    comboArmed = false
+                } else if !now.subtracting(target).isEmpty {
+                    // Поверх маски пришёл ЧУЖОЙ модификатор (⌥⇧ + ⌘) — это другой аккорд, не наш.
+                    comboArmed = false
+                }
+                // Иначе now — непустое ПОДМНОЖЕСТВО маски: часть комбинации ещё зажата, жест идёт.
+                // Взвод держим и ждём либо полного отпускания, либо клавиши (её поймает строка 209).
             }
         default:
             break

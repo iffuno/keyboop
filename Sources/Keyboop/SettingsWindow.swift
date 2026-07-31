@@ -693,7 +693,9 @@ final class DetailVC: NSViewController {
                 switchRow(L10n.t("switch.arrows"), L10n.t("switch.arrowsSub"), settings.arrowsCancel, #selector(toggleArrows),
                           help: L10n.t("switch.arrowsHelp")),
                 switchRow(L10n.t("switch.twoCaps"), L10n.t("switch.twoCapsSub"), settings.twoCapsFix,
-                          #selector(toggleTwoCaps), help: L10n.t("switch.twoCapsHelp"))
+                          #selector(toggleTwoCaps), help: L10n.t("switch.twoCapsHelp")),
+                switchRow(L10n.t("switch.chatter"), L10n.t("switch.chatterSub"), settings.dedupeChatter,
+                          #selector(toggleChatter), help: L10n.t("switch.chatterHelp"))
             ]),
             group(6),
             card([
@@ -1164,6 +1166,24 @@ final class DetailVC: NSViewController {
         reshow()   // показать/скрыть предупреждение про пустую строку меню
     }
     /// Контрол выбора комбинации (перерисовывает предупреждение при смене).
+    /// Потоковый набор — ЭКСПЕРИМЕНТ, и живёт он только в бете (автор 31.07).
+    ///
+    /// Почему прячем, а не выпиливаем: фича рабочая, но сырая, и её место — у добровольцев, которые
+    /// сами включили «Ставить бета-версии». Это же и есть наше определение беты: канал для тех, кто
+    /// готов ловить свежие ошибки. Прячем через `isHidden` у arranged-subview: NSStackView убирает
+    /// такую строку вместе с её отступом, поэтому в стабильной сборке в списке не остаётся дырки.
+    /// Значение настройки при этом НЕ трогаем — вернулся в бету, и твой прежний выбор на месте
+    /// (само поведение всё равно погашено в AppSettings.voiceStreaming, так что рассинхрона нет).
+    private func voiceStreamingRow() -> NSView {
+        let row = switchRow(L10n.t("voice.streaming"),
+                            settings.voiceEngine == "parakeet" ? L10n.t("voice.streamingSub")
+                                                              : L10n.t("voice.streamNeedsPk"),
+                            settings.voiceStreaming, #selector(toggleVoiceStreaming),
+                            help: L10n.t("voice.streamHelp"))
+        row.isHidden = !settings.betaChannel
+        return row
+    }
+
     private func instantSwitchControl() -> NSView {
         let c = InstantSwitchControl()
         c.onChange = { [weak self] in
@@ -1549,16 +1569,17 @@ final class DetailVC: NSViewController {
             card([
                 switchRow(L10n.t("voice.escCancel"), L10n.t("voice.escCancelSub"), settings.escCancelsDictation, #selector(toggleEscCancel),
                           help: L10n.t("voice.escHelp")),
+                // Подчинённая настройка: без самой отмены по Escape ей нечего сохранять, поэтому
+                // при выключенном тумблере выше она гаснет.
+                switchRow(L10n.t("voice.escSave"), L10n.t("voice.escSaveSub"), settings.escSaveToHistory,
+                          #selector(toggleEscSave), enabled: settings.escCancelsDictation,
+                          help: L10n.t("voice.escSaveHelp")),
                 // ⚠️ Подпись МЕНЯЕТСЯ, когда движок не тот (30.07). Потоковый путь требует Parakeet
                 // (VoiceController.useStreaming), и на whisper тумблер включался, а не делал ничего:
                 // автор включил, продиктовал, не увидел ничего и решил, что фича сломана. Сам тумблер
                 // при этом НЕ гасим: человек мог включить его заранее, до выбора движка, и отнимать
                 // у него переключатель было бы грубее, чем честно сказать, чего не хватает.
-                switchRow(L10n.t("voice.streaming"),
-                          settings.voiceEngine == "parakeet" ? L10n.t("voice.streamingSub")
-                                                            : L10n.t("voice.streamNeedsPk"),
-                          settings.voiceStreaming, #selector(toggleVoiceStreaming),
-                          help: L10n.t("voice.streamHelp")),
+                voiceStreamingRow(),
                 switchRow(L10n.t("voice.sound"), L10n.t("voice.soundSub"), settings.voiceSoundEnabled, #selector(toggleVoiceSound),
                           help: L10n.t("voice.soundHelp")),
                 makeVolumeBox(),
@@ -1607,7 +1628,8 @@ final class DetailVC: NSViewController {
             card([
                 switchRow(L10n.t("voice.duck"), L10n.t("voice.duckSub"), settings.voiceDuck,
                           #selector(toggleDuck), help: L10n.t("voice.duckHelp")),
-                controlRow(L10n.t("voice.duckLevel"), duckLevelControl(), enabled: settings.voiceDuck),
+                controlRow(L10n.t("voice.duckLevel"), duckLevelControl(), enabled: settings.voiceDuck,
+                           help: L10n.t("voice.duckLevelHelp")),
             ]),
             group(6),
             sectionTitle(L10n.t("voice.grpHistory")),
@@ -2371,21 +2393,36 @@ final class DetailVC: NSViewController {
     @objc private func toggleTTab(_ s: NSButton) { settings.triggerTab = (s.state == .on) }
     @objc private func toggleArrows(_ s: NSSwitch) { settings.arrowsCancel = (s.state == .on) }
     @objc private func toggleTwoCaps(_ s: NSSwitch) { settings.twoCapsFix = (s.state == .on) }
+    @objc private func toggleEscSave(_ s: NSSwitch) { settings.escSaveToHistory = (s.state == .on) }
+    @objc private func toggleChatter(_ s: NSSwitch) { settings.dedupeChatter = (s.state == .on) }
 
-    /// Насколько приглушать. Проценты, а не «тихо/громко»: у людей очень разные наушники, и «тихо»
-    /// у одного громче, чем «громко» у другого. Ноль — полная тишина, вынесен отдельным пунктом,
-    /// потому что это не «очень тихо», а другое поведение.
-    private let duckLevels = [0, 10, 20, 30, 50]
+    /// Насколько приглушать — СЛАЙДЕР (просьба автора 30.07; раньше был выбор из пяти процентов).
+    /// Ползунок здесь честнее списка: величина непрерывная, «правильного» значения не существует, и
+    /// подбирают её на слух, а не выбирают из вариантов. Рядом живая подпись, иначе ползунок без
+    /// цифры превращается в гадание.
+    private weak var duckValueLabel: NSTextField?
     private func duckLevelControl() -> NSView {
-        let pop = NSPopUpButton()
-        pop.addItems(withTitles: [L10n.t("voice.duckMute")] + duckLevels.dropFirst().map { "\($0)%" })
-        pop.selectItem(at: duckLevels.firstIndex(of: settings.voiceDuckLevel) ?? 2)
-        pop.target = self; pop.action = #selector(duckLevelChanged(_:))
-        return pop
+        let s = NSSlider(value: Double(settings.voiceDuckLevel), minValue: 0,
+                         maxValue: Double(AppSettings.duckMaxPercent),
+                         target: self, action: #selector(duckLevelChanged(_:)))
+        s.controlSize = .small
+        s.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        let label = NSTextField(labelWithString: duckValueText(settings.voiceDuckLevel))
+        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .right
+        label.widthAnchor.constraint(equalToConstant: 58).isActive = true
+        duckValueLabel = label
+        let row = NSStackView(views: [s, label])
+        row.orientation = .horizontal; row.spacing = 8; row.alignment = .centerY
+        return row
     }
-    @objc private func duckLevelChanged(_ s: NSPopUpButton) {
-        let i = max(0, min(s.indexOfSelectedItem, duckLevels.count - 1))
-        settings.voiceDuckLevel = duckLevels[i]
+    /// Ноль — это не «ноль процентов», а другое поведение, поэтому и называется словом.
+    private func duckValueText(_ v: Int) -> String { v == 0 ? L10n.t("voice.duckMute") : "\(v)%" }
+    @objc private func duckLevelChanged(_ s: NSSlider) {
+        let v = Int(s.doubleValue.rounded())
+        settings.voiceDuckLevel = v
+        duckValueLabel?.stringValue = duckValueText(v)
     }
     @objc private func toggleDuck(_ s: NSSwitch) {
         settings.voiceDuck = (s.state == .on)

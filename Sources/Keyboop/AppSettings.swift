@@ -197,6 +197,10 @@ final class AppSettings {
     }
     /// Escape отменяет текущую диктовку (запись отбрасывается). По умолчанию включено.
     var escCancelsDictation: Bool { get { d.bool(forKey: "escCancelsDictation") } set { d.set(newValue, forKey: "escCancelsDictation") } }
+    /// Отменённую по Escape диктовку всё равно распознать и положить В ИСТОРИЮ (просьба R37).
+    /// ВЫКЛЮЧЕНО по умолчанию: Escape означает «не надо», и молча сохранять сказанное вопреки этому
+    /// жесту нельзя. Кто хочет подстраховку от случайной отмены — включает сам.
+    var escSaveToHistory: Bool { get { d.bool(forKey: "escSaveToHistory") } set { d.set(newValue, forKey: "escSaveToHistory") } }
     // Тёплое окно: держать микрофон активным ~30с после диктовки для мгновенного повтора.
     // По умолчанию ВЫКЛ (приватность: иначе оранжевый индикатор горит в простое). Реестр default не нужен — bool=false.
     var voiceWarmWindow: Bool { get { d.bool(forKey: "voiceWarmWindow") } set { d.set(newValue, forKey: "voiceWarmWindow") } }
@@ -204,7 +208,14 @@ final class AppSettings {
     var voiceWarmSeconds: Int { get { let v = d.integer(forKey: "voiceWarmSeconds"); return v > 0 ? v : 30 } set { d.set(newValue, forKey: "voiceWarmSeconds") } }
     // ЭКСПЕРИМЕНТАЛЬНО: потоковая диктовка — текст печатается по мере речи (EOU-движок, отдельная модель).
     // По умолчанию ВЫКЛ — включается осознанно. Реестр default не нужен — bool=false.
-    var voiceStreaming: Bool { get { d.bool(forKey: "voiceStreaming") } set { d.set(newValue, forKey: "voiceStreaming") } }
+    /// Потоковый набор — экспериментальная фича, ДЕЙСТВУЕТ ТОЛЬКО В БЕТА-КАНАЛЕ (автор 31.07).
+    /// Единая точка правды: и настройка в UI, и путь в VoiceController спрашивают её же, поэтому
+    /// «тумблер включён, а эффекта нет» невозможно. Сохранённое значение не стираем — выключил
+    /// бету, фича погасла; включил обратно, прежний выбор на месте.
+    var voiceStreaming: Bool {
+        get { d.bool(forKey: "voiceStreaming") && betaChannel }
+        set { d.set(newValue, forKey: "voiceStreaming") }
+    }
 
     /// Перевод выделенного текста по хоткею (Apple Translation, macOS 15+). По умолчанию вкл.
     var translateEnabled: Bool { get { d.object(forKey: "translateEnabled") == nil ? true : d.bool(forKey: "translateEnabled") } set { d.set(newValue, forKey: "translateEnabled") } }
@@ -253,17 +264,27 @@ final class AppSettings {
 
     /// Экспериментально: конвертировать несколько слов группой по хоткею (выключено по умолчанию).
     var groupConvert: Bool { get { d.bool(forKey: "groupConvert") } set { d.set(newValue, forKey: "groupConvert") } }
+    /// Глотать дребезг клавиши: повтор той же буквы быстрее 30 мс (T18, просьба #7). ВЫКЛЮЧЕНО по
+    /// умолчанию — это перехват ввода, и включать его всем из-за изношенных клавиатур меньшинства
+    /// нельзя.
+    var dedupeChatter: Bool { get { d.bool(forKey: "dedupeChatter") } set { d.set(newValue, forKey: "dedupeChatter") } }
     /// Исправлять «КОгда» → «Когда» (T28). ВЫКЛЮЧЕНО по умолчанию: это правка текста, а не раскладки.
     var twoCapsFix: Bool { get { d.bool(forKey: "twoCapsFix") } set { d.set(newValue, forKey: "twoCapsFix") } }
 
     /// Приглушать системную громкость на время диктовки. Выключено по умолчанию: трогать громкость
     /// чужого Mac без спроса нельзя, человек должен включить это сам.
     var voiceDuck: Bool { get { d.bool(forKey: "voiceDuck") } set { d.set(newValue, forKey: "voiceDuck") } }
+    /// Потолок приглушения. Выше него ползунок не ходит, и это осознанно: убавить со ста процентов
+    /// до девяноста означает не убавить ничего. 77 выбрано автором 30.07 как самое большое число,
+    /// которое ещё честно называется «тише», и потому что две семёрки приятно смотрятся.
+    static let duckMaxPercent = 77
     /// До скольких процентов приглушать (0 = полная тишина). По умолчанию 20%: музыку слышно, но
-    /// говорить она не мешает. Значение всегда осмысленное, даже если ключа ещё нет.
+    /// говорить она не мешает. Значение всегда осмысленное, даже если ключа ещё нет или он больше
+    /// потолка (у ранних сборок ползунок доходил до 100).
     var voiceDuckLevel: Int {
-        get { d.object(forKey: "voiceDuckLevel") == nil ? 20 : max(0, min(100, d.integer(forKey: "voiceDuckLevel"))) }
-        set { d.set(max(0, min(100, newValue)), forKey: "voiceDuckLevel") }
+        get { d.object(forKey: "voiceDuckLevel") == nil ? 20
+                : max(0, min(Self.duckMaxPercent, d.integer(forKey: "voiceDuckLevel"))) }
+        set { d.set(max(0, min(Self.duckMaxPercent, newValue)), forKey: "voiceDuckLevel") }
     }
 
     /// Сколько слов зверёк «расколдовал» за всё время (счётчик спасённых раскладок). Растёт на

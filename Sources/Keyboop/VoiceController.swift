@@ -22,6 +22,8 @@ final class VoiceController {
     private var transcribing = 0   // сколько клипов сейчас в транскрипции (для индикатора)
     private var transcribeGen = 0              // генерации задач транскрипции (main-only)
     private var liveTranscriptions = Set<Int>()  // ещё не завершившиеся генерации (main-only)
+    /// Поколения, которые надо положить ТОЛЬКО в историю, без вставки в поле (отмена по Escape, R37).
+    private var historyOnlyGens = Set<Int>()
 
     // ── ЭКСПЕРИМЕНТАЛЬНО: потоковая диктовка (EOU) ──
     private var streamingActive = false
@@ -269,7 +271,8 @@ final class VoiceController {
         // Воспроизводится не на старте (там греет preload), а при смене движка в настройках на ходу.
         let cold = useParakeet ? !ParakeetEngine.shared.ready : (whisper == nil)
         let gen = beginTranscription(duration: recorder.duration, coldLoad: cold)
-        setState(.processing)
+        refreshIndicator()   // НЕ setState(.processing) напрямую: отменённую диктовку считаем молча
+
         // Диагностика «почему медленно»: сразу видно, на каком движке распознаём и почему НЕ Parakeet
         // (whisper на CPU/Metal растёт с длиной аудио; Parakeet на ANE — почти мгновенный). Если тут
         // whisper при voiceEngine=parakeet — значит модель Parakeet не скачана (parakeetInstalled=false).
@@ -282,7 +285,8 @@ final class VoiceController {
                 kbLog("voice: parakeet(готов=\(ok)) → \(text.count) симв.")
                 await MainActor.run {
                     guard self.endTranscription(gen) else { return }   // сторож уже бросил — поздний результат в топку
-                    self.deliver(text); self.refreshIndicator()
+                    self.deliver(text, historyOnly: self.historyOnlyGens.remove(gen) != nil)
+                    self.refreshIndicator()
                 }
             }
             return
@@ -295,7 +299,7 @@ final class VoiceController {
             kbLog("voice: whisper(модель=\(modelReady ? "ок" : "НЕТ"), \(lang)) → \(text.count) симв.")
             DispatchQueue.main.async {
                 guard self.endTranscription(gen) else { return }   // сторож уже бросил — поздний результат в топку
-                self.deliver(text)
+                self.deliver(text, historyOnly: self.historyOnlyGens.remove(gen) != nil)
                 self.refreshIndicator()
                 self.scheduleModelRelease()   // простаиваем → вернём ~1.5 ГБ системе
             }
@@ -316,6 +320,7 @@ final class VoiceController {
         DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
             guard let self, self.liveTranscriptions.remove(gen) != nil else { return }
             self.transcribing -= 1
+            self.historyOnlyGens.remove(gen)   // иначе пометка «молча» пережила бы саму расшифровку
             kbLog("voice: транскрипция №\(gen) висит >\(Int(timeout))с — бросаю (поздний результат отброшу)")
             if streaming { self.streamingActive = false; self.typedTail = "" }   // застрявший финал не должен блокировать новые стримы
             VoiceIndicator.shared.showToast(L10n.t("voice.stuck"))
@@ -336,9 +341,16 @@ final class VoiceController {
 
     /// Индикатор после события: если сейчас пишем — recording; если ещё идёт транскрипция — processing;
     /// иначе — idle. Чтобы back-to-back диктовки не схлопывали индикатор раньше времени.
+    ///
+    /// ⚠️ ОТМЕНЁННАЯ ДИКТОВКА РАСПОЗНАЁТСЯ МОЛЧА (автор 31.07). Человек нажал Escape — для него
+    /// диктовка закончилась, и всплывающая следом плашка «Распознаю» выглядит так, будто отмена не
+    /// сработала. Текст всё равно посчитается и ляжет в историю, просто без показа процесса.
+    /// Считаем по МНОЖЕСТВАМ, а не по счётчику: пока молчаливая расшифровка считается, человек уже
+    /// мог начать обычную диктовку, и её плашку прятать нельзя. Плашка нужна, только если есть хотя
+    /// бы одна живая расшифровка, которую ждут в поле.
     private func refreshIndicator() {
         if recorder.isRecording { setState(.recording) }
-        else if transcribing > 0 { setState(.processing) }
+        else if liveTranscriptions.contains(where: { !historyOnlyGens.contains($0) }) { setState(.processing) }
         else { setState(.idle) }
     }
 
@@ -369,6 +381,18 @@ final class VoiceController {
         }
         guard recorder.isRecording else { VoiceGate.set(false); return }
         if streamingActive { streamCancel(); return }   // потоковый путь: стереть напечатанное
+        // ОТМЕНА С СОХРАНЕНИЕМ В ИСТОРИЮ (R37, выключено по умолчанию). Человек просил: «нажал
+        // Escape — пусть всё равно распознает и положит куда-нибудь». Идём ТЕМ ЖЕ путём, что и
+        // обычное завершение, чтобы не заводить второй конвейер транскрипции со своими проверками
+        // длительности, тишины и сторожем; отличие ровно одно и оно в самом конце — в поле ничего не
+        // вставляем. Поколение помечаем в множестве, а не флагом: пока эта расшифровка считается,
+        // человек уже может начать следующую диктовку, и перепутать их нельзя.
+        if settings.escSaveToHistory {
+            kbLog("voice: отмена (Escape) — распознаю и положу в историю, вставлять не буду")
+            historyOnlyGens.insert(transcribeGen + 1)   // следующее поколение заведёт end()
+            end()
+            return
+        }
         _ = recorder.stop()
         VoiceGate.set(false)
         refreshIndicator()
@@ -536,8 +560,21 @@ final class VoiceController {
         return out
     }
 
-    private func deliver(_ text: String) {
-        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func deliver(_ text: String, historyOnly: Bool = false) {
+        // Фразы-призраки Whisper («Субтитры создавал…», «Продолжение следует») — отсекаем ДО всего
+        // остального, чтобы они не попали ни в поле, ни в историю, ни в статистику. См. WhisperGhosts.
+        let clean = WhisperGhosts.clean(text).trimmingCharacters(in: .whitespacesAndNewlines)
+        // Диктовку отменили по Escape, но человек попросил её всё-таки сохранять (R37). В поле не
+        // пишем ничего: Escape означает «не вставляй». Кладём в историю и говорим об этом тостом,
+        // иначе сохранение выглядело бы как то, что программа проигнорировала отмену.
+        if historyOnly {
+            guard !clean.isEmpty else { kbLog("voice: отменённая диктовка пустая — в историю нечего класть"); return }
+            VoiceHistory.shared.add(clean)
+            noteVoiceStats(clean)
+            kbLog("voice: отменённая диктовка сохранена в историю, \(clean.count) симв.")
+            VoiceIndicator.shared.showToast(L10n.t("voice.escSaved"))
+            return
+        }
         guard !clean.isEmpty else {
             kbLog("voice: пустой результат — ничего не вставляю")
             playCue(failSound)   // мягкий нисходящий сигнал «не вышло», чтобы не было тихо

@@ -61,26 +61,64 @@ enum SystemVolume {
         }
         // Уже тише желаемого — не трогаем вовсе, иначе диктовка сделала бы ГРОМЧЕ.
         guard now > level else { return }
-        savedBefore = now
-        if set(level) {
-            appliedByUs = level
-            kbLog(String(format: "громкость: %.0f%% → %.0f%% на время диктовки", now * 100, level * 100))
-        } else {
-            savedBefore = nil
+        guard set(now) else {                       // проверка «нам вообще дают писать» до захвата
             kbLog("громкость: устройство не даёт её менять — оставляю как есть")
+            return
         }
+        savedBefore = now
+        kbLog(String(format: "громкость: %.0f%% → %.0f%% на время диктовки", now * 100, level * 100))
+        fade(from: now, to: level)
     }
 
     /// Вернуть как было. Ничего не делает, если мы не приглушали или если громкость трогали руками.
     static func restore() {
         guard let before = savedBefore else { return }
         defer { savedBefore = nil; appliedByUs = nil }
-        if let applied = appliedByUs, let now = current(), abs(now - applied) > 0.01 {
+        // Сравниваем с тем, что выставили МЫ, и только если приглушение уже доехало до конца: посреди
+        // плавного спуска текущее значение законно не совпадает ни с чем, и проверка «трогали руками»
+        // тут дала бы ложное срабатывание на каждой короткой диктовке.
+        if fadeTimer == nil, let applied = appliedByUs, let now = current(), abs(now - applied) > 0.02 {
             kbLog("громкость: её изменили во время диктовки — не возвращаю, оставляю выбор человека")
             return
         }
-        set(before)
-        kbLog(String(format: "громкость: вернул %.0f%%", before * 100))
+        kbLog(String(format: "громкость: возвращаю %.0f%%", before * 100))
+        fade(from: current() ?? before, to: before)
+    }
+
+    // MARK: - Плавность
+
+    private static var fadeTimer: DispatchSourceTimer?
+    /// Длительность перехода. Было 0.28, автор послушал вживую и попросил в полтора раза быстрее:
+    /// «приятно, но долго». Ниже ~0.15 кривая перестаёт читаться на слух и превращается в рывок,
+    /// так что это примерно нижняя граница осмысленного.
+    private static let fadeDuration: Double = 0.19
+    private static let fadeStep: Double = 0.012
+
+    /// Плавный переход громкости по S-образной кривой (просьба автора 30.07).
+    ///
+    /// Кривая smoothstep, `t² · (3 − 2t)`: производная на обоих концах равна нулю, поэтому звук
+    /// трогается с места и останавливается мягко, без щелчка. Линейная рампа на слух хуже именно
+    /// краями — начало и конец слышны как две ступеньки.
+    private static func fade(from: Float, to target: Float) {
+        fadeTimer?.cancel(); fadeTimer = nil
+        let steps = max(1, Int(fadeDuration / fadeStep))
+        var i = 0
+        let t = DispatchSource.makeTimerSource(queue: .main)
+        t.schedule(deadline: .now(), repeating: fadeStep)
+        t.setEventHandler {
+            i += 1
+            let x = Float(i) / Float(steps)
+            if x >= 1 {
+                set(target)
+                appliedByUs = target
+                fadeTimer?.cancel(); fadeTimer = nil
+                return
+            }
+            let eased = x * x * (3 - 2 * x)
+            set(from + (target - from) * eased)
+        }
+        fadeTimer = t
+        t.resume()
     }
 
     // MARK: - CoreAudio

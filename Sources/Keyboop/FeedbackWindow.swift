@@ -424,8 +424,23 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
     /// Снимаем `textScroll`, а не окно целиком: `cacheDisplay` по окну отдаёт белый лист
     /// (проверено на WINSHOT), а по вложенному вью работает — на этом же держится дамп настроек.
     func dumpFieldForDev(to path: String) {
-        textView.string = "Проверка видимости: ЖЖЫ ghbdtn 123\nВторая строка, чтобы был перенос."
-        textDidChange(Notification(name: NSText.didChangeNotification, object: textView))
+        // ⚠️ ОБРАЗЕЦ БЕЗ \n — И ЭТО ГЛАВНОЕ (31.07). Прежний образец содержал явный перенос строки,
+        // поэтому дамп показывал две аккуратные строки и «всё в порядке» даже тогда, когда настоящий
+        // перенос по ширине сломан. Репорт #60 («уезжает вправо, переносится символов через 30»)
+        // этой проверкой поймать было НЕЛЬЗЯ. Проверка, которая не воспроизводит дефект, хуже
+        // отсутствия проверки: она даёт ложное спокойствие. Длинная строка без переносов — то
+        // единственное, что здесь имеет смысл рисовать.
+        let sample = "Проверка видимости и переноса: ЖЖЫ ghbdtn 123. "
+            + String(repeating: "Длинная строка без единого переноса, которая обязана свернуться по ширине поля. ", count: 3)
+        // ⚠️ ПЕЧАТАЕМ ПОСИМВОЛЬНО, а не присваиваем строку (31.07). Присваивание `textView.string = …`
+        // проходит совсем другой путь, чем набор с клавиатуры: разом, при уже скрытом плейсхолдере,
+        // без промежуточных layout-проходов. Именно поэтому дамп с присваиванием рисовал идеальный
+        // перенос в тот самый день, когда пришёл репорт #60 о сломанном переносе при НАБОРЕ.
+        textView.string = ""
+        for ch in sample {
+            textView.insertText(String(ch), replacementRange: textView.selectedRange())
+            textDidChange(Notification(name: NSText.didChangeNotification, object: textView))
+        }
         textScroll.layoutSubtreeIfNeeded()
         textView.layoutSubtreeIfNeeded()
         let b = textScroll.bounds

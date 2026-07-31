@@ -51,6 +51,41 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        Release(version: "0.3.6",
+            ru: [
+                "Приглушение звука на время диктовки стало плавным: громкость съезжает вниз по мягкой кривой и так же мягко возвращается, без щелчка в начале и в конце. Уровень теперь задаётся ползунком, а не выбором из нескольких значений, потому что на слух его подбирают, а не выбирают.",
+                "Whisper перестал подписывать вашу речь чужими титрами. На тишине и шуме он иногда выдавал обрывки из обучающих данных, вроде «Субтитры создавал…» или «Продолжение следует», и это уезжало прямо в текст. Теперь такие фразы отсекаются, но только когда стоят отдельным предложением: живую речь мы не режем, даже если вы правда сказали «спасибо за просмотр».",
+                "Отменённую по Escape диктовку можно всё-таки сохранять. В поле по-прежнему не вставляется ничего, но текст распознаётся и ложится в историю, откуда его можно забрать. Выключено по умолчанию: Escape означает «не надо», и сохранять вопреки этому без вашего согласия мы не станем. Плашка «Распознаю» при этом не показывается: вы нажали отмену, и мелькать на экране после этого нечему.",
+                "Потоковый набор переехал в бета-канал. Фича экспериментальная, и её место у тех, кто сам включил «Ставить бета-версии» и готов встретить свежую ошибку раньше остальных. Ваш выбор сохранён: включите бета-канал, и настройка вернётся на место.",
+            ],
+            en: [
+                "Ducking the volume while you dictate is now smooth: it slides down along a soft curve and comes back the same way, with no click at either end. The level is set with a slider rather than a short list, because it is something you tune by ear.",
+                "Whisper stopped signing your speech with someone else's credits. On silence and noise it sometimes produced fragments from its training data, and they went straight into your text. Those phrases are now stripped, but only when they stand as a sentence of their own: live speech is never cut, even if you really did say thank you for watching.",
+                "A dictation cancelled with Escape can still be kept. Nothing is inserted into your text, but it is recognised and lands in the history, where you can pick it up. Off by default: Escape means no, and we will not save against that without your say-so. The “Recognising” panel no longer appears either: you pressed cancel, so there is nothing left to flash on screen.",
+                "Streaming dictation moved to the beta channel. It is experimental, and it belongs with the people who turned on “Install beta versions” and are happy to meet a fresh bug before everyone else. Your choice is kept: switch the beta channel on and the setting comes back.",
+            ],
+            announce: """
+                Диктуй, кайфуй!
+
+                Звук во время диктовки теперь убавляется плааааавно, по мягкой кривой, и так же \
+                мягко возвращается. Раньше музыка прыгала ступенькой, теперь просто уходит на \
+                второй план, пока вы говорите.
+                """,
+            announceEnd: """
+                И Whisper перестал подписывать вашу речь чужими титрами. Кто ловил «Субтитры \
+                создавал DimaTorzok» посреди своего текста, тот поймёт.
+
+                Привет старому знакомому, который написал, что значок Keyboop у него самый \
+                широкий в строке меню. Ты не подписался, так что отвечаю через канал: у значка \
+                есть режимы, буквы языка убираются, сам значок прячется, можно вообще всё сразу. \
+                А имя всё-таки пришли, интрига мучает.
+
+                Дальше живём так: 0.3.x доводит до ума то, что уже есть, а 0.4 привезёт крупное. \
+                Копаю оба сразу, потому что усидеть на одном не выходит.
+
+                И спасибо всем, кто закинул на keyboop.com/tips. Это правда мотивирует: времени \
+                на Keyboop уходит прилично, и видеть, что он кому-то нужен, дорогого стоит.
+                """),
         Release(version: "0.3.5",
             ru: [
                 "Кнопки в уведомлении об обновлении наконец нажимаются. Работал только крестик, поэтому обновиться из плашки было нельзя вовсе: у безрамочной кнопки macOS считает зону нажатия по нарисованному тексту, а не по всей цветной пилюле, и клик рядом с буквами уходил в пустоту. Теперь ловится вся площадь кнопки.",
