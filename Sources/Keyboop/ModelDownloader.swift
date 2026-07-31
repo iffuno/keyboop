@@ -129,7 +129,10 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
     }
 
     /// Потоковый SHA-256 файла (по 1 МБ, не грузим гигабайтную модель в память целиком).
-    private static func sha256(ofFileAt url: URL) -> String? {
+    /// Не private: этим же примитивом проверяет свой tar.gz зеркало Parakeet (ParakeetEngine).
+    /// Один источник на оба потребителя — дублировать хеширование в проекте, где целостность
+    /// загрузок это вопрос безопасности, нельзя.
+    static func sha256(ofFileAt url: URL) -> String? {
         guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? fh.close() }
         var hasher = SHA256()

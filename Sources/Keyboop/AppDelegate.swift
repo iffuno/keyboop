@@ -17,6 +17,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var relaunchOffered = false   // предложили перезапуск (TCC-залипание) — один раз
     private var retryTicks = 0            // тики ретрая без успешного старта (для relaunch-эскалации)
     private var axObserver: NSObjectProtocol?   // подписка на com.apple.accessibility.api (держать ссылку)
+
+    // MARK: - Сторож живости движка (31.07.2026)
+    //
+    // ⚠️ ПОЧЕМУ ЭТО ВООБЩЕ НУЖНО. `engineRunning` — защёлка в ОДНУ сторону: ставится в true на
+    // успешном старте и до сегодняшнего дня не сбрасывалась никогда. Сразу после первого успеха мы
+    // гасим и ретрай-таймер, и подписку на TCC. То есть всё, что умеет поднимать движок, выключается
+    // навсегда — при том, что тап вполне может умереть ПОЗЖЕ: отозвали и вернули Accessibility,
+    // умер mach-порт, система выключила тап, а событие `.tapDisabled*` до нас не доехало.
+    // Итог: приложение молча мертво до ручного перезапуска, и человек видит ровно то же, что при
+    // любой другой поломке — тишину. Это и есть класс жалоб «перестало работать, помогает только
+    // выход». Живой пробник `AppHealth.isEngineLive` у нас есть с 28.07, но его никто не спрашивал,
+    // кроме строки меню, то есть диагноз был, а лечения не было.
+    //
+    // Своим таймером, а не тиком строки меню: жизненный цикл движка не дело контроллера меню, и
+    // 2 секунды против 0.5 — это ещё и вчетверо меньше лишних опросов.
+    private var watchdogTimer: Timer?
+    private var revivals = 0                        // подряд идущие попытки (для back-off)
+    private var revivalsTotal = 0                   // за сессию, НЕ обнуляется никогда
+    private var healthyTicks = 0                    // подряд идущих тиков, где движок жив
+    private var lastRevivalAt: TimeInterval = 0     // systemUptime последней попытки (для back-off)
+    private var revivalCeilingLogged = false        // о достижении потолка пишем один раз
+    /// Потолок подряд идущих попыток — для обычной разовой смерти.
+    private let maxRevivals = 5
+    /// ⚠️ ЖЁСТКИЙ ПОТОЛОК ЗА СЕССИЮ (добавлен 31.07 после аудита). Утренняя версия имела только
+    /// `revivals`, и он обнулялся при КАЖДОМ «жив». А мигание «мёртв на одном тике, жив на
+    /// следующем» — это ровно то, как выглядит шторм отключений снаружи. В таком режиме потолок был
+    /// недостижим, back-off после сброса стартовал заново с двух секунд, и сторож вечно звал
+    /// tapCreate на main каждые пару секунд, то есть заново взводил ловушку, пока система пыталась
+    /// от неё избавиться. Сторож, задуманный как лекарство, усиливал бы аварию.
+    private let maxRevivalsPerSession = 12
+    /// Сколько тиков подряд надо прожить здоровым, чтобы считать аварию законченной и обнулить
+    /// back-off. Один удачный тик ничего не доказывает — при шторме он чередуется с неудачным.
+    private let healthyTicksToReset = 15            // 15 × 2с = 30 секунд устойчивого здоровья
+
     private var updatedFrom: String?      // версия, с которой обновились (nil если первый запуск/та же)
     private var currentVersion = ""
     // true пока WelcomeWindow ведёт пользователя через разрешения (первый запуск).
@@ -223,6 +257,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         RunLoop.main.add(timer, forMode: .common)
         retryTimer = timer
+        startEngineWatchdog()
+        // Предохранитель снял перехват (или вернул) — строка меню должна сказать об этом сразу,
+        // не дожидаясь своего тика: человек в этот момент как раз недоумевает, почему не печатается.
+        AppHealth.onTapSuspended = { [weak self] in
+            DispatchQueue.main.async { self?.menuBar.refresh() }
+        }
 
         // Автообновления (Sparkle): по умолчанию спрашиваем НАШИМ баннером (две кнопки, AppBanner —
         // без системных уведомлений), тихо — только если юзер выбрал «авто». Под dev-рендер-хуками
@@ -379,6 +419,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
             }
         }
+    }
+
+    /// Сторож живости: раз в 2 секунды сверяет «мы думаем, что работаем» с «движок реально жив».
+    /// Расхождение = тап умер после успешного старта, и без этого сторожа лечилось только
+    /// перезапуском приложения (см. блок комментариев у полей выше).
+    private func startEngineWatchdog() {
+        let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.checkEngineAlive()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        watchdogTimer = timer
+    }
+
+    private func checkEngineAlive() {
+        // Ещё не стартовали ни разу — это забота retryTimer, не наша.
+        guard engineRunning else { return }
+        // Живой пробник (состояние тапа, НЕ TCC — см. AppHealth.blockingProblem про то, почему
+        // спрашивать AXIsProcessTrusted первым нельзя).
+        // Мы сами сняли перехват предохранителем — это не поломка, воскрешать нечего.
+        guard !AppHealth.tapSuspended else { return }
+
+        guard !AppHealth.engineRunning else {
+            // ⚠️ Обнуляем back-off только после УСТОЙЧИВОГО здоровья, а не по одному удачному тику:
+            // при шторме «мёртв/жив» чередуются, и сброс по первому же «жив» превращал потолок в
+            // фикцию, а back-off — в постоянные две секунды (аудит 31.07).
+            healthyTicks += 1
+            if revivals > 0, healthyTicks >= healthyTicksToReset {
+                kbLog("сторож: движок устойчиво жив \(healthyTicks) тиков — сбрасываю back-off (попыток было \(revivals), всего за сессию \(revivalsTotal))")
+                revivals = 0
+                lastRevivalAt = 0          // иначе после сброса первая же проверка проходит мгновенно
+                revivalCeilingLogged = false
+            }
+            return
+        }
+        healthyTicks = 0
+
+        guard revivalsTotal < maxRevivalsPerSession else {
+            if !revivalCeilingLogged {
+                revivalCeilingLogged = true
+                kbLog("сторож: \(revivalsTotal) воскрешений за сессию — прекращаю совсем. Дальше только перезапуск приложения")
+                menuBar.needsPermission = true
+                menuBar.refresh()
+            }
+            return
+        }
+
+        guard revivals < maxRevivals else {
+            if !revivalCeilingLogged {
+                revivalCeilingLogged = true
+                kbLog("сторож: движок мёртв, \(maxRevivals) попыток подряд не помогли — прекращаю. Скорее всего отозван доступ к Accessibility либо залип TCC; лечится перезапуском приложения")
+                menuBar.needsPermission = true
+                menuBar.refresh()
+            }
+            return
+        }
+
+        // Back-off: 2, 4, 8, 16, 32 секунды. Без него при отозванном доступе мы бы пытались
+        // поднять тап дважды в секунду до конца сессии.
+        let now = ProcessInfo.processInfo.systemUptime
+        let wait = TimeInterval(2 << revivals)
+        guard now - lastRevivalAt >= wait else { return }
+        lastRevivalAt = now
+        revivals += 1
+        revivalsTotal += 1
+
+        kbLog("сторож: движок мёртв, а мы считали его запущенным — поднимаю заново (попытка \(revivals) из \(maxRevivals), за сессию \(revivalsTotal) из \(maxRevivalsPerSession))")
+        // Снимаем защёлку, иначе tryStart() выйдет по собственному гарду на первой же строке.
+        engineRunning = false
+        tryStart()
     }
 
     private func tryStart() {

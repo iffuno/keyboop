@@ -20,6 +20,13 @@ enum AppHealth {
     static var isEngineLive: (() -> Bool)?
     static var engineRunning: Bool { isEngineLive?() ?? false }
 
+    /// Мы САМИ сняли перехват, потому что система вырубала его штормом (см. предохранитель в
+    /// EventTap). Это не поломка, а сознательная сдача: активный тап держит весь ввод системы,
+    /// и лучше временно не работать, чем морозить человеку клавиатуру и мышь.
+    static var tapSuspended = false
+    /// Дёргается один раз в момент сдачи — чтобы строка меню обновилась немедленно, не дожидаясь тика.
+    static var onTapSuspended: (() -> Void)?
+
     /// Держатель Secure Input, если сейчас включён и мы успели его найти. nil — не включён.
     static var secureInputHolder: String?
     /// Secure Input включён прямо сейчас (флаг ставим на переходах, отдельно от имени держателя:
@@ -46,6 +53,9 @@ enum AppHealth {
     /// Поэтому живой детектор здесь — состояние тапа, а TCC спрашиваем только чтобы отличить
     /// «доступа не дали» от «дали, но старт не удался».
     static var blockingProblem: String? {
+        // Сдача проверяется ПЕРВОЙ: это наше собственное решение, а не отказ системы, и человеку
+        // надо сказать именно это, иначе он пойдёт чинить доступы, которые в полном порядке.
+        if tapSuspended { return L10n.t("health.tapSuspended") }
         if !engineRunning {
             return Permissions.isTrusted() ? L10n.t("health.engineDown") : L10n.t("health.noAccessibility")
         }

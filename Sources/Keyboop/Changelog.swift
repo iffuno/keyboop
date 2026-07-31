@@ -51,6 +51,24 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        // 0.3.7 — БЕТА. Целиком про живучесть: ни одной новой функции, только то, что мешало
+        // приложению тихо ломаться. Выпущено в бета-канал сознательно: предохранитель — новое
+        // поведение в самом чувствительном месте, и его надо обкатать на добровольцах.
+        Release(version: "0.3.7",
+            ru: [
+                "Keyboop больше не может подвесить ввод в системе. Перехват клавиатуры устроен так, что система ждёт нашего ответа на каждое нажатие, и если мы задумались, встаёт не только клавиатура, но и мышь. Раньше в такой ситуации мы бесконечно включались обратно и попадали в тот же капкан снова. Теперь после трёх срывов за минуту Keyboop снимает перехват сам и честно пишет об этом в меню: лучше временно не работать, чем держать компьютер.",
+                "Движок научился оживать сам. Если перехват клавиатуры умирал после запуска — отозвали и вернули доступ, система его закрыла — приложение молча переставало работать до ручного перезапуска, и понять это было нельзя. Теперь оно замечает и поднимается заново, с нарастающими паузами и потолком, чтобы не долбиться в закрытую дверь.",
+                "Правка на лету больше не выключается на весь день. Одной случайной заминки системы (машина ушла в своп, подключили монитор) хватало, чтобы отключить самый аккуратный способ замены до перезапуска. Теперь это пауза на три минуты, а насовсем — только если срывы идут раз за разом.",
+                "Автозамена сокращений теперь уважает список исключений. Раньше сниппет разворачивался даже там, где Keyboop сознательно не трогает ничего: в терминале, в видеоредакторах. Настройки самой системы и поиск Spotlight добавлены в исключения по умолчанию — в первом вводят пароли, во втором наша замена промахивалась на символ из-за подсказок поиска. Обе записи видны в списке и их можно убрать.",
+                "Загруженная модель распознавания речи проверяется по контрольной сумме перед распаковкой. Раньше архив принимался на веру: оборванная загрузка или сбой на зеркале прошли бы насквозь.",
+            ],
+            en: [
+                "Keyboop can no longer stall input on your Mac. A keyboard interceptor works by making the system wait for our answer on every keystroke, so if we stop to think, the keyboard and the mouse both stop with us. Previously we would re-enable ourselves forever and walk straight back into the same trap. Now, after three stalls in a minute, Keyboop switches the interception off by itself and says so in the menu: better to pause than to hold your computer hostage.",
+                "The engine now revives itself. If interception died after startup — access revoked and granted again, or the system closed it — the app went quiet until you restarted it by hand, with no way to tell. It now notices and starts over, with growing pauses and a ceiling so it does not hammer a closed door.",
+                "On-the-fly correction is no longer switched off for the whole day. A single hiccup of the system was enough to disable the most careful replacement path until restart. Now it is a three-minute pause, and permanent only if the hiccups keep coming.",
+                "Snippet expansion now respects your exception list. It used to expand even where Keyboop deliberately touches nothing: terminals, video editors. System Settings and Spotlight are excluded by default — passwords are typed in one, and in the other our replacement missed by a character because of search suggestions. Both entries are visible in the list and can be removed.",
+                "The downloaded speech model is verified against a checksum before it is unpacked. The archive used to be taken on trust, so a broken download or a mirror glitch would have gone straight through.",
+            ]),
         Release(version: "0.3.6",
             ru: [
                 "Приглушение звука на время диктовки стало плавным: громкость съезжает вниз по мягкой кривой и так же мягко возвращается, без щелчка в начале и в конце. Уровень теперь задаётся ползунком, а не выбором из нескольких значений, потому что на слух его подбирают, а не выбирают.",

@@ -269,6 +269,11 @@ final class Engine: EventTapHandler {
                 let mode = Engine.builtinAppMode(bid)
                 if !mode.isEmpty { pairs.append((bid: bid, mode: mode)) }
             }
+            // ⚠️ Системные панели живут НЕ в /Applications, и без явного перечисления запись про них
+            // осталась бы невидимым хардкодом — человек не смог бы её ни увидеть, ни отменить.
+            // Каталог /System/Library/CoreServices целиком не сканируем: там сотни бандлов, а нужен
+            // ровно один. Растить этот список по одному, а не открывать сканирование всей папки.
+            for exact in ["/System/Library/CoreServices/Spotlight.app"] { consider(exact) }
             for base in bases {
                 guard let items = try? fm.contentsOfDirectory(atPath: base) else { continue }
                 for item in items {
@@ -396,7 +401,21 @@ final class Engine: EventTapHandler {
             let snipKeyOK = (keyCode == 49 && settings.snippetExpandSpace)
                          || (keyCode == 36 && settings.snippetExpandEnter)
                          || (keyCode == 48 && settings.snippetExpandTab)
-            if snipKeyOK, !muted, !buffer.currentWord.isEmpty,
+            // ⚠️ ИСКЛЮЧЕНИЯ РАСПРОСТРАНЯЮТСЯ И НА СНИППЕТЫ (31.07). До этого дня раскрытие смотрело
+            // только на свои три галки, и сниппет разворачивался ВЕЗДЕ — в том числе в терминале и
+            // в Final Cut, то есть ровно там, где мы сознательно не трогаем вообще ничего.
+            // Авто-конверсия двадцатью строками ниже проверяет и dev-режим, и режим приложения; здесь
+            // этих проверок не было никогда, и это просто недосмотр, а не решение.
+            //
+            // Гейтим ТОЛЬКО на "off" и на dev-режим. "soft" не трогаем: он про осторожность
+            // конверсии, а не про «ничего не делай», и отбирать сниппеты у мягкого режима незачем.
+            //
+            // ⚠️ Читаем КЭШИ `frontAppMode`/`frontAppIsDev`, а НЕ `Engine.frontmostAppMode()`: мы
+            // внутри колбэка тапа, а тот вызов дёргает NSWorkspace (см. предупреждение у
+            // refreshFrontmostAppCache). Сегодня я уже уронил весь ввод в системе, положив дорогой
+            // вызов на горячий путь, — второй раз не надо.
+            let snipAllowed = frontAppMode != "off" && !(settings.developerMode && frontAppIsDev)
+            if snipKeyOK, snipAllowed, !muted, !buffer.currentWord.isEmpty,
                let expansion = SnippetStore.shared.expansion(forTyped: buffer.currentWord) {
                 expandSnippet(trigger: buffer.currentWord, expansion: expansion, whitespace: ws)
                 return true   // граница проглочена — в приложение не уходит
@@ -619,13 +638,49 @@ final class Engine: EventTapHandler {
         return true
     }
 
-    /// F5: одно срабатывание системного таймаута тапа — и inline выключается до перезапуска.
+    /// F5: срабатывание системного таймаута тапа выключает атомарный inline-путь.
     /// Лучше потерять фичу, чем поймать «ввод не проходит нигде» (инцидент 21.07).
-    private(set) var inlineHealthy = true
+    ///
+    /// ⚠️ ВЫКЛЮЧЕНИЕ ВРЕМЕННОЕ, А НЕ ПОЖИЗНЕННОЕ (31.07). До сегодняшнего дня один-единственный
+    /// таймаут гасил inline до перезапуска приложения. Таймаут же почти всегда разовый и внешний:
+    /// машина на секунду ушла в своп, Spotlight переиндексировал диск, подключили монитор. Расплата
+    /// была несоразмерной — человек до конца дня оставался на гоночном пути замены, том самом,
+    /// который рождает «GПривет» и «EУстрйство». Теперь: кулдаун, после него пробуем снова, и
+    /// только когда таймауты идут ПОДРЯД (значит дело не в случайности, а в этой машине) —
+    /// выключаем до конца сессии, как раньше.
+    private var inlineTimeouts = 0
+    private var inlineDisabled = false
+    private let inlineCooldown: TimeInterval = 180      // 3 минуты
+    private let inlineTimeoutCeiling = 3                // столько подряд — и до конца сессии
+    var inlineHealthy: Bool { !inlineDisabled }
+
+    /// Забыть метку проглоченного keyDown. Зовётся при смерти тапа: пока он был мёртв, keyUp прошёл
+    /// мимо нас, и метка съела бы отпускание следующей ЧЕСТНОЙ клавиши.
+    func forgetInlineSwallowedKey() { inlineSwallowedKeyCode = -1 }
+
     func disableInlineAfterTapTimeout() {
-        guard inlineHealthy else { return }
-        inlineHealthy = false
-        kbLog("inline-fix ОТКЛЮЧЁН на эту сессию: система вырубала тап (страховка F5)")
+        // ⚠️ СЧИТАЕМ ДО ГАРДА, И ЭТО ПРИНЦИПИАЛЬНО (исправлено 31.07, в день написания). Утром
+        // инкремент стоял ПОСЛЕ `guard !inlineDisabled`, и счётчик считал ровно наоборот задуманному:
+        // таймауты внутри кулдауна не считались вовсе, поэтому «3 подряд» на деле означало
+        // «3 таймаута, разнесённых более чем на 180 секунд». То есть машину с редкими безобидными
+        // заминками мы наказывали выключением до конца сессии, а машина с настоящим штормом
+        // (таймаут каждые 10 секунд) до потолка не доходила НИКОГДА и вечно включала inline обратно.
+        // Доказательство в логе 31.07: четыре таймаута за 40 секунд дали «таймаут 1 из 3».
+        inlineTimeouts += 1
+        guard !inlineDisabled else { return }
+        inlineDisabled = true
+        guard inlineTimeouts < inlineTimeoutCeiling else {
+            kbLog("inline-fix ОТКЛЮЧЁН до конца сессии: таймаут тапа \(inlineTimeouts)-й раз подряд (страховка F5)")
+            return
+        }
+        kbLog("inline-fix отключён на \(Int(inlineCooldown))с: система вырубала тап (таймаут \(inlineTimeouts) из \(inlineTimeoutCeiling))")
+        // ⚠️ Возврат логируем ТОЖЕ. Раньше в логе была только строка про выключение, и по багрепорту
+        // нельзя было понять, работал ли атомарный путь в момент жалобы.
+        DispatchQueue.main.asyncAfter(deadline: .now() + inlineCooldown) { [weak self] in
+            guard let self, self.inlineDisabled else { return }
+            self.inlineDisabled = false
+            kbLog("inline-fix включён обратно: кулдаун истёк, таймаутов подряд \(self.inlineTimeouts)")
+        }
     }
 
     // MARK: - Паузная правка через пустышку (0.2.71, задача #19)
@@ -666,7 +721,16 @@ final class Engine: EventTapHandler {
     /// Таймер паузы (150мс тишины). Дешёвые проверки + AX-фантом (ему не место в колбэке тапа:
     /// AX-IPC до десятков мс — риск таймаута) → постим пустышку.
     private func pauseFixTick() {
-        guard settings.inlineLiveFix, inlineHealthy else { maybeLiveFix(); return }   // аварийный откат
+        // ⚠️ ДВЕ РАЗНЫЕ ПРИЧИНЫ, И ОТКАТ У НИХ РАЗНЫЙ (разделено 31.07). Раньше здесь стоял один
+        // гард на оба случая, и оба падали в maybeLiveFix() — асинхронный мид-словный путь.
+        //   • Человек сам выключил тумблер → он попросил старое поведение, отдаём maybeLiveFix.
+        //   • Система вырубила нам тап → падать в ГОНОЧНЫЙ путь худшее из возможного: именно он
+        //     рождает «GПривет» и «EУстрйство», когда реальная клавиша ложится между нашими
+        //     backspace-ами. Когда атомарности нет, правильный ответ мид-слово НЕ ТРОГАТЬ ВОВСЕ.
+        //     Конверсия на границе слова при этом работает как обычно, человек теряет только
+        //     правку на лету, и теряет её ТИХО, а не порчей текста.
+        guard settings.inlineLiveFix else { maybeLiveFix(); return }   // аварийный откат по тумблеру
+        guard inlineHealthy else { return }                            // тап нездоров — делаем МЕНЬШЕ, а не рискованнее
         guard settings.liveFixEnabled, settings.autoEnabled else { return }
         guard Warm.isReady else { return }
         guard !mutedStuckCheck() else { return }
@@ -1527,7 +1591,23 @@ final class Engine: EventTapHandler {
         // терминалы (id проверены на реальной машине; Warp = dev.warp.Warp-Stable, не com.warp.*)
         "com.apple.Terminal", "com.googlecode.iterm2", "com.apple.Console",
         "io.alacritty", "net.kovidgoyal.kitty", "com.mitchellh.ghostty",
-        "co.zeit.hyper", "org.tabby", "com.github.wez.wezterm"
+        "co.zeit.hyper", "org.tabby", "com.github.wez.wezterm",
+        // Системные настройки (31.07): там выдают доступы и вводят пароли, и осечка переключателя
+        // читается как «сломал мне ввод» в самом чувствительном месте. Полный снос тапа, как у
+        // конкурента, делать не стали: у EventTap нет публичного stop(), а возврат тапа обратно —
+        // новая гонка ровно там, где ошибиться дороже всего. Одной строки достаточно, и она
+        // ВИДНА и редактируема в Настройках → Исключения (seedDefaultExceptions сканирует и
+        // /System/Applications), а не спрятана в хардкоде.
+        "com.apple.systempreferences",
+        // Spotlight (31.07). Причина не «на всякий случай», а измеренный дефект: его инлайн-
+        // автодополнение вставляет хвост как ВЫДЕЛЕННЫЙ текст, и наш первый Backspace гасит
+        // выделение вместо символа — off-by-one, из-за которого «ghjdthrf» превращается в «gпров»
+        // (диагноз известен с середины июня и не был починен ни разу).
+        // Компенсировать лишним Backspace'ом НЕЛЬЗЯ: когда автодополнения
+        // нет, он съест настоящий символ, то есть мы поменяем один класс порчи на другой. Читать
+        // выделение через AX тоже нельзя — это IPC на горячем пути, ровно тот класс, который
+        // 31.07 заморозил ввод во всей системе. Значит правильный ответ здесь — не трогать текст.
+        "com.apple.Spotlight"
     ]
     static let defaultSoftApps: Set<String> = [
         "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.apple.dt.Xcode",

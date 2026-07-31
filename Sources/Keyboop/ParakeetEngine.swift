@@ -88,12 +88,39 @@ final class ParakeetEngine {
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("parakeet-v3-\(UUID().uuidString).tar.gz")
         guard await TarballDownloader.download(url, to: tmp, progress: progress) else { return false }
         defer { try? FileManager.default.removeItem(at: tmp) }
+
+        // ⚠️ ЦЕЛОСТНОСТЬ АРХИВА (31.07). До этого дня 466-мегабайтный tar.gz распаковывался
+        // системным tar'ом в кэш модели БЕЗ ЕДИНОЙ ПРОВЕРКИ — в непесочном процессе, который читает
+        // клавиатуру. Соседний ModelDownloader при этом честно сверяет потоковый SHA-256 и
+        // отказывается ставить файл при несовпадении; здесь этого просто забыли. Битое зеркало,
+        // оборванная докачка или подменённый файл на сервере проходили насквозь.
+        //
+        // ⚠️ ОБЯЗАТЕЛЬСТВО РЕЛИЗА: при ЛЮБОЙ перезаливке parakeet-v3.tar.gz этот хеш надо обновить,
+        // иначе зеркало начнёт отвергаться и все уйдут на медленный HF-фолбэк. Считать `sha256sum`
+        // по файлу на раздающем хосте, а не по локальной копии: сверять надо ровно то, что получит
+        // пользователь. Размер держим рядом как дешёвую отсечку — он ловит обрыв докачки до того,
+        // как мы потратим время на хеширование полугигабайта.
+        let expectedSHA = "05ba35d6c7a4c486bab4c729175f09f73db81bd7dbf6f99e9187fa5dbaed98fe"
+        let expectedSize: Int64 = 466_626_231
+        let gotSize = (try? FileManager.default.attributesOfItem(atPath: tmp.path)[.size] as? Int64) ?? nil
+        guard gotSize == expectedSize else {
+            kbLog("parakeet mirror: размер не сошёлся (\(gotSize.map(String.init) ?? "?") ≠ \(expectedSize)) — уходим на HF")
+            return false
+        }
+        guard ModelDownloader.sha256(ofFileAt: tmp) == expectedSHA else {
+            kbLog("parakeet mirror: SHA-256 не сошёлся — архив отклонён, уходим на HF")   // сам хеш не логируем
+            return false
+        }
+        kbLog("parakeet mirror: архив проверен (размер + SHA-256) — распаковываю")
+
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             // Распаковка через системный tar (приложение не в песочнице). -C — прямо в кэш модели.
+            // --no-same-owner: не пытаться восстанавливать владельца из архива. Содержимое уже
+            // прибито хешем выше, так что это страховка второго рубежа, а не основная защита.
             let p = Process()
             p.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-            p.arguments = ["-xzf", tmp.path, "-C", dir.path]
+            p.arguments = ["--no-same-owner", "-xzf", tmp.path, "-C", dir.path]
             try p.run(); p.waitUntilExit()
             guard p.terminationStatus == 0, Self.modelInstalled else {
                 kbLog("parakeet mirror: распаковка/структура не сошлись (tar=\(p.terminationStatus)) — уходим на HF")

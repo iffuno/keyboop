@@ -134,6 +134,11 @@ enum L10n {
         "health.noAccessibility": [.ru: "не выдан доступ к Универсальному доступу",
                                    .en: "Accessibility permission not granted"],
         "health.engineDown":      [.ru: "движок не запущен", .en: "engine not running"],
+        // Фрагмент в общем ряду со строками выше: система штормила отключениями тапа, и мы сняли
+        // перехват сами, чтобы не держать ввод. Формулировка без терминов: человеку важно, что это
+        // наше решение и что оно обратимо, а не что такое «event tap».
+        "health.tapSuspended":    [.ru: "перехват снят: система его глушила, я приостановился",
+                                   .en: "interception is off: the system kept killing it, so I stopped"],
         "health.secureInput":     [.ru: "включён Secure Input — macOS прячет клавиатуру от всех программ",
                                    .en: "Secure Input is on, macOS hides the keyboard from every app"],
         "health.secureInputHolder": [.ru: "включён Secure Input (держит %@) — macOS прячет клавиатуру",
