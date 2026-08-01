@@ -654,7 +654,7 @@ final class DetailVC: NSViewController {
         let trigKeys = NSStackView(views: [tSpace, tEnter, tTab])
         trigKeys.orientation = .horizontal; trigKeys.spacing = 12
 
-        return vstack([
+        var items: [NSView] = [
             title(L10n.t("switch.title")),
             sub(L10n.t("switch.sub")),
             group(8),
@@ -684,8 +684,25 @@ final class DetailVC: NSViewController {
             ]),
             group(2),
             instantSwitchStatusView(),       // что затеняем этой комбинацией — честно и заранее
+        ]
+        // Режим «Caps Lock меняет язык» отнимает у клавиши её замок — сразу говорим, куда делись
+        // заглавные (Shift+Caps Lock). В других режимах строки нет, чтобы не мусорить.
+        if settings.instantSwitchEnabled, settings.instantSwitchMode == "modkey",
+           settings.instantSwitchKeyCode == 57 {
+            items.append(contentsOf: [group(2), hint(L10n.t("is.capsShift"))])
+        }
+        items.append(contentsOf: [
             group(2),
             hint(L10n.t("is.beta")),         // честная бета-метка: фича новая и трогает системные хоткеи
+            // Лампочка-индикатор языка. Своей карточкой, а не строкой в карточке выше: она НЕ
+            // зависит от мгновенного переключения — следует за языком, как бы его ни меняли.
+            group(6),
+            card([
+                switchRow(L10n.t("led.enable"), L10n.t("led.enableSub"),
+                          settings.capsLEDIndicator, #selector(toggleCapsLED))
+            ]),
+            group(2),
+            capsLEDStatusView(),             // доступ/лампочки — честный статус, а не молчание
             group(6),
             sectionTitle(L10n.t("switch.trig")),
             card([
@@ -704,6 +721,7 @@ final class DetailVC: NSViewController {
                 controlRow(L10n.t("switch.soundVol"), soundVolumeSlider())
             ])
         ])
+        return vstack(items)
     }
     // Авто-переключение вкл/выкл влияет на доступность «несколько слов» → перерисовываем раздел.
     @objc private func toggleGroupConvert(_ s: NSSwitch) { settings.groupConvert = (s.state == .on) }
@@ -1224,6 +1242,24 @@ final class DetailVC: NSViewController {
                                                     mods: settings.instantSwitchMods)
         guard let shadowed else { return hint(L10n.t("is.onClean")) }
         return hint(String(format: L10n.t("is.onShadow"), shadowed))
+    }
+
+    /// Статус лампочки-индикатора: чего не хватает (доступ / клавиатура с лампочкой) или «работает».
+    /// Считаем ПОСЛЕ CapsLED.reconcile() — список клавиатур наполняется синхронно при включении.
+    private func capsLEDStatusView() -> NSView {
+        guard settings.capsLEDIndicator else { return hint(L10n.t("led.offHint")) }
+        if !Permissions.inputMonitoringGranted() { return hint(L10n.t("led.noPerm")) }
+        if CapsLED.running && CapsLED.ledKeyboardCount == 0 { return hint(L10n.t("led.noKb")) }
+        return hint(L10n.t("led.onHint"))
+    }
+
+    @objc private func toggleCapsLED(_ s: NSSwitch) {
+        settings.capsLEDIndicator = (s.state == .on)
+        // Лампочкой управляет HID-канал, а он закрыт без «Мониторинга ввода» (Accessibility тут не
+        // помогает — это ДРУГОЕ разрешение). Просим системным запросом ровно в момент включения.
+        if s.state == .on, !Permissions.inputMonitoringGranted() { Permissions.requestInputMonitoring() }
+        CapsLED.reconcile()
+        reshow()
     }
 
     @objc private func toggleInstantSwitch(_ s: NSSwitch) {
