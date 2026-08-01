@@ -921,8 +921,20 @@ final class DetailVC: NSViewController {
         del.contentTintColor = .tertiaryLabelColor
         del.identifier = NSUserInterfaceItemIdentifier(bundleID)
         del.setContentHuggingPriority(.required, for: .horizontal)
+        // ЖЁСТКАЯ РАСКЛАДКА НА ПРОГРАММУ (просьба Жени Сенина из BigGeek, 01.08.2026).
+        // Независимая ось от режима слева: в DaVinci нужны обе сразу — не конвертировать И всегда
+        // английский, иначе там не работают горячие клавиши. Прочерк = не трогать (по умолчанию).
+        let lang = NSPopUpButton()
+        lang.controlSize = .small
+        lang.addItems(withTitles: ["—", "EN", "RU"])
+        let curLang = ExceptionStore.shared.appLayout(bundleID)
+        lang.selectItem(at: curLang == "en" ? 1 : (curLang == "ru" ? 2 : 0))
+        lang.target = self; lang.action = #selector(appLayoutChanged(_:))
+        lang.identifier = NSUserInterfaceItemIdentifier(bundleID)
+        lang.setContentHuggingPriority(.required, for: .horizontal)
+        lang.toolTip = L10n.t("exc.forceLayoutHelp")
         let spacer = NSView(); spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let row = NSStackView(views: [icon, name, spacer, seg, del])
+        let row = NSStackView(views: [icon, name, spacer, lang, seg, del])
         row.orientation = .horizontal; row.spacing = 9; row.alignment = .centerY
         row.edgeInsets = NSEdgeInsets(top: 6, left: 12, bottom: 6, right: 10)
         row.heightAnchor.constraint(greaterThanOrEqualToConstant: 38).isActive = true
@@ -942,6 +954,14 @@ final class DetailVC: NSViewController {
     @objc private func appModeChanged(_ s: NSSegmentedControl) {
         guard let bid = s.identifier?.rawValue else { return }
         ExceptionStore.shared.setAppMode(bid, s.selectedSegment == 1 ? "soft" : "off")
+    }
+    @objc private func appLayoutChanged(_ p: NSPopUpButton) {
+        guard let bid = p.identifier?.rawValue else { return }
+        let v = ["", "en", "ru"][max(0, min(2, p.indexOfSelectedItem))]
+        ExceptionStore.shared.setAppLayout(bid, v)
+        // Отдельно «применить сейчас» не нужно: пока человек это настраивает, впереди наше окно
+        // настроек, а значит при переходе в саму программу bundle id сменится и правило сработает
+        // штатным путём (см. Engine.applyForcedLayout).
     }
     /// Фокусирует поле токенов — кнопка «Добавить слово» как альтернатива Enter.
 

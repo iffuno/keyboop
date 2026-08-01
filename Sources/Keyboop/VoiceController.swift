@@ -18,7 +18,13 @@ final class VoiceController {
     var isActive: Bool { VoiceGate.isActive }
     /// Сериализация транскрипции: новая ЗАПИСЬ может начаться, пока прошлая транскрибируется
     /// (запись и whisper независимы), но сами whisper-вызовы — строго по одному (не реентерабельно).
-    private let transcribeQueue = DispatchQueue(label: "ru.keyboop.voice.transcribe")
+    /// ⚠️ QoS ЗАДАН ЯВНО (01.08.2026). Без него очередь получала неопределённый приоритет и для
+    /// планировщика была равна интерактивной работе — а распознавание занимает все выделенные ядра
+    /// на секунды. Отсюда заикание звука в других программах во время диктовки.
+    /// Берём `.userInitiated`, а НЕ `.utility`: человек нажал хоткей и ждёт результат, поэтому нам
+    /// нужны производительные ядра. `.utility` на Apple Silicon уводит поток на экономичные, и
+    /// распознавание стало бы втрое дольше — это ухудшение, а не улучшение.
+    private let transcribeQueue = DispatchQueue(label: "ru.keyboop.voice.transcribe", qos: .userInitiated)
     private var transcribing = 0   // сколько клипов сейчас в транскрипции (для индикатора)
     private var transcribeGen = 0              // генерации задач транскрипции (main-only)
     private var liveTranscriptions = Set<Int>()  // ещё не завершившиеся генерации (main-only)

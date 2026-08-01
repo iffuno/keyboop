@@ -4,6 +4,19 @@
 set -e
 cd "$(dirname "$0")"
 
+# Ежедневная резервная копия, привязанная к работе, а не к календарю. Сборка — самый честный
+# признак того, что сегодня в проекте что-то менялось: в дни без сборок и терять нечего.
+# Режим `daily` сам выходит за миллисекунды, если свежий снимок уже есть, поэтому цена этой
+# строки — двадцать секунд раз в сутки. Сборку не роняем никогда: недоступное хранилище копий
+# не повод не собрать приложение.
+# ⚠️ Проверка на существование обязательна: этот скрипт публикуется на GitHub, а Tools/ — нет.
+# Без неё у постороннего человека сборка начиналась бы с жалобы на отсутствующий файл.
+# Именно `if`, а не `[ … ] && { … }`: при set -e неудачная проверка вернула бы 1 всем выражением
+# и оборвала бы сборку ровно у того, у кого Tools/ нет — то есть у любого стороннего человека.
+if [ -f Tools/backup.sh ]; then
+  bash Tools/backup.sh daily || echo "  ⚠️ ежедневный бэкап не сделан"
+fi
+
 SWIFTDIR="/Library/Developer/CommandLineTools/usr/include/swift"
 if [ -f "$SWIFTDIR/module.modulemap" ] && [ -f "$SWIFTDIR/bridging.modulemap" ]; then
   echo "⚠️  Сломанный toolchain: два modulemap определяют SwiftBridging."
@@ -144,8 +157,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key>            <string>Keyboop</string>
     <key>CFBundleDisplayName</key>     <string>Keyboop</string>
     <key>CFBundleIdentifier</key>      <string>ru.keyboop.app</string>
-    <key>CFBundleVersion</key>         <string>0.3.7</string>
-    <key>CFBundleShortVersionString</key> <string>0.3.7</string>
+    <key>CFBundleVersion</key>         <string>0.3.8</string>
+    <key>CFBundleShortVersionString</key> <string>0.3.8</string>
     <!-- Штамп сборки: подставляется ниже (sed по __BUILD_STAMP__). Логируется при запуске, чтобы по
          логу было ВИДНО, какую именно сборку гоняем. Прецедент 21.07: диагностировали баг по логу
          процесса, стартовавшего на 11 минут РАНЬШЕ пересборки, — то есть по коду без свежих правок. -->

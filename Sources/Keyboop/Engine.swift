@@ -431,13 +431,20 @@ final class Engine: EventTapHandler {
             var autoTrigger = (keyCode == 49 && settings.triggerSpace)
                            || (keyCode == 36 && settings.triggerEnter)
                            || (keyCode == 48 && settings.triggerTab)
-            // Режим разработчика: в IDE/терминалах авто не трогаем (но ⌥⇧ вручную — работает).
-            if settings.developerMode && Engine.frontmostIsDevApp() {
+            // ⚠️ ЧИТАЕМ КЭШИ, А НЕ NSWorkspace (01.08). Мы внутри колбэка тапа, а `frontmostIsDevApp`
+            // и `frontmostAppMode` оба дёргают `NSWorkspace.shared.frontmostApplication` — это
+            // обращение к чужому процессу изнутри окна, которое WindowServer нам отмеряет. Ровно
+            // такой вызов (только дороже, в TCC) заморозил автору клавиатуру и мышь 31.07.
+            // Кэш для этого и заведён (refreshFrontmostAppCache), обновляется по уведомлению об
+            // активации приложения, то есть по единственному событию, которое может изменить ответ.
+            // Плата — окно в несколько миллисекунд после переключения приложения; плата за живой
+            // вызов уже измерена и оплачена.
+            if settings.developerMode && frontAppIsDev {
                 autoTrigger = false
                 silentLog("devapp", "авто молчит: dev-режим в IDE/терминале")
             }
             // Программа-исключение: "off" — совсем не трогаем; "soft" — мягко (см. convertFromBuffer).
-            let appMode = Engine.frontmostAppMode()
+            let appMode = frontAppMode
             if appMode == "off" {
                 autoTrigger = false
                 silentLog("appoff", "авто молчит: приложение в исключениях (режим «выкл»)")
@@ -587,8 +594,41 @@ final class Engine: EventTapHandler {
         // Длинная пауза только РАСШИРЯЕТ это окно: 24мс → 54мс, и промахов стало больше.
         // Настоящее лечение — глотать реальные клавиши на время полёта и доигрывать их после (задача
         // #19), а до тех пор держим окно минимальным.
+        applyForcedLayout(for: bid)
     }
     private var frontAppIsChromium = false
+
+    /// Последняя программа, для которой мы уже применили жёсткую раскладку. Уведомление об активации
+    /// прилетает и на возврат фокуса внутри той же программы — без этой памяти мы перебивали бы
+    /// раскладку человеку каждый раз, когда он кликнул мимо и обратно.
+    private var forcedLayoutLastBid = ""
+
+    /// ЖЁСТКАЯ РАСКЛАДКА НА ПРОГРАММУ (просьба Жени Сенина из BigGeek, 01.08.2026).
+    ///
+    /// Зачем: в DaVinci Resolve (и вообще в профессиональных приложениях, где хоткеи привязаны к
+    /// латинским буквам) при русской раскладке не работают горячие клавиши, и человек переключается
+    /// руками при каждом заходе. Настройка живёт в «Исключениях», рядом с режимом программы, но это
+    /// НЕЗАВИСИМАЯ ось: «не конвертировать здесь» и «всегда включать здесь английский» — разные
+    /// желания, и для DaVinci нужны оба сразу.
+    ///
+    /// ⚠️ ПЕРЕКЛЮЧАЕМ ТОЛЬКО НА ВХОДЕ В ПРОГРАММУ, А НЕ УДЕРЖИВАЕМ. Если человек внутри DaVinci сам
+    /// переключился на русский (написать комментарий, назвать клип), мы обязаны его оставить в покое:
+    /// сторож, возвращающий раскладку силой, — это программа, которая спорит с хозяином. Поэтому
+    /// память по bundle id: сработали один раз на активацию и молчим, пока фокус не уйдёт в другую
+    /// программу и не вернётся.
+    private func applyForcedLayout(for bid: String) {
+        guard !bid.isEmpty else { return }
+        guard bid != forcedLayoutLastBid else { return }   // та же программа — уже применяли
+        forcedLayoutLastBid = bid
+        let want = ExceptionStore.shared.appLayout(bid)
+        guard want == "en" || want == "ru" else { return }
+        let toCyrillic = (want == "ru")
+        // Уже в нужной раскладке — не дёргаем систему зря (и не порождаем лишний звук/индикатор).
+        guard layout.currentIsCyrillic() != toCyrillic else { return }
+        layout.selectLayout(cyrillic: toCyrillic)
+        onLayoutMaybeChanged?()
+        kbLog("жёсткая раскладка: \(bid) → \(want.uppercased())")
+    }
 
     /// Electron-приложений становится больше, чем мы успеваем вписывать bundle id (Claude, Cursor,
     /// ChatGPT…), поэтому определяем по ФАКТУ: лежит ли внутри бандла Electron Framework. Результат
@@ -740,8 +780,10 @@ final class Engine: EventTapHandler {
         // Верхняя граница та же, что у inline (колбэк должен оставаться коротким). Слова 17+ симв.
         // чинятся на границе слова, как и раньше.
         guard word.count >= 4, word.count <= 16, word != liveFixLast else { return }
-        if settings.developerMode && Engine.frontmostIsDevApp() { return }
-        guard Engine.frontmostAppMode().isEmpty else { return }
+        // Кэши, не NSWorkspace: путь идёт по таймеру на main, а main общий с колбэком тапа —
+        // задержка здесь так же откладывает доставку нажатий (01.08).
+        if settings.developerMode && frontAppIsDev { return }
+        guard frontAppMode.isEmpty else { return }
         guard !frontAppIsChromium else { return }   // вставка там ненадёжна — мид-слова не трогаем
         guard !secureInputWasOn else { return }
         // Фантомный предохранитель (24.07): экран уже показывает итог → выравниваем модель и молчим.
@@ -908,10 +950,10 @@ final class Engine: EventTapHandler {
         guard ProcessInfo.processInfo.systemUptime - lastRealKeyAt >= 0.14 else { return }
         let word = buffer.currentWord
         guard word.count >= 4, word != liveFixLast else { return }
-        if settings.developerMode && Engine.frontmostIsDevApp() { return }
+        if settings.developerMode && frontAppIsDev { return }   // кэш, не NSWorkspace (01.08)
         // Программа-исключение (встроенная или пользовательская): off/soft → НЕ чиним на лету
         // (видеоредакторы/терминалы/код — синтетика мид-слова там особенно нежелательна).
-        if !Engine.frontmostAppMode().isEmpty { return }
+        if !frontAppMode.isEmpty { return }   // кэш, не NSWorkspace (01.08)
         // ⚠️ Chromium/Electron (добавлено 28.07, дыра найдена при разборе #19): здесь этой проверки
         // НЕ БЫЛО, хотя inline-путь Chromium запрещает с 0.2.68 (F6). То есть мид-словная правка в
         // Chromium шла ИМЕННО этим путём — а там Unicode-вставка ненадёжна (Workflowy/Slack):
@@ -1478,8 +1520,14 @@ final class Engine: EventTapHandler {
             liveFixLast = ""; buffer.clear()
             return false
         }
-        if settings.developerMode && Engine.frontmostIsDevApp() { return false }
-        let appMode = Engine.frontmostAppMode()
+        // ⚠️ КЭШИ, НЕ NSWorkspace (01.08). Это САМЫЙ горячий путь проекта: enter-pre выполняется
+        // синхронно в колбэке, и по нашим же логам из отзывов девять строк «медленный колбэк» на
+        // шести машинах шли ровно за строкой enter-pre, худшая 394 мс, у одного человека система
+        // за это выключила тап и нажатия были потеряны. Тут стояло ДВА обращения к NSWorkspace
+        // подряд. Сама конверсия ниже остаётся синхронной осознанно (иначе Enter обгонит правку),
+        // но платить за неё ещё и походами в чужой процесс незачем.
+        if settings.developerMode && frontAppIsDev { return false }
+        let appMode = frontAppMode
         if appMode == "off" { return false }
         guard let prop = autoConversionProposal(word: word, soft: appMode == "soft") else { return false }
         // AX-предохранителя здесь НЕТ намеренно (финал аудита 24.07, R1): enter-pre работает
@@ -1682,8 +1730,15 @@ final class Engine: EventTapHandler {
         }
         buffer.commitSnippet(expansion: expansion, whitespace: ws)   // буфер: триггер→раскрытие, затем граница
         buffer.invalidateGroupHistory()   // сниппет изменил длину экрана не 1:1 → группа недействительна (G1)
-        playSound()
-        kbLog("snippet: \(trigger.count)→\(body.count) симв., граница проглочена")  // контент не логируем
+        // ⚠️ ЗВУК И ЛОГ — С КОЛБЭКА ДОЛОЙ (01.08). `playSound()` создаёт NSSound, и первый вызов
+        // ЧИТАЕТ ФАЙЛ С ДИСКА (/System/Library/Sounds или наш ресурс) прямо внутри окна, которое
+        // WindowServer нам отмеряет. От звука и строки лога не зависит ни одно следующее событие,
+        // поэтому им тут делать нечего. Ровно так же уже поступают tryInlineLiveFix и
+        // convertBeforeReturn. Уходят одним блоком, поэтому порядок между ними сохраняется.
+        DispatchQueue.main.async { [weak self] in
+            self?.playSound()
+            kbLog("snippet: \(trigger.count)→\(body.count) симв., граница проглочена")  // контент не логируем
+        }
     }
 
     private func isPrintable(_ scalar: Unicode.Scalar) -> Bool {

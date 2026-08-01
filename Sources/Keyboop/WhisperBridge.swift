@@ -6,6 +6,26 @@ import Foundation
 final class WhisperBridge {
     private var ctx: OpaquePointer?
 
+    /// Сколько потоков отдавать whisper. Считается ОДИН раз: значение не меняется в течение сессии,
+    /// а sysctl в горячем пути нам ни к чему.
+    ///
+    /// Правило: на Apple Silicon берём производительные ядра МИНУС ОДНО, чтобы звуку и интерфейсу
+    /// осталось где выполняться. На Intel (где деления на P/E нет) сохраняем прежнее поведение.
+    /// Потолок 8 оставлен как был: выше whisper.cpp почти не ускоряется, а тепла добавляет.
+    static let transcribeThreads: Int = {
+        var perf: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        // hw.perflevel0 — производительные ядра; на Intel такого ключа нет, sysctlbyname вернёт != 0.
+        if sysctlbyname("hw.perflevel0.logicalcpu", &perf, &size, nil, 0) == 0, perf > 1 {
+            let n = max(1, min(8, Int(perf) - 1))
+            kbLog("whisper: потоков \(n) (производительных ядер \(perf), одно оставлено системе)")
+            return n
+        }
+        let n = max(1, min(8, ProcessInfo.processInfo.activeProcessorCount - 2))
+        kbLog("whisper: потоков \(n) (ядер \(ProcessInfo.processInfo.activeProcessorCount), деления на P/E нет)")
+        return n
+    }()
+
     /// Загружает модель ggml-*.bin. Возвращает nil, если файла нет / не та архитектура.
     init?(modelPath: String) {
         guard FileManager.default.fileExists(atPath: modelPath) else { return nil }
@@ -42,10 +62,20 @@ final class WhisperBridge {
         // Раньше стоял 0.0 (fallback ВЫКЛ ради «без фантазий») — но это и ОСТАВЛЯЛО петли. Срабатывает
         // ТОЛЬКО на вырожденных сегментах; чистую речь греедичный проход (temp 0) проходит как раньше.
         // Системно петли решает Parakeet v3 (transducer, без авторегрессии) — для RU/EU он и дефолт.
+        //
+        // ⚠️ ПОТОКИ СЧИТАЕМ ПО ПРОИЗВОДИТЕЛЬНЫМ ЯДРАМ, А НЕ ПО ВСЕМ (01.08.2026, жалоба пользователя).
+        // Раньше стояло `activeProcessorCount - 2`, и двойка задумывалась как «оставим запас».
+        // На Apple Silicon это оказалось ловушкой: у M1 Max 8 P-ядер и 2 E-ядра, всего 10, и формула
+        // давала ровно 8 — то есть мы забирали ВСЕ производительные ядра, а звуковому потоку
+        // оставались только экономичные. Симптом: во время диктовки заикается музыка, и человек
+        // думает, что приложение вешает компьютер.
+        // Модель и качество при этом ни при чём: тяжёлую large-v3-turbo автор выбирает сознательно,
+        // она лучше расставляет знаки препинания. Наша задача не отговаривать его, а не мешать
+        // остальной системе. Оставляем одно P-ядро свободным.
         params.temperature_inc = 0.2
         params.entropy_thold = 2.4       // повтор/гиббериш в сегменте → перезапуск (порог whisper.cpp по умолч.)
         params.no_speech_thold = 0.6
-        params.n_threads = Int32(max(1, min(8, ProcessInfo.processInfo.activeProcessorCount - 2)))
+        params.n_threads = Int32(Self.transcribeThreads)
 
         // whisper.h: для авто-определения language = "auto" (НЕ detect_language + пустой language —
         // тогда оставался дефолтный "en" → на RU-речи выходило пусто). Всегда задаём language строкой.

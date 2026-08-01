@@ -8,6 +8,7 @@ final class ExceptionStore {
     private let ignoredKey = "ignoredWords"
     private let forceKey = "forceSwapWords"
     private let appModesKey = "appExceptionModes"
+    private let appLayoutsKey = "appForcedLayouts"
     private let learnedKey = "learnedWords"
     private let seededAppsKey = "seededDefaultApps"   // bundle id, по которым уже применяли встроенный дефолт
 
@@ -23,11 +24,28 @@ final class ExceptionStore {
     /// Режим авто-переключения на приложение: bundleID → "off" (совсем не трогать) | "soft" (мягко).
     private(set) var appModes: [String: String]
 
+    /// ЖЁСТКАЯ РАСКЛАДКА НА ПРОГРАММУ: bundleID → "en" | "ru". При активации такой программы
+    /// переключаем систему на этот язык, что бы ни было до неё.
+    ///
+    /// Зачем (просьба Жени Сенина из BigGeek, 01.08.2026): в DaVinci Resolve при русской раскладке
+    /// не работают горячие клавиши, и человек вынужден переключаться руками при каждом заходе в
+    /// программу. То же верно для целого класса профессиональных приложений, где хоткеи привязаны к
+    /// латинским буквам. Ровно такое поле есть и у платного конкурента (`switch_to_en_on_focus` в
+    /// их пер-аппном профиле), только у них оно скрыто от пользователя и приезжает с сервера.
+    ///
+    /// ⚠️ ОТДЕЛЬНЫЙ СЛОВАРЬ, А НЕ ТРЕТЬЕ ЗНАЧЕНИЕ `appModes`. Две причины. Первая: это независимая
+    /// ось. «Не конвертировать в DaVinci» и «всегда включать там английский» — разные желания, и
+    /// человек вправе захотеть оба сразу (для DaVinci как раз так). Вторая: менять тип или
+    /// семантику `appModes` опасно — он читается как `[String: String]`, и любая правка формы
+    /// молча обнулила бы у всех список исключений при обновлении.
+    private(set) var appLayouts: [String: String]
+
     private init() {
         ignored = Set((d.array(forKey: ignoredKey) as? [String]) ?? [])
         forceSwap = Set((d.array(forKey: forceKey) as? [String]) ?? [])
         learned = Set((d.array(forKey: learnedKey) as? [String]) ?? [])
         appModes = (d.dictionary(forKey: appModesKey) as? [String: String]) ?? [:]
+        appLayouts = (d.dictionary(forKey: appLayoutsKey) as? [String: String]) ?? [:]
         seededApps = Set((d.array(forKey: seededAppsKey) as? [String]) ?? [])
         // Пред-заполняем список исключений примерами «вк»/«тг» (один раз) — чтобы пользователь СРАЗУ
         // видел, как это работает. Конфликта с defaultKeep нет: decide проверяет ignored ПЕРВЫМ, оба
@@ -48,7 +66,18 @@ final class ExceptionStore {
         if mode.isEmpty { appModes.removeValue(forKey: bundleID) } else { appModes[bundleID] = mode }
         save()
     }
-    func removeApp(_ bundleID: String) { appModes.removeValue(forKey: bundleID); save() }
+    func removeApp(_ bundleID: String) {
+        appModes.removeValue(forKey: bundleID)
+        appLayouts.removeValue(forKey: bundleID)   // удалили программу из списка — уносим ОБЕ настройки
+        save()
+    }
+
+    /// Жёсткая раскладка для программы: "" (не трогать) | "en" | "ru".
+    func appLayout(_ bundleID: String) -> String { appLayouts[bundleID] ?? "" }
+    func setAppLayout(_ bundleID: String, _ lang: String) {
+        if lang.isEmpty { appLayouts.removeValue(forKey: bundleID) } else { appLayouts[bundleID] = lang }
+        save()
+    }
 
     /// Предзаполнить список исключений ВСТРОЕННЫМИ дефолтами для УСТАНОВЛЕННЫХ программ (видеоредакторы/
     /// терминалы → off, код-редакторы → soft). Вызывает Engine со списком (bid, mode) найденных на машине.
@@ -118,6 +147,7 @@ final class ExceptionStore {
         d.set(Array(forceSwap), forKey: forceKey)
         d.set(Array(learned), forKey: learnedKey)
         d.set(appModes, forKey: appModesKey)
+        d.set(appLayouts, forKey: appLayoutsKey)
         d.set(Array(seededApps), forKey: seededAppsKey)
     }
 }
