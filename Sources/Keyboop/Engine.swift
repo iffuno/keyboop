@@ -171,6 +171,10 @@ final class Engine: EventTapHandler {
     /// «adguard»→«фdguard», «hello»→«рhello»). Теперь чистим ЛЕНИВО — синхронно перед следующим
     /// нажатием (clear, затем append), без гонки. (16.06.2026.)
     private var pendingContextClear = false
+    /// Первое слово после прыжка каретки (клик/навигация). Влияет ТОЛЬКО на одиночные буквы:
+    /// там «нет соседей» означает либо начало ввода, либо середину уже написанного слова, и
+    /// поступать надо противоположно. Снимается при первом же решении, см. convert-путь ниже.
+    private var caretJumpedSinceClear = false
 
     /// Мягкий отложенный сброс контекста (активация чужого приложения — каретка не двигалась):
     /// перед следующим нажатием забываем завершённое слово/группу, НО сохраняем currentWord.
@@ -311,6 +315,9 @@ final class Engine: EventTapHandler {
     private func applyPendingContextClear() -> Bool {
         guard pendingContextClear else { return false }
         liveFixLast = ""                  // курсор сместился (клик) — якорь self-heal сброшен
+        // Каретка прыгнула: слева на экране может стоять целое слово, которого мы не увидим. Для
+        // одиночных букв это решающее отличие от чистого начала ввода (см. LayoutDetector, w.count == 1).
+        caretJumpedSinceClear = true
         buffer.clear()
         UndoLearner.shared.resetContext()
         antiResonance.resetHistory()      // новый контекст — история конверсий неактуальна (заморозка по таймеру сама истечёт)
@@ -1468,7 +1475,13 @@ final class Engine: EventTapHandler {
         // Для завершённого слова (boundary) «предыдущее» — это dropLast: само слово уже лежит
         // последним в sessionWords, и forCurrent:true вернуло бы его самого как контекст (C2).
         let prevW = buffer.contextWord(forCurrent: !completed && !buffer.currentWord.isEmpty)
-        switch LayoutDetector.decide(word: word, exceptions: ExceptionStore.shared, prev: prevW) {
+        // Флаг ОДНОРАЗОВЫЙ: снимаем его прямо здесь, при первом же решении после прыжка каретки.
+        // Дальше он не нужен и был бы вреден — человек кликает постоянно, и застрявший флаг молча
+        // отключил бы починку одиночных предлогов в начале следующей фразы.
+        let afterJump = caretJumpedSinceClear
+        caretJumpedSinceClear = false
+        switch LayoutDetector.decide(word: word, exceptions: ExceptionStore.shared, prev: prevW,
+                                     afterCaretJump: afterJump) {
         case .keep:
             silentLog("keep", "авто молчит: детектор keep (len \(word.count), \(Self.scriptClass(word)), раскладка(мнение)=\(layout.currentIsCyrillicOpinion() ? "RU" : "EN"))")
             return nil

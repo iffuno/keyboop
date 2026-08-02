@@ -42,6 +42,20 @@ enum CapsRemap {
         }
     }
 
+    /// Почему Caps-режим не включился. `nil` — всё в порядке.
+    ///
+    /// ⚠️ ЗАВЕДЕНО, ПОТОМУ ЧТО ОТКАЗ БЫЛ МОЛЧАЛИВЫМ (01.08.2026). Оба провала ниже писались только
+    /// в лог, а человек видел ровно одно: тумблер включён, Caps Lock язык не меняет. Дальше он
+    /// решает, что сломано приложение, и уходит. Отказ, о котором знает только лог, для человека
+    /// неотличим от бага — а причина у нас на руках и объясняется одной строкой.
+    enum Failure { case foreignMapping, hidutilFailed }
+    private(set) static var failure: Failure? {
+        didSet {
+            guard failure != oldValue else { return }
+            DispatchQueue.main.async { NotificationCenter.default.post(name: .capsRemapStatusChanged, object: nil) }
+        }
+    }
+
     private static func apply() {
         guard !AppSettings.shared.capsRemapApplied else {
             // Наш флаг стоит, но после перезагрузки системный список мог обнулиться — переприменяем.
@@ -53,17 +67,21 @@ enum CapsRemap {
         guard empty else {
             // Чужие ремапы клавиш (hidutil/Karabiner-скрипты). Молча перезаписать = сломать чужое.
             kbLog("caps: у системы уже есть свои ремапы клавиш — Caps-режим их не трогает и НЕ активирован; сообщите нам через «Сообщить о проблеме…»")
+            failure = .foreignMapping
             return
         }
         if run(["property", "--set", mappingJSON]) != nil {
             AppSettings.shared.capsRemapApplied = true
+            failure = nil
             kbLog("caps: ремап Caps→LANG1 применён (hidutil), капс-замок отключён на время режима")
         } else {
+            failure = .hidutilFailed
             kbLog("caps: hidutil не отработал — Caps-режим не активирован")
         }
     }
 
     static func removeIfOurs() {
+        failure = nil   // режим выключают — жаловаться больше не на что
         guard AppSettings.shared.capsRemapApplied else { return }
         // Инвариант apply: наш ремап ставился только в ПУСТОЙ список → пустой список = «как было».
         _ = run(["property", "--set", #"{"UserKeyMapping":[]}"#])

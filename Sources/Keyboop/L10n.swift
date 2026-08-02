@@ -5,6 +5,10 @@ extension Notification.Name {
     static let keyboopLanguageChanged = Notification.Name("keyboopLanguageChanged")
     /// История голосового набора изменилась — открытое окно истории перестраивается.
     static let keyboopVoiceHistoryChanged = Notification.Name("keyboopVoiceHistoryChanged")
+    /// Caps-режим не смог включиться (или снова смог) — открытые настройки показывают причину.
+    /// Ремап делается в фоне через hidutil, то есть уже ПОСЛЕ того, как человек щёлкнул тумблером,
+    /// и без сигнала окно так и осталось бы с бодрым «Работает».
+    static let capsRemapStatusChanged = Notification.Name("capsRemapStatusChanged")
     /// Голосовой ввод вставил текст — Engine чистит буфер, чтобы надиктованное не попало в
     /// групповую конвертацию (G3) и не считалось «набранным вручную».
     static let keyboopVoiceInserted = Notification.Name("keyboopVoiceInserted")
@@ -300,10 +304,25 @@ enum L10n {
         "gen.title":      [.ru: "Общие", .en: "General"],
         "gen.sub":        [.ru: "Язык интерфейса, автозапуск и доступ к системе.",
                            .en: "Interface language, launch at login, and system access."],
-        "is.title":       [.ru: "Менять раскладку без задержки (бета)", .en: "Change layout with no delay (beta)"],
-        "is.enable":      [.ru: "Менять раскладку без задержки", .en: "Change layout with no delay"],
-        "is.enableSub":   [.ru: "Меняет язык без задержки системы. Набранное не трогаем — это просто смена раскладки, отдельно от ручного исправления слова.",
-                           .en: "Changes the language with none of the system's delay. Your text isn't touched — it's just the layout, separate from fixing a word by hand."],
+        // ⚠️ ЗАГОЛОВОК НАЗЫВАЕТ ДЕЙСТВИЕ, А НЕ ВЫГОДУ (отзыв в Instagram Direct, 01.08.2026).
+        // Женщина написала: «У меня до приложения клавиатура переключалась нажатием Caps Lock. Её же
+        // я хотела установить клавишей переключения раскладки в приложении, но не получилось».
+        // Функция у нас есть ровно эта. Она её не нашла, потому что строка называлась «Менять
+        // раскладку БЕЗ ЗАДЕРЖКИ»: человек ищет «сменить клавишу переключения», а мы предлагали ему
+        // скорость. Отсутствие задержки — приятное следствие, а не то, за чем сюда приходят, поэтому
+        // оно уехало в подзаголовок, а в заголовок встала клавиша.
+        // Правило имён T44 сохранено: настройка меняет только раскладку → начинается с «Менять
+        // раскладку». Caps Lock назван в подзаголовке ДОСЛОВНО — именно это слово люди ищут глазами.
+        "is.title":       [.ru: "Менять раскладку своей клавишей (бета)", .en: "Change layout with your own key (beta)"],
+        "is.enable":      [.ru: "Менять раскладку своей клавишей", .en: "Change layout with your own key"],
+        "is.enableSub":   [.ru: "Caps Lock, 🌐 или любая ваша комбинация. Язык меняется сразу, без задержки системы. Набранное не трогаем — это просто смена раскладки, отдельно от ручного исправления слова.",
+                           .en: "Caps Lock, 🌐 or any shortcut you like. The language changes at once, with none of the system's delay. Your text isn't touched — it's just the layout, separate from fixing a word by hand."],
+        // Отказ Caps-режима, сказанный человеку. Без обвинений и без просьбы «удалите Karabiner»:
+        // чужой ремап человек ставил осознанно, и ломать его молча мы не станем — об этом и пишем.
+        "is.capsForeign": [.ru: "Caps Lock занят: на этом Mac уже настроен свой ремап клавиш (обычно это Karabiner или похожая утилита). Перебивать чужую настройку мы не будем — выберите другую клавишу выше, или снимите тот ремап и включите тумблер заново.",
+                           .en: "Caps Lock is taken: this Mac already has its own key remapping (usually Karabiner or a similar tool). We won't override someone else's setup — pick a different key above, or remove that remapping and switch this back on."],
+        "is.capsFailed":  [.ru: "Caps Lock не удалось перенастроить: система отклонила запрос. Выберите другую клавишу выше или напишите нам через «Сообщить о проблеме…», приложив лог.",
+                           .en: "Caps Lock could not be remapped: the system refused the request. Pick a different key above, or write to us via “Report a problem…” and attach the log."],
         "is.combo":       [.ru: "Комбинация", .en: "Shortcut"],
         "is.offHint":     [.ru: "Выключено — клавиши работают как обычно, системные действия на месте.",
                            .en: "Off — the keys behave as usual, system actions untouched."],
@@ -478,12 +497,26 @@ enum L10n {
         "voice.hkTestDisabled": [.ru: "Голосовой ввод отключён — включи его выше", .en: "Voice input is off — enable it above"],
         "voice.hkTestCancel": [.ru: "Закрыть", .en: "Close"],
         "voice.mode":     [.ru: "Режим", .en: "Mode"],
-        // Объясняем ТОЛЬКО «Переключать»: «Удерживать» говорит само за себя, и раздувать подпись
-        // объяснением обоих вариантов незачем (замечание автора 29.07: «переключать» непонятно).
-        "voice.modeSub":  [.ru: "Переключать — нажали, сказали, нажали ещё раз",
-                           .en: "Toggle — press, speak, press again"],
+        // ⚠️ ВТОРОЙ ЗАХОД НА ЭТУ СТРОКУ (автор, 02.08.2026). 29.07 он сказал, что «Переключать»
+        // непонятно, и тогда мы добавили подпись, объясняющую только его. Не помогло: непонятной
+        // остаётся сама пара, потому что «переключать» описывает НЕ ЖЕСТ, а внутреннее устройство
+        // («переключить режим записи»). Человек читает кнопку и не понимает, что ему делать пальцем.
+        //
+        // Теперь обе кнопки названы одинаковой формой и обе про жест: удерживать против нажимать.
+        // Разница у них ровно одна — чем запись КОНЧАЕТСЯ: отпусканием клавиши или вторым нажатием.
+        //
+        // ⚠️ ПОДПИСЬ ОБЪЯСНЯЕТ ТОЛЬКО ВТОРОЙ ВАРИАНТ, и это осознанно. Я сначала написал сюда оба
+        // («Удерживать — пока держите клавишу. Нажимать — от нажатия до нажатия»), посмотрел рендер
+        // и увидел, что строка обрезается ровно на «Нажимать — от нажа…», то есть отрезается именно
+        // то, ради чего подпись существует. Строки настроек у нас не переносятся, поэтому в них
+        // помещается одна мысль. «Удерживать» понятно из самого слова, объяснять надо второй.
+        // Полное сравнение обоих — под кнопкой «i» (voice.modeHelp).
+        "voice.modeSub":  [.ru: "Нажимать — нажали, сказали, нажали ещё раз",
+                           .en: "Press — press, speak, press again"],
         "voice.modeHold": [.ru: "Удерживать", .en: "Hold"],
-        "voice.modeToggle":[.ru: "Переключать", .en: "Toggle"],
+        "voice.modeToggle":[.ru: "Нажимать", .en: "Press"],
+        "voice.modeHelp": [.ru: "Удерживать: зажали клавишу диктовки, говорите, отпустили — речь распознаётся и текст встаёт в поле. Хорошо для коротких фраз: палец всё время помнит, что запись идёт, и забыть её выключить невозможно.\n\nНажимать: нажали один раз, говорите сколько нужно, нажали второй раз — и появится текст. Хорошо для длинных мыслей и когда руки нужны свободными; следите только за индикатором, запись ждёт второго нажатия сколько угодно.\n\nРазница между ними ровно одна: чем заканчивается запись — отпусканием клавиши или вторым нажатием. Клавиша в обоих случаях та же, что выбрана выше.",
+                           .en: "Hold: press and hold the dictation key, speak, let go — your speech is recognised and the text lands in the field. Good for short phrases: your finger keeps reminding you that recording is on, so you cannot forget to stop it.\n\nPress: press once, speak for as long as you need, press again — and the text appears. Good for longer thoughts and when your hands are busy; just watch the indicator, because recording waits for that second press as long as it takes.\n\nThe only difference is what ends the recording: releasing the key, or a second press. The key itself is the same one you picked above."],
         "voice.needModelTitle":[.ru: "Нужна модель распознавания", .en: "A recognition model is needed"],
         "voice.needModelBody": [.ru: "Чтобы я понимал речь, скачай модель — один раз, дальше всё локально, без интернета. Открыть настройки?",
                                 .en: "To understand speech I need a model — once, then it’s all local, no internet. Open settings?"],
@@ -653,8 +686,8 @@ enum L10n {
                            .en: "Code is full of short sequences that look like typos but are not: variable names, flags, commands. This mode leaves them alone — single letters and short sequences are not touched. Apps on your exceptions list do not need it, the rule is already off there."],
         "switch.chatter":    [.ru: "Глотать дребезг клавиши", .en: "Swallow key chatter"],
         "switch.chatterSub": [.ru: "Одно нажатие, одна буква", .en: "One press, one letter"],
-        "switch.chatterHelp": [.ru: "У изношенных клавиатур контакт иногда срабатывает дважды с одного нажатия, и в тексте появляется лишняя буква. Мы отбрасываем повтор той же клавиши, если он пришёл быстрее чем через 30 миллисекунд. Настоящие двойные буквы это не задевает: даже у быстрых машинисток на «сс» в «ссоре» уходит вдвое больше. Зажатую клавишу тоже не трогаем, автоповтор работает как обычно. Выключено по умолчанию, потому что это перехват ввода, а не исправление текста.",
-                               .en: "On worn keyboards a contact sometimes fires twice from a single press, and an extra letter shows up. We drop a repeat of the same key if it arrives sooner than 30 milliseconds. Genuine double letters are untouched: even fast typists need twice that for the pair in “class”. Holding a key is unaffected too, autorepeat works as usual. Off by default, because this intercepts your typing rather than correcting text."],
+        "switch.chatterHelp": [.ru: "У изношенных клавиатур контакт иногда срабатывает дважды с одного нажатия, и в тексте появляется лишняя буква. Мы отбрасываем повтор той же клавиши, если он пришёл быстрее чем через 30 миллисекунд. Настоящие двойные буквы это не задевает: даже у быстрых машинисток на «сс» в «ссоре» уходит вдвое больше. Зажатую клавишу тоже не трогаем, автоповтор работает как обычно. Сочетания с ⌘, ⌃ и ⌥ проходят мимо фильтра целиком: пропущенная команда заметна сильнее, чем лишняя. Выключено по умолчанию, потому что это перехват ввода, а не исправление текста.",
+                               .en: "On worn keyboards a contact sometimes fires twice from a single press, and an extra letter shows up. We drop a repeat of the same key if it arrives sooner than 30 milliseconds. Genuine double letters are untouched: even fast typists need twice that for the pair in “class”. Holding a key is unaffected too, autorepeat works as usual. Shortcuts with ⌘, ⌃ or ⌥ bypass the filter entirely: a command that never fired hurts more than one that fired twice. Off by default, because this intercepts your typing rather than correcting text."],
         "switch.twoCaps":    [.ru: "Две заглавные подряд", .en: "Two leading capitals"],
         "switch.twoCapsSub": [.ru: "«КОгда» превращается в «Когда»", .en: "“WHen” becomes “When”"],
         "switch.twoCapsHelp": [.ru: "Так выходит, когда Shift отпущен на миг позже, чем нажата вторая буква. Keyboop чинит только этот случай: ровно две первые буквы заглавные, третья строчная, и в слове одни буквы. Слова целиком заглавными, вроде ГОСТ или USB, а также короткие «ДА» и «ОК» не трогаются. Выключено по умолчанию, потому что это правка самого текста, а не раскладки.",

@@ -52,6 +52,46 @@ enum Changelog {
 
     static let releases: [Release] = [
         // 0.3.8 — БЕТА. Одна функция, по конкретной просьбе конкретного человека.
+        // 0.3.9 — БЕТА. Почти целиком из отзывов: четыре правки пришли от людей, две из них про
+        // окно настроек, которое на macOS 26 вело себя странно у всех.
+        Release(version: "0.3.9",
+            ru: [
+                // ⚠️ ПЕРВАЯ ФРАЗА КАЖДОГО ПУНКТА — КОРОТКАЯ И САМОДОСТАТОЧНАЯ: именно она уходит в
+                // подпись анонса, а длинные первые фразы скрипт выбрасывает целиком (канон в CLAUDE.md).
+                "Окно настроек больше не уезжает вбок. На macOS 26 боковое меню стало плавающей панелью поверх содержимого, а мы считали, что оно по-прежнему отнимает ширину. Страницу можно было утащить в сторону, и текст прятался под меню.",
+                "Настройки перестали разъезжаться при светлой теме системы. Боковое меню светлело, правая часть оставалась тёмной, а часть подписей уходила в тёмное по тёмному. Оформление у приложения одно и оно тёмное, теперь окно так и заявляет.",
+                "Подавление дребезга больше не съедает ⌘C и ⌘V. Фильтр смотрел только на клавишу и время, поэтому команду под зажатым ⌘ принимал за дребезг и глотал. Сочетания с ⌘, ⌃ и ⌥ теперь идут мимо него: пропущенная команда заметнее лишней буквы.",
+                "Одиночная буква больше не меняется после клика мышью. Если поправить одну букву внутри уже написанного слова, мы видели только её и могли перевернуть обратно, отменив ваше же исправление. После переноса каретки одиночные буквы теперь не трогаем.",
+                "Диктовка перестала занимать все производительные ядра. Потоки считались по всем ядрам сразу, и звуку в других программах оставались только экономичные, отсюда заикание музыки во время распознавания.",
+                "Клавишу переключения стало видно в настройках. Строка называлась по выгоде, а не по действию, и люди не находили, где назначить себе Caps Lock. Теперь это «Менять раскладку своей клавишей», а если перенастроить клавишу не вышло, приложение честно говорит почему.",
+                "У режима диктовки появилась подсказка. «Переключать» переименовано в «Нажимать», а под кнопкой «i» написано, чем два режима отличаются и когда какой удобнее.",
+                "Потоковый набор убран из настроек. Он обещал показывать речь на плашке и этого не делал. Вернётся в 0.4, уже с показом.",
+            ],
+            en: [
+                "The settings window no longer slides sideways. On macOS 26 the sidebar became a floating panel over the content, while we still assumed it took width away. The page could be dragged aside and the text hid under the menu.",
+                "Settings no longer split in half under a light system theme. The sidebar went light, the right side stayed dark, and some labels turned dark on dark. The app has one look and it is dark, and now the window says so.",
+                "Chatter suppression no longer swallows ⌘C and ⌘V. The filter looked only at the key and the timing, so a command under a held ⌘ counted as chatter. Shortcuts with ⌘, ⌃ and ⌥ now bypass it: a command that never fired hurts more than one extra letter.",
+                "A single letter is no longer swapped after you click with the mouse. Fixing one letter inside an existing word left us seeing only that letter, and we could flip it back, undoing your own correction. After the caret moves we now leave single letters alone.",
+                "Dictation stopped taking every performance core. Threads were counted across all cores, so audio in other apps was left with the efficiency ones, which is why music stuttered while speech was being recognised.",
+                "The layout key is now findable in settings. The row was named after the benefit rather than the action, so people could not find where to assign Caps Lock. It is now “Change layout with your own key”, and if the key could not be remapped the app says why.",
+                "The dictation mode row got an explanation. “Toggle” is now “Press”, and the “i” button explains how the two modes differ and when each is nicer.",
+                "Streaming dictation is gone from settings. It promised to show your speech on the panel and did not. It returns in 0.4, with the display it was missing.",
+            ],
+            announce: """
+                Сейчас у меня съёмочные дни, поэтому разработка переехала на утро. Встаю и сразу за \
+                ноутбук, вернулся со съёмки, снова за ноутбук.
+
+                Этот релиз почти весь вырос из ваших писем. Четыре правки пришли прямо из отзывов, \
+                и две из них про окно настроек, которое на новой macOS вело себя странно.
+                """,
+            announceEnd: """
+                Приедет тем, кто включил «Ставить бета-версии». Через день-два, если будет тихо, \
+                поедет всем остальным.
+
+                Спасибо всем, кто закинул на keyboop.com/tips. Отдельно тем, кто перевёл заметно \
+                больше обычного: я такие переводы вижу, и они здорово держат на плаву эти утренние \
+                часы до выезда.
+                """),
         Release(version: "0.3.8",
             ru: [
                 // ⚠️ Без длинного тире: пункт целиком уходит в подпись анонса, когда та влезает в

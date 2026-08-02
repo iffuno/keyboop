@@ -126,7 +126,30 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         // так настроено в системе, и это уже не наша забота — поведение стандартное.
         window.collectionBehavior.insert(.fullScreenNone)
 
+        // ⚠️ ОКНО ВСЕГДА ТЁМНОЕ (отзыв пользователей, 02.08.2026).
+        //
+        // Симптом: человек переключал системную тему на светлую, и окно разъезжалось пополам —
+        // боковое меню светлело (оно на системном материале и слушается системы), правая часть
+        // оставалась тёмной (у неё наш собственный графитовый фон), а часть подписей уходила в
+        // тёмный по тёмному и переставала читаться.
+        //
+        // Причина не в отдельных цветах, а в том, что палитра этого приложения ОДНА и она тёмная:
+        // коралл на графите заданы константами sRGB (DS.coral, DS.graphite), динамических цветов
+        // под светлую тему у нас нет вовсе. Приложение при этом нигде не заявляло себя тёмным, и
+        // система честно пыталась одеть его в светлое — получалась половина от одного оформления
+        // и половина от другого.
+        //
+        // Так уже сделано во ВСЕХ остальных окнах: AppBanner, VoiceIndicator, VoiceHistoryWindow
+        // ставят себе .darkAqua. Настройки были единственным местом, где этого не делали, — то есть
+        // это не новое решение, а недостающая строка.
+        //
+        // Настоящая светлая тема — отдельная работа: каждый цвет надо переводить в динамический
+        // (NSColor(name:) с блоком под тему). Пока её нет, честнее заявить тёмное оформление, чем
+        // показывать половину светлого.
+        window.appearance = NSAppearance(named: .darkAqua)
+
         sidebar.onSelect = { [weak self] s in self?.detail.show(s) }
+        detail.observeCapsRemap()
         detail.onLanguageChanged = { [weak self] in
             // Тоже откладываем: приходит из action popup'а языка, а reshow сносит сам popup.
             DispatchQueue.main.async {
@@ -190,7 +213,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     func liveDiag(to path: String) {
         let wh = window?.frame.height ?? -1
         let screenH = NSScreen.main?.visibleFrame.height ?? -1
-        let s = "windowH=\(Int(wh)) screenVisibleH=\(Int(screenH))\n" + detail.liveDiag()
+        let ww = window?.frame.width ?? -1
+        let s = "windowW=\(Int(ww)) windowH=\(Int(wh)) screenVisibleH=\(Int(screenH))\n"
+              + detail.layoutDiag() + "\n" + detail.liveDiag()
         try? s.write(toFile: path, atomically: true, encoding: .utf8)
     }
 
@@ -418,6 +443,14 @@ final class DetailVC: NSViewController {
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false   // только вертикальный скролл — контент не уезжает вбок
+        // ⚠️ ОДНОГО hasHorizontalScroller=false НЕ ХВАТАЕТ (отзыв пользователей, 02.08.2026).
+        // Флаг убирает ПОЛОСУ, но не сам горизонтальный скролл: упругость по умолчанию разрешена,
+        // и случайный боковой свайп двумя пальцами уводил всю панель вбок — справа открывалась
+        // пустота, а текст уезжал под боковое меню. На трекпаде это ловится постоянно, потому что
+        // вертикальный жест почти всегда идёт с горизонтальной составляющей.
+        // Документ и так приколот по ширине к вьюпорту (констрейнт ниже), то есть ехать ему
+        // некуда — ехала именно упругость.
+        scroll.horizontalScrollElasticity = .none
         scroll.autohidesScrollers = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
         docView.translatesAutoresizingMaskIntoConstraints = false
@@ -432,8 +465,29 @@ final class DetailVC: NSViewController {
 
         bg.addSubview(scroll)
         NSLayoutConstraint.activate([
-            scroll.leadingAnchor.constraint(equalTo: bg.leadingAnchor),
-            scroll.trailingAnchor.constraint(equalTo: bg.trailingAnchor),
+            // ⚠️ БОКА — К SAFE AREA, ВЕРХ — К СЫРОМУ КРАЮ. Это не стилистика, а разбор бага
+            // (отзывы пользователей 02.08.2026): окно настроек можно было утащить вбок, и текст
+            // уезжал под боковое меню, а справа открывалась пустота.
+            //
+            // На macOS 26 боковое меню стало ПЛАВАЮЩЕЙ панелью поверх контента: наша панель деталей
+            // занимает всю ширину окна (замер: pane=1040 при окне 1040), а система сообщает отступ
+            // под меню через safe area (замер: safeArea.left = 228). Мы прибивались к СЫРОМУ краю и
+            // этот отступ игнорировали, поэтому его подхватывал `automaticallyAdjustsContentInsets`
+            // и превращал в `contentInsets.left`. А диапазон прокрутки NSScrollView по устройству
+            // ВКЛЮЧАЕТ contentInsets — вот и появлялся законный горизонтальный ход ровно на 228
+            // точек. Именно законный: `horizontalScrollElasticity = .none` его не убирает, упругость
+            // отвечает только за пружину ЗА пределами диапазона. Проверено отдельной пробой.
+            //
+            // Верх намеренно оставлен на `bg.topAnchor`: окно создано с `.fullSizeContentView` и
+            // прозрачным титлбаром, и верхняя вставка (32) — это то, подо что контент красиво
+            // уезжает при прокрутке. Переведёшь верх на safe area — вставка станет нулевой, вместо
+            // размытия под титлбаром будет жёсткий срез, а вертикальный скроллер укоротится.
+            //
+            // ⚠️ И НЕЛЬЗЯ «просто выключить» `automaticallyAdjustsContentInsets`, не тронув пины:
+            // ход тоже станет нулевым, но колонка встанет на x=24, то есть целиком под меню, и окно
+            // сломается наглухо. Лечится именно край, от которого мы считаем.
+            scroll.leadingAnchor.constraint(equalTo: bg.safeAreaLayoutGuide.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: bg.safeAreaLayoutGuide.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: bg.topAnchor),
             scroll.bottomAnchor.constraint(equalTo: bg.bottomAnchor),
             // КРИТИЧНО: к contentView (clip-view = истинный viewport), НЕ к scroll.widthAnchor
@@ -478,7 +532,11 @@ final class DetailVC: NSViewController {
     func layoutDiag() -> String {
         view.layoutSubtreeIfNeeded()
         let clip = (view.subviews.first as? NSScrollView)?.contentView.bounds.width ?? -1
-        return "pane=\(Int(view.bounds.width)) docView=\(Int(docView.bounds.width)) clip=\(Int(clip)) column=\(Int(column.bounds.width)) colX=\(Int(column.frame.minX))"
+        // safeArea печатаем с 02.08.2026: на macOS 26 боковое меню стало ПЛАВАЮЩЕЙ панелью поверх
+        // контента, и вся геометрия зависит от того, сообщает ли система отступ под ним. Без этого
+        // числа «pane=1040 colX=24» выглядят здоровыми, хотя контент лежит под панелью.
+        let sa = view.safeAreaInsets
+        return "pane=\(Int(view.bounds.width)) docView=\(Int(docView.bounds.width)) clip=\(Int(clip)) column=\(Int(column.bounds.width)) colX=\(Int(column.frame.minX)) safeArea(l/r/t/b)=\(Int(sa.left))/\(Int(sa.right))/\(Int(sa.top))/\(Int(sa.bottom))"
     }
     /// Живая диагностика БЕЗ forced-layout — читаем кадры переносимых подписей как в реальном окне.
     func liveDiag() -> String {
@@ -590,6 +648,17 @@ final class DetailVC: NSViewController {
     }
 
     func reshow() { show(currentSection) }
+
+    /// Пересобрать раздел «Переключение», когда Caps-режим доложил, что не смог включиться.
+    /// Ремап идёт в фоне и заканчивается уже ПОСЛЕ щелчка тумблером, поэтому без этого сигнала
+    /// человек так и остался бы смотреть на бодрое «Работает» рядом с клавишей, которая молчит.
+    func observeCapsRemap() {
+        NotificationCenter.default.addObserver(forName: .capsRemapStatusChanged,
+                                              object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.currentSection == .switching else { return }
+            self.reshow()
+        }
+    }
     /// Дешёвая сигнатура файлов моделей на диске (имя+размер+mtime). Меняется ровно тогда, когда
     /// модель скачали/удалили/подменили — включая удаление ИЗВНЕ через Finder.
     private func modelsSignature() -> String {
@@ -1185,24 +1254,12 @@ final class DetailVC: NSViewController {
         MenuBarController.shared?.applyIconStyle()
         reshow()   // показать/скрыть предупреждение про пустую строку меню
     }
-    /// Контрол выбора комбинации (перерисовывает предупреждение при смене).
-    /// Потоковый набор — ЭКСПЕРИМЕНТ, и живёт он только в бете (автор 31.07).
-    ///
-    /// Почему прячем, а не выпиливаем: фича рабочая, но сырая, и её место — у добровольцев, которые
-    /// сами включили «Ставить бета-версии». Это же и есть наше определение беты: канал для тех, кто
-    /// готов ловить свежие ошибки. Прячем через `isHidden` у arranged-subview: NSStackView убирает
-    /// такую строку вместе с её отступом, поэтому в стабильной сборке в списке не остаётся дырки.
-    /// Значение настройки при этом НЕ трогаем — вернулся в бету, и твой прежний выбор на месте
-    /// (само поведение всё равно погашено в AppSettings.voiceStreaming, так что рассинхрона нет).
-    private func voiceStreamingRow() -> NSView {
-        let row = switchRow(L10n.t("voice.streaming"),
-                            settings.voiceEngine == "parakeet" ? L10n.t("voice.streamingSub")
-                                                              : L10n.t("voice.streamNeedsPk"),
-                            settings.voiceStreaming, #selector(toggleVoiceStreaming),
-                            help: L10n.t("voice.streamHelp"))
-        row.isHidden = !settings.betaChannel
-        return row
-    }
+    // ⚠️ ЗДЕСЬ БЫЛ `voiceStreamingRow()` — УДАЛЁН 01.08.2026 вместе со строкой в настройках.
+    // Прятать его в бета-канал оказалось худшим из решений: тумблер обещал показ речи на плашке,
+    // не делал этого, и именно потому, что его видели немногие, никто и не сообщил. Прятать
+    // недоделанное — не то же самое, что не выпускать недоделанное.
+    // Сам потоковый путь (`StreamingEouEngine`, `VoiceController.useStreaming`) и загрузка модели
+    // в `toggleVoiceStreaming` ниже сохранены: в 0.4 фича вернётся с продуманным показом.
 
     private func instantSwitchControl() -> NSView {
         let c = InstantSwitchControl()
@@ -1219,6 +1276,15 @@ final class DetailVC: NSViewController {
     /// глотать событие, системные настройки не трогаем).
     private func instantSwitchStatusView() -> NSView {
         guard settings.instantSwitchEnabled else { return hint(L10n.t("is.offHint")) }
+        // ⚠️ ОТКАЗ CAPS-РЕЖИМА ПОКАЗЫВАЕМ ПЕРВЫМ ДЕЛОМ (01.08.2026). Ремап Caps идёт через hidutil в
+        // фоне и может не состояться: чужой ремап (Karabiner) мы принципиально не перебиваем, а
+        // система может и просто отказать. Раньше об этом знал только лог, и человек видел
+        // включённый тумблер рядом со словом «Работает» — при том, что клавиша язык не меняла.
+        // Живой случай: женщина написала в Директ, что не смогла назначить Caps Lock, и мы даже не
+        // могли отличить «не нашла настройку» от «нашла, а она молча не сработала».
+        if CapsRemap.wanted, let f = CapsRemap.failure {
+            return hint(L10n.t(f == .foreignMapping ? "is.capsForeign" : "is.capsFailed"))
+        }
         let shadowed = InstantSwitchControl.shadows(mode: settings.instantSwitchMode,
                                                     keyCode: settings.instantSwitchKeyCode,
                                                     mods: settings.instantSwitchMods)
@@ -1562,7 +1628,8 @@ final class DetailVC: NSViewController {
             card([
                 switchRow(L10n.t("voice.on"), nil, settings.voiceEnabled, #selector(toggleVoice)),
                 controlRow(L10n.t("voice.hotkey"), voiceHotkeyRow()),
-                controlRow(L10n.t("voice.mode"), voiceModeControl(), subtitle: L10n.t("voice.modeSub")),
+                controlRow(L10n.t("voice.mode"), voiceModeControl(), subtitle: L10n.t("voice.modeSub"),
+                           help: L10n.t("voice.modeHelp")),
                 // Подпись + кружок «i»: настройка молча ломала диктовку двуязычным людям. Тест 30.07
                 // (четыре диктовки смешанной речи): на «Авто» и на «Русском» всё хорошо, а с
                 // принудительным English русский не распознаётся вовсе. Связать одно с другим человеку
@@ -1594,14 +1661,17 @@ final class DetailVC: NSViewController {
                 switchRow(L10n.t("voice.escSave"), L10n.t("voice.escSaveSub"), settings.escSaveToHistory,
                           #selector(toggleEscSave), enabled: settings.escCancelsDictation,
                           help: L10n.t("voice.escSaveHelp")),
-                // ⚠️ Подпись МЕНЯЕТСЯ, когда движок не тот (30.07). Потоковый путь требует Parakeet
-                // (VoiceController.useStreaming), и на whisper тумблер включался, а не делал ничего:
-                // автор включил, продиктовал, не увидел ничего и решил, что фича сломана. Сам тумблер
-                // при этом НЕ гасим: человек мог включить его заранее, до выбора движка, и отнимать
-                // у него переключатель было бы грубее, чем честно сказать, чего не хватает.
-                voiceStreamingRow(),
-                switchRow(L10n.t("voice.sound"), L10n.t("voice.soundSub"), settings.voiceSoundEnabled, #selector(toggleVoiceSound),
-                          help: L10n.t("voice.soundHelp")),
+                // ⚠️ ЗДЕСЬ БЫЛ ПОТОКОВЫЙ НАБОР — УБРАН ДО 0.4 (автор, 01.08.2026), см. AppSettings.
+                // Строка обещала «показывает речь на плашке», и этого не происходило. Возвращать
+                // сюда же не надо: в 0.4 её место в разделе «Пока вы диктуете», рядом с остальным,
+                // что происходит во время речи.
+                //
+                // ⚠️ «Звук записи» и громкость ОСТАЮТСЯ ЗДЕСЬ. 01.08 они переехали в «Пока вы
+                // диктуете» (по смыслу: звучат во время диктовки), а 02.08 автор посмотрел на живом
+                // окне и вернул обратно. Не трогать без него: логика группировки тут проиграла
+                // привычке, и это его окно.
+                switchRow(L10n.t("voice.sound"), L10n.t("voice.soundSub"), settings.voiceSoundEnabled,
+                          #selector(toggleVoiceSound), help: L10n.t("voice.soundHelp")),
                 makeVolumeBox(),
                 // «Как вставлять текст» больше НЕ висит отдельной ссылкой между карточкой и
                 // заголовком — она была там сиротой, без карточки и без заголовка. Теперь это
