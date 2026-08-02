@@ -52,14 +52,21 @@ enum Changelog {
 
     static let releases: [Release] = [
         // 0.3.8 — БЕТА. Одна функция, по конкретной просьбе конкретного человека.
-        // 0.3.9 — БЕТА. Почти целиком из отзывов: четыре правки пришли от людей, две из них про
+        // 0.3.10 — БЕТА. Почти целиком из отзывов: четыре правки пришли от людей, две из них про
         // окно настроек, которое на macOS 26 вело себя странно у всех.
-        Release(version: "0.3.9",
+        //
+        // ⚠️ ГДЕ 0.3.9. Она существовала: собрана, нотаризована и выложена в бета-канал 02.08, но
+        // анонса не получила. Через час после выпуска выяснилось, что светлую тему мы не сломали, а
+        // выключили своей же затычкой, и автор попросил вернуть её В ЭТОТ ЖЕ релиз. Перевыпустить под
+        // тем же номером нельзя (Sparkle сравнивает версии, и у скачавших сборка осталась бы старой
+        // навсегда), поэтому номер сдвинут, а пункты слиты сюда целиком: у человека должен быть один
+        // связный список, а не два, из которых один он никогда не видел.
+        Release(version: "0.3.10",
             ru: [
+                "Оформление приложения теперь можно выбрать. В «Общих» появился переключатель: как в системе, светлое или тёмное. По умолчанию как в системе, то есть Keyboop переоденется вместе с macOS. Раньше выбора не было вовсе, и в светлой теме окно настроек разъезжалось: боковое меню светлело, а правая часть оставалась тёмной.",
                 // ⚠️ ПЕРВАЯ ФРАЗА КАЖДОГО ПУНКТА — КОРОТКАЯ И САМОДОСТАТОЧНАЯ: именно она уходит в
                 // подпись анонса, а длинные первые фразы скрипт выбрасывает целиком (канон в CLAUDE.md).
                 "Окно настроек больше не уезжает вбок. На macOS 26 боковое меню стало плавающей панелью поверх содержимого, а мы считали, что оно по-прежнему отнимает ширину. Страницу можно было утащить в сторону, и текст прятался под меню.",
-                "Настройки перестали разъезжаться при светлой теме системы. Боковое меню светлело, правая часть оставалась тёмной, а часть подписей уходила в тёмное по тёмному. Оформление у приложения одно и оно тёмное, теперь окно так и заявляет.",
                 "Подавление дребезга больше не съедает ⌘C и ⌘V. Фильтр смотрел только на клавишу и время, поэтому команду под зажатым ⌘ принимал за дребезг и глотал. Сочетания с ⌘, ⌃ и ⌥ теперь идут мимо него: пропущенная команда заметнее лишней буквы.",
                 "Одиночная буква больше не меняется после клика мышью. Если поправить одну букву внутри уже написанного слова, мы видели только её и могли перевернуть обратно, отменив ваше же исправление. После переноса каретки одиночные буквы теперь не трогаем.",
                 "Диктовка перестала занимать все производительные ядра. Потоки считались по всем ядрам сразу, и звуку в других программах оставались только экономичные, отсюда заикание музыки во время распознавания.",
@@ -68,8 +75,8 @@ enum Changelog {
                 "Потоковый набор убран из настроек. Он обещал показывать речь на плашке и этого не делал. Вернётся в 0.4, уже с показом.",
             ],
             en: [
+                "You can now choose how the app looks. General settings got a picker: system, light or dark. System is the default, so Keyboop changes clothes together with macOS. There was no choice at all before, and under a light theme the settings window split in half: the sidebar went light while the right side stayed dark.",
                 "The settings window no longer slides sideways. On macOS 26 the sidebar became a floating panel over the content, while we still assumed it took width away. The page could be dragged aside and the text hid under the menu.",
-                "Settings no longer split in half under a light system theme. The sidebar went light, the right side stayed dark, and some labels turned dark on dark. The app has one look and it is dark, and now the window says so.",
                 "Chatter suppression no longer swallows ⌘C and ⌘V. The filter looked only at the key and the timing, so a command under a held ⌘ counted as chatter. Shortcuts with ⌘, ⌃ and ⌥ now bypass it: a command that never fired hurts more than one extra letter.",
                 "A single letter is no longer swapped after you click with the mouse. Fixing one letter inside an existing word left us seeing only that letter, and we could flip it back, undoing your own correction. After the caret moves we now leave single letters alone.",
                 "Dictation stopped taking every performance core. Threads were counted across all cores, so audio in other apps was left with the efficiency ones, which is why music stuttered while speech was being recognised.",
@@ -81,8 +88,8 @@ enum Changelog {
                 Сейчас у меня съёмочные дни, поэтому разработка переехала на утро. Встаю и сразу за \
                 ноутбук, вернулся со съёмки, снова за ноутбук.
 
-                Этот релиз почти весь вырос из ваших писем. Четыре правки пришли прямо из отзывов, \
-                и две из них про окно настроек, которое на новой macOS вело себя странно.
+                Этот релиз почти весь вырос из ваших писем. А заодно у приложения наконец можно \
+                выбрать оформление, светлое или тёмное, чего раньше не было вовсе.
                 """,
             announceEnd: """
                 Приедет тем, кто включил «Ставить бета-версии». Через день-два, если будет тихо, \

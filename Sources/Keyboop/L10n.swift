@@ -370,6 +370,14 @@ enum L10n {
         "globe.warn.ok":  [.ru: "Забрать клавишу", .en: "Take the key"],
         "globe.freeFail": [.ru: "Не вышло изменить системную настройку. Откройте Настройки системы → Клавиатура и выберите «При нажатии 🌐 → Ничего не делать».",
                            .en: "Couldn't change the system setting. Open System Settings → Keyboard and choose “Press 🌐 key to → Do Nothing”."],
+        "gen.theme":      [.ru: "Оформление", .en: "Appearance"],
+        "gen.theme.system":[.ru: "Как в системе", .en: "System"],
+        "gen.theme.light":[.ru: "Светлое", .en: "Light"],
+        "gen.theme.dark": [.ru: "Тёмное", .en: "Dark"],
+        // 🍺 Пасхалка про пиво живёт в SettingsWindow литералом: эмодзи не переводится, и ключи
+        // в словаре ей ни к чему.
+        "gen.themeHelp":  [.ru: "«Как в системе» означает, что Keyboop переоденется вместе с macOS, когда та переключится на светлую или тёмную тему. Светлое и тёмное закрепляют вид независимо от системы: удобно, если ночью система темнеет сама, а вам привычнее одно и то же. Всплывающие плашки (диктовка, обновление) остаются тёмными при любом выборе: они и в системе такие, как поиск Spotlight.",
+                           .en: "“System” means Keyboop changes clothes together with macOS when it switches between light and dark. Light and dark pin the look regardless of the system, which helps if macOS darkens itself at night but you prefer one constant look. Floating panels (dictation, updates) stay dark whatever you pick: they are dark in the system too, like Spotlight."],
         "gen.icon":       [.ru: "Строка меню", .en: "Menu bar"],
         "gen.iconPick":   [.ru: "Значок", .en: "Icon"],
         "gen.iconLang":   [.ru: "Показывать язык рядом (RU/EN)", .en: "Show language next to it (RU/EN)"],

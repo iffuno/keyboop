@@ -1,6 +1,7 @@
 import Foundation
 import ServiceManagement
 import CoreGraphics
+import AppKit   // NSAppearance для appAppearance (оформление приложения)
 
 /// Настройки в UserDefaults.
 final class AppSettings {
@@ -395,6 +396,29 @@ final class AppSettings {
     var menuBarShowLanguage: Bool {
         get { d.object(forKey: "menuBarShowLanguage") == nil ? true : d.bool(forKey: "menuBarShowLanguage") }
         set { d.set(newValue, forKey: "menuBarShowLanguage") }
+    }
+
+    /// Оформление приложения: "system" (по умолчанию), "light", "dark".
+    ///
+    /// Появилось 02.08.2026. До этого дня приложение не заявляло тему вовсе, и в светлой системе
+    /// окно настроек разъезжалось: боковое меню светлело, правая часть оставалась тёмной. Первым
+    /// движением я жёстко прибил окно к тёмной теме, но это оказалось лечением симптома: светлый
+    /// путь в коде БЫЛ (см. ThemedBackgroundView, 29.07), просто где-то не срабатывал, а затычка
+    /// его окончательно выключила. Правильный ответ - не выбирать за человека, а дать выбрать,
+    /// с системой по умолчанию.
+    var appTheme: String {
+        get { d.string(forKey: "appTheme") ?? "system" }
+        set { d.set(newValue, forKey: "appTheme") }
+    }
+
+    /// Оформление, которое надо навесить на окно. `nil` = «как в системе» (не трогаем appearance,
+    /// и окно живёт по системной теме, как любое обычное приложение).
+    var appAppearance: NSAppearance? {
+        switch appTheme {
+        case "light": return NSAppearance(named: .aqua)
+        case "dark":  return NSAppearance(named: .darkAqua)
+        default:      return nil
+        }
     }
 
     var launchAtLogin: Bool {

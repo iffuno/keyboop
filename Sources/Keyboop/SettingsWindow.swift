@@ -126,27 +126,21 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         // так настроено в системе, и это уже не наша забота — поведение стандартное.
         window.collectionBehavior.insert(.fullScreenNone)
 
-        // ⚠️ ОКНО ВСЕГДА ТЁМНОЕ (отзыв пользователей, 02.08.2026).
+        // ⚠️ ОФОРМЛЕНИЕ БЕРЁМ ИЗ НАСТРОЙКИ, А НЕ ПРИБИВАЕМ (02.08.2026).
         //
-        // Симптом: человек переключал системную тему на светлую, и окно разъезжалось пополам —
-        // боковое меню светлело (оно на системном материале и слушается системы), правая часть
-        // оставалась тёмной (у неё наш собственный графитовый фон), а часть подписей уходила в
-        // тёмный по тёмному и переставала читаться.
+        // История этой строки за один день стоит того, чтобы её записать. Пользователи сообщили:
+        // в светлой системе окно разъезжается пополам, боковое меню светлеет, правая часть остаётся
+        // тёмной. Я решил, что палитра у приложения одна и тёмная, и жёстко прибил окно к .darkAqua.
         //
-        // Причина не в отдельных цветах, а в том, что палитра этого приложения ОДНА и она тёмная:
-        // коралл на графите заданы константами sRGB (DS.coral, DS.graphite), динамических цветов
-        // под светлую тему у нас нет вовсе. Приложение при этом нигде не заявляло себя тёмным, и
-        // система честно пыталась одеть его в светлое — получалась половина от одного оформления
-        // и половина от другого.
+        // Это было лечение симптома. Аудит показал обратное: в боевом коде жёстко заданных цветов
+        // НЕТ вообще (все восемь сидят в ветках для снимков), тексты идут на системных цветах и
+        // адаптируются сами, а под фон ещё 29.07 написан ThemedBackgroundView, который честно
+        // переключается по effectiveAppearance. То есть светлый путь существовал, а моя затычка его
+        // выключила целиком.
         //
-        // Так уже сделано во ВСЕХ остальных окнах: AppBanner, VoiceIndicator, VoiceHistoryWindow
-        // ставят себе .darkAqua. Настройки были единственным местом, где этого не делали, — то есть
-        // это не новое решение, а недостающая строка.
-        //
-        // Настоящая светлая тема — отдельная работа: каждый цвет надо переводить в динамический
-        // (NSColor(name:) с блоком под тему). Пока её нет, честнее заявить тёмное оформление, чем
-        // показывать половину светлого.
-        window.appearance = NSAppearance(named: .darkAqua)
+        // Правильный ответ - не выбирать за человека. `nil` означает «как в системе»: appearance не
+        // трогаем, и окно ведёт себя как у любого обычного приложения.
+        window.appearance = AppSettings.shared.appAppearance
 
         sidebar.onSelect = { [weak self] s in self?.detail.show(s) }
         detail.observeCapsRemap()
@@ -1177,6 +1171,23 @@ final class DetailVC: NSViewController {
                            target: self, action: #selector(requestMic))
         mic.bezelStyle = .rounded; mic.controlSize = .regular
 
+        // Оформление приложения: как в системе / светлое / тёмное. Порядок сегментов = themeKeys.
+        let themeKeys = ["system", "light", "dark"]
+        let themeSeg = NSSegmentedControl(labels: [L10n.t("gen.theme.system"),
+                                                   L10n.t("gen.theme.light"),
+                                                   L10n.t("gen.theme.dark")],
+                                          trackingMode: .selectOne,
+                                          target: self, action: #selector(themeChanged(_:)))
+        themeSeg.selectedSegment = themeKeys.firstIndex(of: settings.appTheme) ?? 0
+        // 🍺 Пасхалка (автор, 02.08.2026): «светлое» и «тёмное» в русском это ещё и про пиво.
+        // ⚠️ ТОЛЬКО ЭМОДЗИ, БЕЗ ТЕКСТА. Я сперва написал сюда две остроты, и автор их снял: шутка
+        // такого рода тем смешнее, чем меньше её объясняют. Одна кружка говорит всё сама, а
+        // подпись к ней превращает находку в разъяснение.
+        // Локализация не нужна: эмодзи одинаково читается на всех языках, поэтому literal, а не L10n.
+        // У «Как в системе» подсказки нет: шутка держится на паре, третий пункт её разбавил бы.
+        themeSeg.setToolTip("🍺", forSegment: 1)
+        themeSeg.setToolTip("🍺", forSegment: 2)
+
         // Вид ЗНАЧКА — визуальный выбор квадратными сегментами с реальными значками (автор 23.07).
         // Порядок сегментов = iconStyleKeys. Язык рядом — отдельная галка (работает со всеми).
         let iconSeg = NSSegmentedControl()
@@ -1215,6 +1226,9 @@ final class DetailVC: NSViewController {
             group(8),
             card([
                 controlRow(L10n.t("priv.lang"), langPop),
+                // Оформление стоит рядом с языком интерфейса не случайно: обе строки про то, КАК
+                // приложение выглядит, а не что оно делает. «Как в системе» по умолчанию.
+                controlRow(L10n.t("gen.theme"), themeSeg, help: L10n.t("gen.themeHelp")),
                 switchRow(L10n.t("switch.login"), nil, settings.launchAtLogin, #selector(toggleLogin))
             ]),
             group(6),
@@ -1316,6 +1330,21 @@ final class DetailVC: NSViewController {
         settings.menuBarShowLanguage = (s.state == .on)
         MenuBarController.shared?.applyIconStyle()
         reshow()
+    }
+
+    /// Сменили оформление. Применяем СРАЗУ и ко всем окнам, а не только к настройкам: человек
+    /// щёлкнул и должен увидеть результат под курсором, а не после перезапуска.
+    ///
+    /// ⚠️ Всплывающие HUD-поверхности (плашка диктовки, баннер обновления) намеренно НЕ трогаем:
+    /// они и в системе тёмные при любой теме, как Spotlight, и светлыми смотрятся чужеродно.
+    @objc private func themeChanged(_ s: NSSegmentedControl) {
+        let keys = ["system", "light", "dark"]
+        settings.appTheme = keys[max(0, min(keys.count - 1, s.selectedSegment))]
+        let a = settings.appAppearance          // nil = «как в системе», и это ВАЛИДНОЕ значение:
+        for w in NSApp.windows where w.contentViewController is NSSplitViewController || w.isVisible {
+            w.appearance = a                    // присвоение nil возвращает окно системе
+        }
+        kbLog("тема: \(settings.appTheme)")
     }
 
     /// Обновления — ОТДЕЛЬНЫЙ раздел (раньше тонули в «Общих» → реальный пользователь не нашёл, где
