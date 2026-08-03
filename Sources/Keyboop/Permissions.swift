@@ -32,6 +32,24 @@ enum Permissions {
         Bundle.main.bundlePath.contains("/AppTranslocation/")
     }
 
+    /// Откуда запущено приложение — короткой строкой для отчёта об ошибке.
+    ///
+    /// ⚠️ ЗАВЕДЕНО ПО РЕПОРТУ #71 (03.08.2026). Человек на Intel-маке дал доступы, а движок не
+    /// поднялся, и в логе висело сообщение Sparkle «can't be updated if it's running from the
+    /// location it was downloaded to» — то есть приложение работало НЕ из «Программ». Проверить
+    /// догадку было нечем: путь запуска в диагностику не попадал вовсе, а он объясняет сразу
+    /// класс жалоб (доступы не держатся, обновления не ставятся).
+    /// Полный путь НЕ пишем: в нём бывает имя пользователя, а отчёт уходит на сервер.
+    static func launchLocationForDiagnostics() -> String {
+        if isTranslocated() { return "временная копия (App Translocation) — НЕ из Программ" }
+        if isInApplications() { return "Программы ✓" }
+        let p = Bundle.main.bundlePath
+        if p.contains("/Downloads/") { return "папка «Загрузки» — НЕ из Программ" }
+        if p.contains("/Desktop/")   { return "рабочий стол — НЕ из Программ" }
+        if p.hasPrefix("/Volumes/")  { return "смонтированный образ — НЕ из Программ" }
+        return "другое место — НЕ из Программ"
+    }
+
     /// Стабильное ли расположение (/Applications или ~/Applications) — где грант TCC переживёт перезапуск.
     static func isInApplications() -> Bool {
         let p = Bundle.main.bundlePath

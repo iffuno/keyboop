@@ -724,7 +724,26 @@ final class EventTap {
             let mask = CGEventFlags(rawValue: s.hotkeyModifiers)
             guard !mask.isEmpty else { return false }
             let pressed = !flags.intersection(mask).isEmpty
-            if keyCodeMatchesMask(keyCode, mask) && pressed {
+            // ⚠️ ТОЛЬКО В ОДИНОЧКУ: чужой модификатор рядом отменяет жест (репорт #73, 03.08.2026).
+            //
+            // «Приложение перехватывает на себя сочетание ⌘⇧⇧, когда оно в программе везде
+            // отключено» — у человека конверсия стоит на двойном ⇧, и мы стреляли, пока он держал ⌘.
+            // Проверка `otherKeyBetweenTaps` этот случай не ловит по устройству: она взводится на
+            // нажатии ОБЫЧНОЙ клавиши, а ⌘ приходит через flagsChanged и для неё невидим.
+            //
+            // Это тот же класс, что чинили 27.07 для одиночного модификатора (репорт #17, Alt+Shift
+            // в RDP), просто в соседней ветке: жест из голого модификатора не должен срабатывать
+            // ВНУТРИ чужого сочетания. Пользователь жмёт системный аккорд, а мы конвертируем ему
+            // слово и выглядим как программа, которая перехватила чужой хоткей.
+            //
+            // `lastModTap` при чужом модификаторе сбрасываем, а не просто пропускаем выстрел: иначе
+            // тап, сделанный ДО того как человек дожал ⌘, склеился бы с тапом после и всё равно
+            // сработал бы через 300 мс.
+            let solo = relevantMods(flags).subtracting(relevantMods(mask)).isEmpty
+            if keyCodeMatchesMask(keyCode, mask) && pressed && !solo {
+                lastModTap = 0
+                otherKeyBetweenTaps = false
+            } else if keyCodeMatchesMask(keyCode, mask) && pressed {
                 let now = CACurrentMediaTime()
                 if now - lastModTap < 0.30 && !otherKeyBetweenTaps {
                     onMain { [weak self] in self?.handler?.handleSwitchHotkey() }

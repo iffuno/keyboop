@@ -52,6 +52,39 @@ enum Changelog {
 
     static let releases: [Release] = [
         // 0.3.8 — БЕТА. Одна функция, по конкретной просьбе конкретного человека.
+        // 0.3.11 — БЕТА. Один сюжет целиком: приложение просило не тот доступ и вело не туда.
+        // Пришёл с Intel-мака (репорт #71), но касается всех: Мониторинг ввода это отдельная
+        // галочка, про которую человек узнаёт, только если ему её назвать.
+        Release(version: "0.3.11",
+            ru: [
+                "Двойное нажатие модификатора больше не срабатывает внутри чужого сочетания. Если у вас конверсия висит на двойном Shift, а в другой программе вы жмёте ⌘⇧⇧, Keyboop раньше считал это своим жестом и лез менять слово. Проверка «а не было ли других клавиш» видела только обычные клавиши, а ⌘ для неё был невидим.",
+                "Keyboop больше не просит не тот доступ. Раньше он в любом случае писал «Нужен доступ (Accessibility)» и вёл в раздел Универсального доступа. Если там уже было разрешено, а не хватало Мониторинга ввода, человек видел галочку на месте и решал, что приложение сломано. Теперь называем ту дверь, в которую надо, и открываем именно её.",
+                "Если Keyboop запущен не из «Программ», он это скажет. Доступы macOS привязывает к месту, откуда приложение работает: у копии в «Загрузках» они не держатся, а обновления не ставятся вовсе. Раньше мы предупреждали только про запуск прямо из образа, теперь про любое неподходящее место.",
+                "В отчёт об ошибке добавилась строка о том, откуда приложение запущено. Без неё половину таких писем нечем было проверить. Полный путь не отправляется, только «Программы» или «не Программы»: в пути бывает ваше имя.",
+            ],
+            en: [
+                "A double-tap shortcut no longer fires inside somebody else's combination. If conversion sits on a double Shift and you press ⌘⇧⇧ in another app, Keyboop used to treat that as its own gesture and went off to change a word. The “was there another key” check only ever saw ordinary keys; ⌘ was invisible to it.",
+                "Keyboop no longer asks for the wrong permission. It used to always say “Needs access (Accessibility)” and open the Accessibility pane. If that was already granted and Input Monitoring was the missing one, people saw the checkbox in place and concluded the app was broken. We now name the right door and open that one.",
+                "If Keyboop runs from outside Applications, it says so. macOS ties permissions to the place an app runs from: a copy in Downloads does not keep them, and updates cannot install at all. We used to warn only about launching straight from the disk image; now about any unsuitable place.",
+                "The bug report now says where the app was launched from. Without it half of these letters could not be checked. The full path is not sent, only “Applications” or “not Applications”: paths contain your name.",
+            ],
+            announce: """
+                Утро, снова за ноутбуком до выезда на съёмку.
+
+                Вчера друг проверил Keyboop на стареньком Intel-маке и прислал отчёт. Оказалось, \
+                приложение годно врало людям в лицо, и я даже знаю, скольким.
+                """,
+            announceEnd: """
+                Приедет тем, у кого включены бета-версии. Спасибо всем, кто пишет: этот релиз \
+                целиком из ваших писем.
+
+                Сегодня кто-то заходил на keyboop.com/tips дважды, чтобы точно дошло. Сумма \
+                скромная, десять рублей, а история хорошая. Спасибо всем, кто туда заходит.
+
+                И просьба, если кому не лень. Звёзд на GitHub набралось столько, что Keyboop \
+                теперь можно предложить в Homebrew. Сам себя подать не могу: там правила устроены \
+                так, что автору это втрое дороже. Если умеете и хотите, буду должен.
+                """),
         // 0.3.10 — БЕТА. Почти целиком из отзывов: четыре правки пришли от людей, две из них про
         // окно настроек, которое на macOS 26 вело себя странно у всех.
         //

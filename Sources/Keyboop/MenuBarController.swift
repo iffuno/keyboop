@@ -367,10 +367,31 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
 
         if needsPermission {
-            let perm = NSMenuItem(title: L10n.t("menu.perm"), action: #selector(openPermissions), keyEquivalent: "")
+            // ⚠️ НАЗЫВАЕМ ТОТ ДОСТУП, КОТОРОГО НЕТ (репорт #71, 03.08.2026).
+            //
+            // Раньше пункт всегда назывался «Нужен доступ (Accessibility)…» и всегда вёл в раздел
+            // Универсального доступа. У человека с Intel-мака Accessibility был ВЫДАН, а не хватало
+            // Мониторинга ввода — он читал «нужен Accessibility», шёл туда, видел галочку на месте
+            // и делал единственный логичный вывод: приложение врёт. Мы называли не ту дверь и вели
+            // не в ту комнату.
+            //
+            // Порядок проверки не случаен: Мониторинг ввода спрашиваем ПЕРВЫМ, потому что
+            // AXIsProcessTrusted() умеет залипать на false сразу после выдачи доступа (баг macOS 13+,
+            // см. комментарий в AppDelegate), а IOHIDCheckAccess отвечает честно и сразу.
+            let needIM = !Permissions.inputMonitoringGranted()
+            let perm = NSMenuItem(title: L10n.t(needIM ? "menu.permInput" : "menu.permAX"),
+                                  action: needIM ? #selector(openInputMonitoring) : #selector(openPermissions),
+                                  keyEquivalent: "")
             perm.target = self
             perm.image = icon("exclamationmark.triangle.fill", color: .systemOrange)
             menu.addItem(perm)
+            // Запущено не из «Программ» — вторая частая причина, по которой доступы «не держатся»:
+            // грант привязан к пути, а путь у копии в «Загрузках» живёт до первого переноса.
+            if !Permissions.isInApplications() {
+                let where_ = NSMenuItem(title: L10n.t("menu.permMove"), action: nil, keyEquivalent: "")
+                where_.isEnabled = false
+                menu.addItem(where_)
+            }
             menu.addItem(.separator())
         }
 
@@ -551,6 +572,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
     @objc private func reportProblem() { FeedbackWindowController.shared.show() }
     @objc private func openPermissions() { Permissions.openAccessibilitySettings() }
+    @objc private func openInputMonitoring() {
+        // Сначала системный запрос: если macOS ещё не спрашивала, она покажет свой диалог, и
+        // человеку не придётся искать галочку руками. Уже отказал — открываем нужный раздел.
+        Permissions.requestInputMonitoring()
+        Permissions.openInputMonitoringSettings()
+    }
     @objc private func quit() {
         let alert = NSAlert()
         alert.messageText = L10n.t("menu.quitConfirm")
