@@ -5,6 +5,8 @@ extension Notification.Name {
     static let keyboopLanguageChanged = Notification.Name("keyboopLanguageChanged")
     /// История голосового набора изменилась — открытое окно истории перестраивается.
     static let keyboopVoiceHistoryChanged = Notification.Name("keyboopVoiceHistoryChanged")
+    /// Проверка обновлений сорвалась (или снова заработала) — открытые настройки показывают это.
+    static let updaterStatusChanged = Notification.Name("updaterStatusChanged")
     /// Caps-режим не смог включиться (или снова смог) — открытые настройки показывают причину.
     /// Ремап делается в фоне через hidutil, то есть уже ПОСЛЕ того, как человек щёлкнул тумблером,
     /// и без сигнала окно так и осталось бы с бодрым «Работает».
@@ -634,10 +636,14 @@ enum L10n {
                                  .en: "The download froze at %d%% — the connection to Hugging Face can be moody. Relaunch Keyboop and hit Download again: it resumes where it left off."],
         "voice.lang":     [.ru: "Язык распознавания", .en: "Recognition language"],
         "voice.langAuto": [.ru: "Авто (по речи)", .en: "Auto (detect)"],
-        "voice.langSub":  [.ru: "«Авто» понимает смешанную речь",
-                           .en: "“Auto” handles mixed speech"],
-        "voice.langHelp": [.ru: "«Авто» определяет язык по самой речи и спокойно относится к английским словам внутри русской фразы. Конкретный язык стоит выбирать, только если вы диктуете на нём одном: речь на другом языке распознаётся заметно хуже, а иногда не распознаётся совсем.",
-                           .en: "“Auto” picks the language from the speech itself and copes with English words inside a Russian sentence. Choose a specific language only if you dictate in that one language: speech in another language comes out noticeably worse, sometimes not at all."],
+        // ⚠️ ПОДПИСЬ СУЖЕНА ПО ИТОГАМ ИССЛЕДОВАНИЯ ДВИЖКОВ (03.08.2026).
+        // Раньше здесь стояло «„Авто“ понимает смешанную речь», и это обещало больше, чем движки
+        // умеют: на смешанной речи Parakeet как раз и ломается, записывая английские слова
+        // кириллицей («Дидю коммит энд пуш»). Обещать то, что не выполняется, хуже, чем молчать.
+        "voice.langSub":  [.ru: "Выберите язык, если диктуете на одном",
+                           .en: "Pick a language if you dictate in just one"],
+        "voice.langHelp": [.ru: "«Авто» определяет язык по самой речи. Выбирать конкретный стоит, если вы диктуете на нём одном, и это заметно надёжнее: у Parakeet один общий словарь на 25 языков, и, решив что речь русская, он записывает кириллицей даже английские слова, отчего «Did you commit and push» превращается в «Дидю коммит энд пуш». Выбранный язык такую подмену отсекает.\n\nЧестная оговорка про Parakeet: сам язык распознавания ему задать нельзя, это ограничение модели, а не настройки. Выбор здесь задаёт письменность, которой можно писать, а не язык, который надо услышать. У Whisper выбор работает как обычно, целиком.",
+                           .en: "“Auto” picks the language from the speech itself. Choosing a specific one helps if you dictate in that language only, and it is noticeably more reliable: Parakeet has a single shared vocabulary for 25 languages, so once it decides the speech is Russian it writes even English words in Cyrillic, turning “Did you commit and push” into a phonetic transliteration. A chosen language cuts that off.\n\nAn honest caveat about Parakeet: you cannot tell the model which language to expect, that is a limit of the model and not of this setting. Here the choice constrains the script it may write in, not the language it must hear. With Whisper the choice works fully, as usual."],
         "voice.model":    [.ru: "Модель распознавания", .en: "Recognition model"],
         "voice.engine":   [.ru: "Движок распознавания", .en: "Recognition engine"],
         "voice.soon":     [.ru: "Скоро", .en: "Soon"],
@@ -717,6 +723,13 @@ enum L10n {
         // обрывался на полуслове (видно на dev-рендере KEYBOOP_BANNERSHOT).
         "upd.notifyBody": [.ru: "Любая кнопка поставит сразу.",
                            .en: "Either button installs it now."],
+        // Строка о сорванных проверках обновлений (жалоба 03.08.2026). Формулировка намеренно НЕ
+        // обвиняет ни нас, ни человека: причина почти всегда снаружи (сеть, VPN, фильтр, антивирус,
+        // запуск не из «Программ»), и наша задача сказать факт, а не поставить диагноз.
+        "upd.problem":       [.ru: "Обновления не проверяются", .en: "Updates are not being checked"],
+        "upd.problemUnknown":[.ru: "Последняя проверка не дошла до сервера. Обычно виноваты сеть, VPN, корпоративный фильтр или антивирус, а ещё запуск приложения не из папки «Программы».",
+                              .en: "The last check never reached the server. Usually the network, a VPN, a corporate filter or antivirus is in the way, and sometimes it is the app running from outside the Applications folder."],
+        "upd.problemReport": [.ru: "Сообщить", .en: "Report"],
         "upd.foot":       [.ru: "Проверка шлёт только твой IP и номер версии — как любой заход на сайт. Ничего из набранного.",
                            .en: "The check sends only your IP and version number — like any website visit. Nothing you type."],
         "upd.onboard":    [.ru: "Keyboop сам находит новые версии и спрашивает, ставить ли, — одной кнопкой. Что-то не так — напиши, починим.",

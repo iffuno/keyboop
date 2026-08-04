@@ -31,6 +31,17 @@ final class VoiceController {
     /// Поколения, которые надо положить ТОЛЬКО в историю, без вставки в поле (отмена по Escape, R37).
     private var historyOnlyGens = Set<Int>()
 
+    /// Снять невостребованную пометку «только в историю».
+    ///
+    /// Ставится она при отмене на СЛЕДУЮЩЕЕ поколение (`transcribeGen + 1`) в расчёте, что его
+    /// заведёт текущая запись. Если запись до расшифровки не дошла, поколение не создаётся и метка
+    /// остаётся ждать чужую диктовку. Зовётся из каждой ветки раннего выхода `end()`.
+    private func dropPendingHistoryOnly() {
+        if historyOnlyGens.remove(transcribeGen + 1) != nil {
+            kbLog("voice: снял невостребованную пометку «только в историю» (запись не дошла до расшифровки)")
+        }
+    }
+
     // ── ЭКСПЕРИМЕНТАЛЬНО: потоковая диктовка (EOU) ──
     private var streamingActive = false
     private var typedTail = ""                          // что мы УЖЕ напечатали в поле (для диффа)
@@ -245,21 +256,44 @@ final class VoiceController {
     func end() {
         // Отпустили/нажали стоп ДО того как async-begin реально завёл запись — прерываем старт.
         if starting && !recorder.isRecording {
-            abortStart = true; VoiceGate.set(false)
+            abortStart = true; VoiceGate.set(false); dropPendingHistoryOnly()
             kbLog("voice: end во время старта — прерываю запуск (запись ещё не пошла)")
             return
         }
-        guard recorder.isRecording else { VoiceGate.set(false); return }
+        guard recorder.isRecording else { VoiceGate.set(false); dropPendingHistoryOnly(); return }
         if streamingActive { streamEnd(); return }   // потоковый путь: финализируем стрим
         let samples = recorder.stop()
         VoiceGate.set(false)      // ЗАПИСЬ окончена → можно сразу начинать НОВУЮ (транскрипция идёт в фоне)
         playCue(stopSound)    // нисходящее «тук-тук» — запись остановлена (до транскрипции)
         let rms = samples.isEmpty ? 0 : (samples.map { $0 * $0 }.reduce(0, +) / Float(samples.count)).squareRoot()
         kbLog("voice: \(samples.count) сэмплов, \(String(format: "%.1f", recorder.duration))с, RMS=\(String(format: "%.4f", rms))")
+        // ⚠️ ПОМЕТКА «ТОЛЬКО В ИСТОРИЮ» ОБЯЗАНА СНИМАТЬСЯ НА КАЖДОМ ВЫХОДЕ ОТСЮДА (баг-репорт,
+        // 03.08.2026, подтверждён логом трижды).
+        //
+        // Симптом: диктовка распознана, лежит в истории, копируется, но в поле не вставилась.
+        // Причина: отмена по Escape метит СЛЕДУЮЩЕЕ поколение (`transcribeGen + 1`) в расчёте, что
+        // его заберёт текущая запись. Но если запись до расшифровки не доходит — а после случайного
+        // Escape она как раз почти всегда тихая, потому что человек уже молчит — поколение никто не
+        // забирает, и метка висит. Её подбирает следующая, ни в чём не повинная диктовка, и молча
+        // уезжает в историю вместо поля. В логе это выглядело так:
+        //   16:51:40  отмена (Escape)
+        //   16:51:40  тишина — пропуск            ← поколение не создано, метка осталась
+        //   16:52:00  отменённая диктовка сохранена, 45 симв.   ← съело ЧУЖУЮ диктовку
+        // Разрыв доходил до двух минут, поэтому связь никак не читалась.
+        //
+        // Escape тут не виноват: у автора хоткей диктовки ⌥`, а тильда прямо под Escape, задеть её
+        // проще простого. Цена случайного нажатия должна быть нулевой, а не «съем следующую».
+        //
+        // ⚠️ Снимаем метку ТОЛЬКО в ветках раннего выхода, а НЕ здесь, до проверок. Отмена по
+        // Escape зовёт `end()` сразу после того, как поставила метку, и снятие в начале функции
+        // убило бы саму функцию «Отменённую всё равно сохранять»: текст поехал бы в поле, чего
+        // человек как раз и не просил.
+
         // Слишком короткое нажатие (< 0.3 c) — просто отмена, без шума.
-        guard recorder.duration >= 0.3 else { kbLog("voice: слишком коротко (\(String(format: "%.2f", recorder.duration))с) — отмена"); refreshIndicator(); return }
+        guard recorder.duration >= 0.3 else { dropPendingHistoryOnly(); kbLog("voice: слишком коротко (\(String(format: "%.2f", recorder.duration))с) — отмена"); refreshIndicator(); return }
         // Тишина (нет сигнала) — не зовём whisper (иначе галлюцинации «Продолжение следует»).
         guard rms > 0.001 else {
+            dropPendingHistoryOnly()
             kbLog("voice: тишина (RMS \(String(format: "%.4f", rms))) — пропуск (микрофон молчал — мог быть занят другим приложением)")
             refreshIndicator(); playCue(failSound)
             return
@@ -287,8 +321,12 @@ final class VoiceController {
             Task { [weak self] in
                 guard let self else { return }
                 let ok = await ParakeetEngine.shared.loadIfNeeded()
-                let text = ok ? await ParakeetEngine.shared.transcribe(samples: samples) : ""
-                kbLog("voice: parakeet(готов=\(ok)) → \(text.count) симв.")
+                // Язык передаём и в parakeet (03.08.2026). Раньше не передавали вовсе, и выбор
+                // языка в настройках для этого движка не делал НИЧЕГО. Он и сейчас не выбирает
+                // язык (модель этого не умеет), но включает фильтр по письменности — см. подробный
+                // комментарий в ParakeetEngine.transcribe.
+                let text = ok ? await ParakeetEngine.shared.transcribe(samples: samples, language: lang) : ""
+                kbLog("voice: parakeet(готов=\(ok), язык=\(lang)) → \(text.count) симв.")
                 await MainActor.run {
                     guard self.endTranscription(gen) else { return }   // сторож уже бросил — поздний результат в топку
                     self.deliver(text, historyOnly: self.historyOnlyGens.remove(gen) != nil)

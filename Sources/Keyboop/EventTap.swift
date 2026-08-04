@@ -398,6 +398,22 @@ final class EventTap {
             if HotkeyRecording.active { return Unmanaged.passUnretained(event) }
             // Escape во время диктовки — отмена (если включено). Глотаем Esc, чтобы он не
             // улетел в активное приложение.
+            // ⚠️ ESCAPE С ЗАЖАТЫМ МОДИФИКАТОРОМ — НЕ ОТМЕНА (решение автора, 03.08.2026).
+            //
+            // Голый Escape во время диктовки это осознанное «не надо». А вот ⌥Escape почти всегда
+            // ПРОМАХ: на маковской клавиатуре тильда стоит прямо под Escape, и у кого хоткей
+            // диктовки ⌥` (наш дефолт для многих), тот регулярно задевает соседа. У автора так
+            // случалось несколько раз за день, и каждый раз это стоило ему готовой диктовки.
+            //
+            // Отмена по промаху хуже, чем неотменённая диктовка: во втором случае человек просто
+            // жмёт Escape ещё раз, а в первом теряет уже произнесённый текст.
+            // Проверяем ЛЮБОЙ из ⌘/⌃/⌥, а не только ⌥: своя комбинация может висеть на любом из них,
+            // и логика «Escape в аккорде это не отмена» от конкретного модификатора не зависит.
+            let escWithMods = !event.flags.intersection([.maskCommand, .maskControl, .maskAlternate]).isEmpty
+            if keyCode == 53, escWithMods, VoiceController.shared.isRecording {
+                kbLog("voice: Escape с модификатором — считаю промахом мимо хоткея, диктовку НЕ отменяю")
+                return Unmanaged.passUnretained(event)   // отдаём системе: вдруг это чей-то аккорд
+            }
             if keyCode == 53, s.escCancelsDictation, VoiceController.shared.isRecording {
                 onMain { VoiceController.shared.cancel() }
                 if s.voiceHoldMode == "toggle" { voiceKeyArmed = false } else { voiceActive = false }

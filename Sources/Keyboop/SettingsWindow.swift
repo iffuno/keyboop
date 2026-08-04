@@ -203,6 +203,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     /// Обновить поля (напр. список «Выученные» после обучения на отмене), если окно открыто.
     func reload() { if window?.isVisible == true { detail.reload() } }
 
+    /// Dev: открыть «Что нового» (см. DetailVC.openWhatsNewForDev).
+    func openWhatsNewForDev() { detail.openWhatsNewForDev() }
+
     /// Dev: живая диагностика ТЕКУЩЕГО раздела (без re-select/forced-layout) — после settle окна.
     func liveDiag(to path: String) {
         let wh = window?.frame.height ?? -1
@@ -869,7 +872,11 @@ final class DetailVC: NSViewController {
         label.textColor = .labelColor
         label.translatesAutoresizingMaskIntoConstraints = false
         let chip = NSView(); chip.wantsLayer = true
-        chip.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.08).cgColor
+        // Цвет разрешаем в НАШЕМ оформлении: `.cgColor` иначе снимет его под текущее и в светлой
+        // теме чип получится из тёмной (см. разбор в ThemedBackgroundView.apply).
+        chip.effectiveAppearance.performAsCurrentDrawingAppearance {
+            chip.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.08).cgColor
+        }
         chip.layer?.cornerRadius = 6
         chip.translatesAutoresizingMaskIntoConstraints = false
         chip.addSubview(label)
@@ -1371,8 +1378,34 @@ final class DetailVC: NSViewController {
             ]),
             group(2),
             hint(L10n.t("upd.foot"))
-        ])
+        ] + updateProblemViews())
     }
+
+    /// Строка о том, что обновления не проверяются. Пусто, когда всё в порядке.
+    ///
+    /// ⚠️ ЗАВЕДЕНО ПО ЖАЛОБЕ (03.08.2026): «скачал с сайта, пару дней обновлялось, потом перестало,
+    /// нажимаю „Проверить обновления“ и ничего не происходит». Раньше срыв проверки уходил ТОЛЬКО
+    /// в лог, и человек оставался с молчанием. Причин у срыва много и все снаружи: нет сети, VPN
+    /// режет домен, корпоративный фильтр, антивирус, запуск не из «Программ» (Sparkle отвечает на
+    /// это кодом 1005, ровно это видно в отчёте с Intel-мака). Ни одну мы не исправим, но человек
+    /// обязан узнать, что обновления не работают: иначе он месяцами сидит на старой версии и пишет
+    /// нам про давно починенное. Половина нашей почты именно такая.
+    ///
+    /// Порог намеренно НЕ нулевой: одиночный сбой это шум (Wi-Fi моргнул), неделя тишины это поломка.
+    private func updateProblemViews() -> [NSView] {
+        guard UpdaterController.updatesLookBroken else { return [] }
+        let why = UpdaterController.lastFailure?.text ?? L10n.t("upd.problemUnknown")
+        let report = NSButton(title: L10n.t("upd.problemReport"), target: self,
+                              action: #selector(reportUpdateProblem))
+        report.bezelStyle = .rounded
+        return [group(6),
+                card([controlRow(L10n.t("upd.problem"), report, subtitle: why)])]
+    }
+
+    /// Открыть форму отзыва. Текст человек пишет сам, а улики приедут с диагностикой: в ней есть и
+    /// лог апдейтера с кодом ошибки, и место запуска приложения. Предзаполнение сознательно не
+    /// делаем: ради него пришлось бы менять FeedbackWindow, а пользы против диагностики немного.
+    @objc private func reportUpdateProblem() { FeedbackWindowController.shared.show() }
 
     /// Все ползунки громкости в одном месте: ключ запоминания → чтение/запись значения.
     private var volumeSliders: [(key: String, get: () -> Double, set: (Double) -> Void)] {
@@ -1556,6 +1589,11 @@ final class DetailVC: NSViewController {
     }
 
     private var whatsNewWindow: NSWindow?
+    /// Dev: открыть «Что нового» без клика (KEYBOOP_WHATSNEW=1). Список изменений — главное, что
+    /// человек читает в релизе, а посмотреть на него глазами до выпуска было нечем: у этого окна
+    /// единственный вход, кнопка в «О программе». Правило проекта требует смотреть на пиксели ДО
+    /// релиза, значит вход нужен и без рук (04.08.2026).
+    func openWhatsNewForDev() { showWhatsNew() }
     @objc private func showWhatsNew() {
         if whatsNewWindow == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 500),
@@ -2837,7 +2875,24 @@ final class ThemedBackgroundView: NSView {
         let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         darkView.isHidden = !dark
         lightView.isHidden = dark
-        lightView.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+        // ⚠️ `.cgColor` СНИМАЕТ ЦВЕТ ПОД ТЕКУЩЕЕ ОФОРМЛЕНИЕ, А НЕ ПОД НАШЕ (баг, 03.08.2026).
+        //
+        // Здесь была причина, по которой светлая тема «не работала»: динамический
+        // `textBackgroundColor` разрешался в тот момент, когда текущим оформлением рисования была
+        // ТЁМНАЯ тема, и в слой ложился почти чёрный цвет. Светлая подложка при этом честно
+        // показывалась — просто покрашенная в чёрное. Отсюда и картина из отзывов: боковое меню
+        // светлое (оно на системном материале и не зависит от нас), правая часть тёмная, а подписи
+        // на динамических цветах уже светлой темы, то есть тёмные по тёмному.
+        //
+        // Проявлялось только в режиме «как в системе», потому что при ЯВНО выбранной теме окно
+        // получает оформление раньше и текущее совпадает с нашим. Из-за этого я дважды объявлял
+        // тему починенной, проверив только явный выбор.
+        //
+        // Лечится не цветом, а КОНТЕКСТОМ: разрешаем цвет внутри нашего оформления. Тот же приём
+        // уже используется ниже в файле для чипов.
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            lightView.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
+        }
     }
 }
 

@@ -287,17 +287,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Конфликт с Punto Switcher — проверяем чуть позже старта (и не во время онбординга).
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in self?.checkPuntoConflictOnce() }
 
+        // Dev-хук: одеть ПРИЛОЖЕНИЕ в светлое, не трогая окна (KEYBOOP_APP_AQUA=1).
+        //
+        // Нужен, чтобы воспроизвести режим «как в системе» на светлой теме, не переключая тему у
+        // человека на его машине. В этом режиме окно намеренно НЕ задаёт себе appearance и наследует
+        // его сверху — а именно этот путь и ломается по отзывам, тогда как явно выбранная светлая
+        // тема работает. Ставя оформление приложению, мы воспроизводим ровно наследование.
+        if ProcessInfo.processInfo.environment["KEYBOOP_APP_AQUA"] == "1" {
+            NSApp.appearance = NSAppearance(named: .aqua)
+            kbLog("dev: приложению выдано светлое оформление (проверка режима «как в системе»)")
+        }
+        // Тот же хук со значением 2 — смена оформления НА ЛЕТУ, через 3 с после старта. Нужен, чтобы
+        // проверить второй сценарий из отзывов: человек переключает тему макОС при ОТКРЫТОМ окне.
+        // Окну по-прежнему ничего не задано, меняется оформление приложения — значит идёт ровно тот же
+        // путь уведомления (viewDidChangeEffectiveAppearance), что и при системном переключении.
+        if ProcessInfo.processInfo.environment["KEYBOOP_APP_AQUA"] == "2" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                let dark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                NSApp.appearance = NSAppearance(named: dark ? .aqua : .darkAqua)
+                kbLog("dev: оформление приложения переключено на лету → \(dark ? "светлое" : "тёмное")")
+            }
+        }
+
         // Dev-хук: открыть окно настроек сразу (для скриншотов/отладки дизайна).
+        //
+        // ⚠️ ТОЛЬКО ОТКРЫТЬ. Раньше этот хук следом гнал `dump()` по всем девяти разделам, а `dump()`
+        // первой строкой прибивает окно к `.aqua` (канон снимков, см. SettingsWindow). Получалось, что
+        // инструмент, которым проверяют внешний вид живого окна, сам его перекрашивал: в тёмной системе
+        // окно выходило светлым, и это выглядело как баг темы. Я трижды «чинил» из-за этого тему, хотя
+        // ломалась проверка (04.08.2026). Прогон разделов в файлы — это KEYBOOP_DUMP, он ниже и он для
+        // этого и заведён; здесь он был лишним.
         if ProcessInfo.processInfo.environment["KEYBOOP_OPEN_SETTINGS"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.openSettings()
+            }
+        }
+        // Dev-хук: открыть «Что нового» (KEYBOOP_WHATSNEW=1) — посмотреть список изменений глазами
+        // до релиза, не кликая по «О программе».
+        if ProcessInfo.processInfo.environment["KEYBOOP_WHATSNEW"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
                 guard let self = self else { return }
                 self.openSettings()
-                let names = ["switching", "exceptions", "snippets", "translate", "voice", "general", "updates", "privacy", "about"]
-                for (i, name) in names.enumerated() {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4 * Double(i + 1)) {
-                        self.settingsWC?.dump(section: i, to: "/tmp/kb_\(name).pdf")
-                    }
-                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.settingsWC?.openWhatsNewForDev() }
             }
         }
         // Dev-хук: показать плашку об обновлении с ЖИВЫМИ кнопками, не дожидаясь настоящего апдейта.

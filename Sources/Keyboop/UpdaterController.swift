@@ -208,11 +208,45 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
 
     /// Любой обрыв цикла проверки. `noUpdateError` — это не обрыв, а нормальный ответ «нечего ставить»,
     /// его уже написал `updaterDidNotFindUpdate`, второй раз не дублируем.
+    /// Последний сбой проверки обновлений: текст для человека и когда случился. `nil` — всё в порядке.
+    ///
+    /// ⚠️ ЗАВЕДЕНО, ПОТОМУ ЧТО СБОЙ БЫЛ МОЛЧАЛИВЫМ (03.08.2026). Раньше эта функция только писала в
+    /// лог, и человек не узнавал ничего: жмёт «Проверить обновления», а в ответ тишина. Ровно так
+    /// выглядела жалоба («скачал с сайта, пару дней обновлялось, потом перестало, нажимаю проверить
+    /// и ничего не происходит») и ровно это видно в отчёте с Intel-мака, где в логе висело
+    /// «код 1005» — Sparkle отказывался обновлять приложение, запущенное не из «Программ».
+    ///
+    /// Причин, по которым проверка срывается, много и все они снаружи: нет сети, VPN режет домен,
+    /// корпоративный фильтр, антивирус, запуск не из «Программ». Мы ни одну из них не исправим,
+    /// но человек ОБЯЗАН узнать, что обновления не работают, иначе он месяцами сидит на старой
+    /// версии и жалуется на давно починенное. Половина нашей почты именно такая.
+    static private(set) var lastFailure: (text: String, at: Date)?
+
+    /// Когда в последний раз проверка ЗАВЕРШИЛАСЬ УСПЕШНО (неважно, нашла обновление или нет).
+    /// По ней считаем «давно не проверялось»: одиночный сбой это шум, две недели тишины это поломка.
+    static var lastSuccessfulCheck: Date? {
+        UpdaterController.shared.controller?.updater.lastUpdateCheckDate
+    }
+
+    /// Сколько дней тишины считаем поводом сказать вслух. Неделя: при интервале в два часа это
+    /// восемьдесят с лишним неудачных попыток подряд, случайностью такое уже не объяснить.
+    static let staleAfterDays = 7
+
+    /// Проверки не проходят достаточно долго, чтобы об этом сказать.
+    static var updatesLookBroken: Bool {
+        // Сам выключил проверки — не наше дело напоминать.
+        guard UpdaterController.shared.automaticChecks else { return false }
+        guard let last = lastSuccessfulCheck else { return lastFailure != nil }
+        return Date().timeIntervalSince(last) > Double(staleAfterDays) * 86400
+    }
+
     @objc(updater:didAbortWithError:)
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
         let e = error as NSError
         guard e.code != Int(SUError.noUpdateError.rawValue) else { return }
         kbLog("updater: проверка сорвалась — \(e.localizedDescription) (код \(e.code))")
+        Self.lastFailure = (e.localizedDescription, Date())
+        DispatchQueue.main.async { NotificationCenter.default.post(name: .updaterStatusChanged, object: nil) }
     }
 
     /// Sparkle скачал апдейт и готов ставить. Перехватываем: либо тихо в простое (если юзер выбрал

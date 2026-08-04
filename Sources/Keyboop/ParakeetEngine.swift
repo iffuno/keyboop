@@ -41,11 +41,31 @@ final class ParakeetEngine {
     }
 
     /// Транскрибировать 16кГц mono Float32 (наш буфер от AVAudioEngine — как у whisper).
-    func transcribe(samples: [Float]) async -> String {
+    /// `language` — НЕ выбор языка модели, а ФИЛЬТР ПО ПИСЬМЕННОСТИ (исследование 03.08.2026,
+    /// подробности ниже).
+    ///
+    /// Задать язык самой модели нельзя в принципе: сотрудник NVIDIA прямо ответил, что
+    /// parakeet-tdt-0.6b-v3 не принимает язык на вход и не отдаёт определённый на выход, а тикет с
+    /// такой просьбой закрыт как «не будет». Тот же запрос уже подавали и в FluidAudio, закрыт как
+    /// невыполнимый. Поэтому ждать здесь настоящего выбора языка бессмысленно.
+    ///
+    /// Что параметр делает на самом деле (doc в AsrManager.swift:475): при заданном языке кандидаты
+    /// top-K, не совпадающие по ПИСЬМЕННОСТИ, отбрасываются в пользу подходящих. Это лечит ровно
+    /// нашу жалобу #67: у модели один словарь на 25 языков, и, решив что речь русская, она пишет
+    /// кириллицей даже английские слова («Дидю коммит энд пуш» вместо «Did you commit and push»).
+    /// С фильтром английская речь кириллицей уже не запишется.
+    ///
+    /// ⚠️ `nil` здесь означает НЕ автоопределение, а ВЫКЛЮЧЕННЫЙ фильтр (TdtDecoderV3: needsTopK =
+    /// language != nil). Поэтому для «Авто» мы честно передаём nil: сказать модели «определи сам»
+    /// нечем, а фильтровать письменность, не зная языка, не по чему.
+    func transcribe(samples: [Float], language: String) async -> String {
         guard let mgr = manager else { return "" }
         do {
             var state = TdtDecoderState.make(decoderLayers: decoderLayers)
-            let result = try await mgr.transcribe(samples, decoderState: &state)
+            // Коды у нас те же ISO, что у движка («ru», «en»), поэтому маппинг прямой.
+            // «auto» и всё незнакомое → nil, то есть фильтр не включаем.
+            let lang = Language(rawValue: language)
+            let result = try await mgr.transcribe(samples, decoderState: &state, language: lang)
             return result.text
         } catch {
             kbLog("parakeet: ошибка транскрипции: \(error)")
@@ -181,7 +201,9 @@ final class ParakeetEngine {
     private(set) var ready = false
     static var modelInstalled: Bool { false }
     func loadIfNeeded() async -> Bool { false }
-    func transcribe(samples: [Float]) async -> String { "" }
+    // Сигнатура обязана совпадать с arm64-версией: universal-сборка компилирует ОБЕ ветки,
+    // и расхождение уронит именно x86-проход, то есть поддержку Intel.
+    func transcribe(samples: [Float], language: String) async -> String { "" }
     func download(progress: @escaping (Double) -> Void) async -> Bool {
         kbLog("parakeet: недоступен на Intel (нет Neural Engine)"); return false
     }

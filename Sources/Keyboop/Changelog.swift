@@ -51,6 +51,24 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        // 0.3.12 — БЕТА. Пять правок, четыре из них по отзывам, и одна старая: светлая тема наконец
+        // побеждена по-настоящему (в 0.3.10 мы дали выбор оформления, но режим «как в системе»
+        // оставался сломанным: причин было две, и вторая сидела в самом инструменте проверки).
+        Release(version: "0.3.12",
+            ru: [
+                "Светлая тема больше не разъезжается. Если оформление стоит «как в системе», окно теперь целиком светлое в светлой теме и целиком тёмное в тёмной, и переключение на лету не оставляет половин. Раньше правая часть оставалась тёмной, а подписи на ней почти не читались.",
+                "Выбранный язык диктовки наконец работает. Он передавался не до конца, и Parakeet, решив что речь русская, писал кириллицей даже английские слова: «Did you commit and push» превращалось в «Дидю коммит энд пуш». Выбор языка такую подмену отсекает.",
+                "Приложение скажет, если обновления перестали приходить. Проверка могла молча не доходить до сервера месяцами: мешают сеть, VPN, корпоративный фильтр или антивирус. Теперь в «Обновлениях» появляется честная строка и кнопка отправить отчёт.",
+                "Escape с модификатором больше не отменяет диктовку. Тильда и Escape соседи, и промах мимо ⌥` гасил запись без объяснений. Обычный Escape отменяет как отменял.",
+                "Отменённая диктовка больше не портит следующую. Пометка «только в историю» оставалась висеть, если запись не дошла до расшифровки, и доставалась уже следующей записи: человек диктовал в поле, а текст молча уезжал в историю.",
+            ],
+            en: [
+                "The light theme no longer splits the window. With appearance set to “system”, the window is now light all the way through under a light theme and dark under a dark one, and switching on the fly leaves no halves. The right-hand side used to stay dark with labels on it barely readable.",
+                "The dictation language you picked finally works. It was not passed all the way through, so Parakeet, having decided the speech was Russian, wrote even English words in Cyrillic: “Did you commit and push” came out as a phonetic transliteration. Choosing a language cuts that off.",
+                "The app now says when updates stopped arriving. A check could silently fail to reach the server for months, blocked by the network, a VPN, a corporate filter or antivirus. Updates settings now show an honest line and a button to send a report.",
+                "Escape with a modifier no longer cancels dictation. Tilde and Escape are neighbours, and missing ⌥` killed the recording with no explanation. Plain Escape cancels exactly as before.",
+                "A cancelled dictation no longer spoils the next one. The “history only” mark stayed behind when a recording never reached transcription, and the next recording inherited it: you dictated into a field and the text quietly went to history instead.",
+            ]),
         // 0.3.8 — БЕТА. Одна функция, по конкретной просьбе конкретного человека.
         // 0.3.11 — БЕТА. Один сюжет целиком: приложение просило не тот доступ и вело не туда.
         // Пришёл с Intel-мака (репорт #71), но касается всех: Мониторинг ввода это отдельная
