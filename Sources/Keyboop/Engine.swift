@@ -202,6 +202,12 @@ final class Engine: EventTapHandler {
                 self?.pendingSoftReset = true
                 self?.refreshFrontmostAppCache()   // inline-путь читает кеш (в колбэке NSWorkspace нельзя)
             }
+            // Открытие и закрытие Spotlight системой не объявляется, поэтому наблюдатель сообщает
+            // об этом сам — и дальше всё идёт тем же путём, что и обычная смена программы.
+            SpotlightWatch.onChange = { [weak self] in
+                self?.pendingSoftReset = true
+                self?.refreshFrontmostAppCache()
+            }
             // Поллер Secure Input. Детект на keyDown НЕ работает для залипшего держателя: пока
             // Secure Input включён, macOS СИСТЕМНО прячет клавиатурные события от всех тапов —
             // проба 24.07: tap видит 0 нажатий даже при фоновом держателе (та же причина, по
@@ -583,8 +589,7 @@ final class Engine: EventTapHandler {
     private var frontAppMode = ""
     private var frontAppIsDev = false
     func refreshFrontmostAppCache() {
-        let app = NSWorkspace.shared.frontmostApplication
-        let bid = app?.bundleIdentifier ?? ""
+        let bid = Engine.frontmostBundleID()
         // ⚠️ ЧЕРЕЗ ОБЩИЙ ИСТОЧНИК, не напрямую в ExceptionStore. Здесь живёт кэш для ГОРЯЧЕГО пути
         // (мид-слово, pause-fix), и когда 30.07 мы исключили собственные окна в frontmostAppMode,
         // эта строка тихо осталась в обход — то есть правка закрыла границу слова, но не закрыла
@@ -626,7 +631,12 @@ final class Engine: EventTapHandler {
     private func applyForcedLayout(for bid: String) {
         guard !bid.isEmpty else { return }
         guard bid != forcedLayoutLastBid else { return }   // та же программа — уже применяли
-        forcedLayoutLastBid = bid
+        // ⚠️ Spotlight — НАКЛАДКА поверх программы, а не переход в другую. Его собственную жёсткую
+        // раскладку применяем, но память НЕ сдвигаем: иначе при закрытии панели программа снизу
+        // выглядела бы «новой», и мы навязали бы ей раскладку второй раз — ровно поверх той, на
+        // которую человек, возможно, только что переключился сам. Это тот же запрет спорить с
+        // хозяином, что и абзацем выше, просто на другом пути.
+        if bid != "com.apple.Spotlight" { forcedLayoutLastBid = bid }
         let want = ExceptionStore.shared.appLayout(bid)
         guard want == "en" || want == "ru" else { return }
         let toCyrillic = (want == "ru")
@@ -1638,7 +1648,7 @@ final class Engine: EventTapHandler {
         "com.mitchellh.ghostty", "co.zeit.hyper", "org.tabby", "com.github.wez.wezterm"
     ]
     static func frontmostIsDevApp() -> Bool {
-        guard let bid = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return false }
+        let bid = frontmostBundleID()
         return devApps.contains(bid) || bid.hasPrefix("com.jetbrains")
     }
 
@@ -1662,16 +1672,17 @@ final class Engine: EventTapHandler {
         // новая гонка ровно там, где ошибиться дороже всего. Одной строки достаточно, и она
         // ВИДНА и редактируема в Настройках → Исключения (seedDefaultExceptions сканирует и
         // /System/Applications), а не спрятана в хардкоде.
-        "com.apple.systempreferences",
-        // Spotlight (31.07). Причина не «на всякий случай», а измеренный дефект: его инлайн-
-        // автодополнение вставляет хвост как ВЫДЕЛЕННЫЙ текст, и наш первый Backspace гасит
-        // выделение вместо символа — off-by-one, из-за которого «ghjdthrf» превращается в «gпров»
-        // (диагноз известен с середины июня и не был починен ни разу).
-        // Компенсировать лишним Backspace'ом НЕЛЬЗЯ: когда автодополнения
-        // нет, он съест настоящий символ, то есть мы поменяем один класс порчи на другой. Читать
-        // выделение через AX тоже нельзя — это IPC на горячем пути, ровно тот класс, который
-        // 31.07 заморозил ввод во всей системе. Значит правильный ответ здесь — не трогать текст.
-        "com.apple.Spotlight"
+        "com.apple.systempreferences"
+        // ⚠️ ЗДЕСЬ БЫЛ Spotlight, и его убрали осознанно (05.08.2026) — не возвращать не подумав.
+        //
+        // Внесли его 31.07 из-за измеренного дефекта: подсказка Spotlight съедала наш первый
+        // Backspace, и «ghjdthrf» превращалось в «gпров». Запрет был лечением симптома, и цена у него
+        // оказалась высокой: вслепую печатают как раз в поиске, а мы там не конвертировали вообще.
+        // Причину вылечили в `TextReplacer.killSpotlightSuggestion`, поэтому запрет снят, а у тех, у
+        // кого запись уже засеяна, она снимается разово (`ExceptionStore`, didUnseedExcSpotlight).
+        //
+        // Заодно: до 05.08 эта строка всё равно не работала — режим ищется по фронтальной программе,
+        // а Spotlight ею не становится (`SpotlightWatch`). То есть запрет год пролежал мёртвым.
     ]
     static let defaultSoftApps: Set<String> = [
         "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.apple.dt.Xcode",
@@ -1702,8 +1713,22 @@ final class Engine: EventTapHandler {
     /// запуске (seedDefaultExceptions). Так дефолты ВИДНЫ и редактируемы; удалил из списка → авто
     /// включается (builtinAppMode тут НЕ подмешиваем, иначе удаление не сработало бы).
     static func frontmostAppMode() -> String {
-        guard let bid = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else { return "" }
-        return appMode(for: bid)
+        return appMode(for: frontmostBundleID())
+    }
+
+    /// ЕДИНЫЙ ответ на вопрос «в какой программе человек сейчас печатает». Все три потребителя
+    /// (`frontmostAppMode`, `frontmostIsDevApp`, кэш горячего пути) обязаны спрашивать здесь.
+    ///
+    /// Разница с `NSWorkspace.frontmostApplication` ровно одна: пока открыта панель Spotlight,
+    /// печатают В НЕЁ, а фронтальной программой система продолжает считать предыдущую. Из-за этого
+    /// к вводу в Spotlight применялись правила той программы, из которой его вызвали, а его
+    /// собственное исключение не срабатывало никогда (подробности и замеры — `SpotlightWatch`).
+    ///
+    /// ⚠️ Заводя сюда следующую панель (Alfred, Raycast, палитры команд), проверять её тем же
+    /// способом: одни меняют фронтальную программу, другие нет, и на глаз это не отличить.
+    static func frontmostBundleID() -> String {
+        if SpotlightWatch.isOpen { return "com.apple.Spotlight" }
+        return NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
     }
 
     /// Режим для конкретного бандла. ЕДИНЫЙ источник для обоих потребителей: синхронного

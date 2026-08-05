@@ -68,6 +68,37 @@ enum TextReplacer {
 
 
     private static let backspaceKey: CGKeyCode = 51
+
+    /// Delete-ВПЕРЁД (kVK_ForwardDelete). Нужен ровно в одном месте — см. `killSpotlightSuggestion`.
+    private static let forwardDeleteKey: CGKeyCode = 117
+
+    /// ПОДСКАЗКА SPOTLIGHT СЪЕДАЕТ ПЕРВЫЙ BACKSPACE (05.08.2026).
+    ///
+    /// Spotlight дополняет запрос ВЫДЕЛЕННЫМ хвостом, и первый наш Backspace гасит это выделение
+    /// вместо символа — off-by-one, из-за которого «ghjdthrf» превращалось в «gпров». Диагноз был
+    /// известен с середины июня, и лечили его запретом: 31.07 Spotlight внесли в «не конвертировать».
+    /// Запрет оказался дорогим (вслепую печатают как раз в поиске), поэтому лечим причину.
+    ///
+    /// Лишним Backspace'ом компенсировать НЕЛЬЗЯ: когда подсказки нет, он съест настоящий символ, то
+    /// есть мы поменяем один класс порчи на другой. Читать выделение через AX тоже нельзя — это IPC
+    /// на горячем пути, ровно тот класс, который 31.07 заморозил ввод во всей системе.
+    ///
+    /// Delete-вперёд решает обе половины одним движением, потому что он РАЗЛИЧАЕТ эти случаи сам:
+    /// есть выделение — удаляет выделение; выделения нет, а каретка в конце строки — удалять справа
+    /// нечего, и он не делает ничего. То есть после него число символов слева от каретки одинаково в
+    /// обоих случаях, и наш счёт бэкспейсов снова верен.
+    ///
+    /// Проверено снимками окна 05.08: «ощгк» + подсказка → Delete-вперёд → «ощгк» без подсказки,
+    /// текст цел, каретка в конце → Backspace → «ощг», ровно один символ.
+    ///
+    /// ⚠️ Условие применимости — каретка в конце ввода. Для нашего пути это так по построению
+    /// (конвертируем сразу после набора), но если когда-нибудь появится замена не у конца строки,
+    /// сюда придётся вернуться.
+    private static func killSpotlightSuggestion(source src: CGEventSource?) {
+        guard SpotlightWatch.isOpen else { return }
+        postKey(forwardDeleteKey, source: src)
+        usleep(1800)
+    }
     private static let returnKey: CGKeyCode = 36
 
     /// ВСЯ синтетика (Backspace + печать Unicode) с usleep-паузами идёт на ВЫДЕЛЕННОЙ serial-очереди,
@@ -181,6 +212,7 @@ enum TextReplacer {
                 // Пауза перед ПЕРВЫМ Backspace — иначе он иногда теряется, прилетая слишком рано
                 // после клавиши-триггера, и первый символ остаётся в старой раскладке («gривет»).
                 usleep(settle)
+                killSpotlightSuggestion(source: src)
                 for _ in 0..<n {
                     postKey(backspaceKey, source: src)
                     usleep(1800)
@@ -241,7 +273,17 @@ enum TextReplacer {
     static func replaceInline(deleteCount n: Int, with text: String, post: (CGEvent) -> Void) -> Bool {
         guard n >= 0, let src = inlineSource else { return false }
         var batch: [CGEvent] = []
-        batch.reserveCapacity(n * 2 + 4)
+        batch.reserveCapacity(n * 2 + 6)
+        // Та же подсказка Spotlight, что и в асинхронном пути (см. killSpotlightSuggestion) — здесь
+        // Delete-вперёд просто становится первой парой событий пакета.
+        if SpotlightWatch.isOpen, n > 0 {
+            for down in [true, false] {
+                guard let e = CGEvent(keyboardEventSource: src, virtualKey: forwardDeleteKey, keyDown: down) else { return false }
+                e.flags = []
+                e.setIntegerValueField(.eventSourceUserData, value: kbSyntheticMarker)
+                batch.append(e)
+            }
+        }
         for _ in 0..<n {
             for down in [true, false] {
                 guard let e = CGEvent(keyboardEventSource: src, virtualKey: backspaceKey, keyDown: down) else { return false }

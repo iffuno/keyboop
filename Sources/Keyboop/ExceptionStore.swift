@@ -75,6 +75,20 @@ final class ExceptionStore {
             d.set(true, forKey: "didSeedExcVkLatin")
             d.set(Array(ignored), forKey: ignoredKey)
         }
+        // РАЗОВАЯ ОТМЕНА ПОСЕВА: Spotlight больше не в «не конвертировать» (05.08.2026).
+        //
+        // 31.07 мы засеяли ему режим «выкл» из-за подсказки, съедавшей первый Backspace. Причина
+        // ушла (`TextReplacer.killSpotlightSuggestion`), а запись у людей осталась бы навсегда: посев
+        // добавляет её один раз и сам никогда не убирает. Без этого шага починка не дошла бы ни до
+        // кого, кроме новых пользователей, и «в Spotlight не конвертирует» осталось бы жить.
+        //
+        // Снимаем ТОЛЬКО ровно тот режим, который сами и поставили: если человек с тех пор выбрал
+        // Spotlight'у что-то своё (например «мягкий»), его выбор трогать нельзя.
+        if !d.bool(forKey: "didUnseedExcSpotlight") {
+            if appModes["com.apple.Spotlight"] == "off" { appModes.removeValue(forKey: "com.apple.Spotlight") }
+            d.set(true, forKey: "didUnseedExcSpotlight")
+            d.set(appModes, forKey: appModesKey)
+        }
     }
 
     /// Удалить одно слово из исключений (крестик на чипе).

@@ -1073,6 +1073,14 @@ final class DetailVC: NSViewController {
             .sorted { ($0.localizedName ?? "") < ($1.localizedName ?? "") }
         runningAppsList = apps.compactMap { $0.bundleIdentifier }
         for a in apps { pop.addItem(withTitle: a.localizedName ?? (a.bundleIdentifier ?? "?")) }
+        // SPOTLIGHT — ВРУЧНУЮ (05.08.2026). Он агент, а не обычная программа, и фильтр по
+        // `.regular` выше его не пропускает. Раньше строка про него появлялась сама, потому что мы
+        // засевали ему режим «выкл»; посев отменён, и без этой добавки Spotlight стал бы недоступен
+        // для настройки вовсе — а его как раз просят настраивать (отзыв #82: привязать язык).
+        if !runningAppsList.contains("com.apple.Spotlight") {
+            runningAppsList.append("com.apple.Spotlight")
+            pop.addItem(withTitle: "Spotlight")
+        }
         pop.target = self; pop.action = #selector(addRunningApp(_:))
         return pop
     }

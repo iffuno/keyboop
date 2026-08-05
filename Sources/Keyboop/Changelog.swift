@@ -51,6 +51,40 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        // 0.3.14 — БЕТА. Четыре правки, и ни одна не была той задачей, за которую садились: клик с
+        // модификатором вылез из проверки чужой просьбы, Spotlight из слияния дублей, а имя раскладки
+        // «U.S.» из трассировки совсем другой починки.
+        Release(version: "0.3.14",
+            ru: [
+                "Клик мышью с зажатым модификатором больше не переключает язык. Если на переключение назначен одиночный модификатор (правый ⌘, ⌥, ⌃, Caps Lock или 🌐), то ⌘-клик по ссылке или ⌥-клик читались как чистое нажатие. Раскладка менялась сама по себе несколько раз в день, и связать это с мышью было невозможно: мы слушали только клавиатуру.",
+                "В Spotlight больше не портится запрос. Его подсказка дополняет строку выделенным хвостом, и наш первый Backspace гасил выделение вместо буквы, из-за чего «ghjdthrf» превращалось в «gпров». Заодно к Spotlight наконец применяются его собственные настройки: по ⌘Space система не считает его активной программой, поэтому ни привязка языка, ни исключения для него не работали никогда.",
+                "Значок языка в строке меню перестал угадывать. Английская раскладка записана в системе как «U.S.», и мы разбирали это имя неправильно. Про русский индикатор отвечал честно, а про английский показывал последнее, что запомнил, и потому отставал от реальности.",
+                "Если система не применила переключение, приложение это заметит. Раньше команда считалась выполненной по факту отправки, и дальше мы верили себе, даже когда раскладка осталась прежней. Теперь результат сверяется, и одна поправка делается сама.",
+            ],
+            en: [
+                "Clicking the mouse with a modifier held no longer switches the language. When switching is bound to a single modifier (right ⌘, ⌥, ⌃, Caps Lock or 🌐), a ⌘-click on a link or an ⌥-click read as a clean tap. The layout changed by itself several times a day, and nobody could connect it to the mouse: we were listening to the keyboard only.",
+                "Spotlight queries no longer get mangled. Its suggestion completes the line with a selected tail, so our first Backspace killed the selection instead of a character and «ghjdthrf» became «gпров». Spotlight also finally obeys its own settings: on ⌘Space the system does not treat it as the frontmost app, so neither the forced layout nor the exceptions ever applied to it.",
+                "The language badge in the menu bar stopped guessing. The English layout is stored in the system as “U.S.”, and we parsed that name wrongly. The badge was honest about Russian and showed the last thing it remembered about English, so it lagged behind reality.",
+                "If the system does not apply a layout switch, the app notices. The command used to count as done the moment it was sent, and we kept trusting ourselves even when the layout had not changed. The result is now verified, and a single correction happens automatically.",
+            ],
+            announce: """
+                Второе обновление за сегодня. День вышел плотный: с утра немного поработал, днём был \
+                на съёмке, вечером сел за ошибки и даже в зал успел зайти.
+
+                Забавное про этот релиз: ни одна из четырёх правок не была той задачей, за которую я \
+                садился. Все четыре вылезли сбоку, пока разбирался с чем-то другим.
+                """,
+            announceEnd: """
+                Приедет тем, у кого включены бета-версии. Остальным как обкатается.
+
+                Самая полезная находка дня: если приложение переключило раскладку и не проверило \
+                результат, оно потом уверенно врёт. Теперь проверяет.
+
+                Берегите себя и не болейте. Я вот сегодня даже до зала дошёл, так что имею полное \
+                моральное право это советовать. Спасибо всем, кто пишет, и отдельно тем, кто \
+                заходит на keyboop.com/tips.
+                """),
+
         // 0.3.13 — БЕТА. Две правки первого класса (микрофон и буфер обмена) и разбор мелочей,
         // найденных аудитом умолчаний. Обе крупные нашлись не по жалобе на них, а сбоку: микрофон
         // через аудит, буфер через отзыв «вставляется шифром», где первая догадка была «это не мы».

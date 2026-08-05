@@ -120,9 +120,22 @@ final class LayoutManager {
         for entry in raw {
             let name = (entry["KeyboardLayout Name"] as? String) ?? (entry["Input Mode"] as? String) ?? ""
             guard !name.isEmpty else { continue }
-            // Для метода ввода (китайский/японский) в имени лежит идентификатор — берём хвост.
-            let key = nameKey(String(name.split(separator: ".").last ?? Substring(name)))
-            if let code = nameToLang[key] { return code }
+            // ⚠️ СНАЧАЛА ЦЕЛОЕ ИМЯ, и только потом хвост после точки (найдено трассировкой 05.08.2026).
+            //
+            // Хвост придуман для методов ввода, где в поле лежит идентификатор вида
+            // «com.apple.inputmethod.Kotoeri». Но резался он БЕЗУСЛОВНО, а имя американской раскладки
+            // это «U.S.» — с точками внутри. Хвост от неё равен «S», такого ключа в карте нет, и
+            // функция отдавала nil ровно для латиницы, честно отвечая только про русскую.
+            //
+            // Тихо это не проходило: `currentCodeLive()` при nil падает на `currentCode()`, то есть на
+            // сырое чтение TIS, которое в фоновом агенте не следует за внешними переключениями (замер
+            // 25.07, ради него весь этот путь и появился). Значит индикатор языка был достоверен в одну
+            // сторону и угадывал в другую. Тот же nil слепил и сверку переключения (`verifySelect`):
+            // для латиницы она не срабатывала вовсе.
+            if let code = nameToLang[nameKey(name)] { return code }
+            if name.contains("."),
+               let tail = name.split(separator: ".").last,
+               let code = nameToLang[nameKey(String(tail))] { return code }
         }
         return nil
     }
@@ -187,8 +200,56 @@ final class LayoutManager {
             // (50 ложных подмен за 9с), а отложенный перечит мог заражать кэш повторно. TIS — main-only.
             if Thread.isMainThread { KeyboardLayoutCache.refresh(fromSelected: src) }
             else { DispatchQueue.main.async { KeyboardLayoutCache.refresh(fromSelected: src) } }
+            verifySelect(cyrillic: cyrillic, source: src)
         }
         return ok
+    }
+
+    /// Сколько раз система НЕ применила наше переключение. Для лога: событие должно быть редким, и
+    /// если счётчик растёт быстро, это само по себе находка.
+    private var selectMissCount = 0
+
+    /// СВЕРКА: применилось ли переключение на самом деле (задача 9 / P1.3, 05.08.2026).
+    ///
+    /// `TISSelectInputSource` возвращает `noErr` как «команда принята», а не как «раскладка сменилась».
+    /// Дальше мы оптимистично записывали `opinionCyr` и заряжали кэш декодера из ЗАПРОШЕННОГО
+    /// источника. Если переключение не состоялось, мы начинали верить собственной неправде, и это
+    /// корень сразу двух жалоб: перевёрнутого индикатора и «печатает не в той раскладке».
+    ///
+    /// ⚠️ Спрашиваем HIToolbox, а НЕ `TISCopyCurrentKeyboardInputSource`. Сырое чтение сразу после
+    /// select отдаёт СТАРЫЙ источник (стейл-баг, описан вверху файла), проверка увидела бы «не
+    /// применилось» на исправном переключении и щёлкнула бы ещё раз, воспроизведя шторм «→ EN ×6»
+    /// от 24.07. Настройки HIToolbox этим не страдают, и их же читает индикатор.
+    ///
+    /// Замеры 05.08, из которых взяты числа: чтение настроек стоит **0.06 мс**, то есть на цену
+    /// смотреть незачем; систему устраивает **11 мс**, чтобы признать переключение. Ждём 60 мс,
+    /// пятикратный запас.
+    ///
+    /// ⚠️ Поправка РОВНО ОДНА, и повторной сверки за ней нет. Неограниченный цикл здесь это тот самый
+    /// шторм. Если и вторая попытка не прошла, честнее принять реальность, чем настаивать.
+    private func verifySelect(cyrillic: Bool, source src: TISInputSource) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60)) { [weak self] in
+            guard let self else { return }
+            // Мнение сбито (`noteExternalLayoutChange`) — значит человек переключился сам, пока мы
+            // ждали. Спорить с хозяином нельзя: он выбрал позже нас, его выбор и главнее.
+            guard self.opinionCyr == cyrillic else { return }
+            guard let code = Self.languageFromSystemPrefs() else { return }   // не знаем — молчим
+            let real = (code == "RU")
+            guard real != cyrillic else { return }                            // всё применилось
+            self.selectMissCount += 1
+            if self.selectMissCount == 1 || self.selectMissCount % 10 == 0 {
+                kbLog("layout: переключение не применилось (просили \(cyrillic ? "RU" : "латиницу"), система показывает \(code)), поправка №\(self.selectMissCount)")
+            }
+            guard TISSelectInputSource(src) == noErr else {
+                // Вторая попытка даже не принята. Дальше врать себе хуже, чем признать: выравниваем
+                // мнение и кэш по тому, что реально выбрано, иначе декодер продолжит считать буквы
+                // не тем алфавитом.
+                self.opinionCyr = real
+                KeyboardLayoutCache.refreshOnMain()
+                kbLog("layout: поправка отклонена системой, принимаю реальность (\(code))")
+                return
+            }
+        }
     }
 
     // MARK: - Внутреннее
