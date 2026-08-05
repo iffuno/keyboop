@@ -24,7 +24,7 @@ final class HotkeyRecorderPanel {
     private let subtitle = NSTextField(labelWithString: "")
     private let keysRow = NSStackView()
     private let placeholder = NSTextField(labelWithString: "")
-    private let hint = NSTextField(labelWithString: "")
+    private let hint = NSTextField(wrappingLabelWithString: "")
     private let warning = NSTextField(wrappingLabelWithString: "")
     private let commitBtn = NSButton(title: "", target: nil, action: nil)
     private let cancelBtn = NSButton(title: "", target: nil, action: nil)
@@ -33,6 +33,11 @@ final class HotkeyRecorderPanel {
     private var onCancel: (() -> Void)?
     /// Наблюдатель: родительское окно попыталось стать активным, пока идёт запись.
     private var parentKeyObserver: NSObjectProtocol?
+
+    /// Ширина окна. Считана от содержимого: пять капсул по 38 с просветами по 10 это ~330,
+    /// плюс поля по 24. Не «на глаз пошире»: именно от самой длинной комбинации, которую вообще
+    /// можно записать.
+    private static let panelWidth: CGFloat = 380
 
     private init() {}
 
@@ -129,13 +134,37 @@ final class HotkeyRecorderPanel {
 
     /// Клавиша-капсула: как на схемах клавиатуры, а не строкой символов подряд. Так «⌘⇧K» перестаёт
     /// читаться как одно слово, и видно, что клавиш три.
+    /// Капсула клавиши. Своим классом, а не голым NSView, ровно из-за одной строчки ниже:
+    /// `viewDidChangeEffectiveAppearance`.
+    ///
+    /// ⚠️ `.cgColor` СНИМАЕТ ДИНАМИЧЕСКИЙ ЦВЕТ ОДИН РАЗ, под текущим оформлением рисования. Раньше
+    /// заливка и рамка задавались в статической фабрике и больше никогда не пересчитывались, а
+    /// подпись это настоящий NSTextField на `.labelColor`, и она перекрашивается сама. Стоило сменить
+    /// тему при открытом окне, и получалось тёмное на тёмном или светлое на светлом. Тот же класс
+    /// ошибки, что сломал светлую тему в окне настроек (04.08.2026): цвет надо разрешать в СВОЁМ
+    /// оформлении и пересчитывать при его смене.
+    private final class KeycapView: NSView {
+        var muted = false
+        override func viewDidChangeEffectiveAppearance() {
+            super.viewDidChangeEffectiveAppearance()
+            applyColors()
+        }
+        func applyColors() {
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+                layer?.borderColor = (muted ? NSColor.separatorColor.withAlphaComponent(0.5)
+                                            : NSColor.separatorColor).cgColor
+            }
+        }
+    }
+
     private static func keycap(_ text: String, muted: Bool = false) -> NSView {
-        let v = NSView()
+        let v = KeycapView()
         v.wantsLayer = true
-        v.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        v.muted = muted
         v.layer?.cornerRadius = DS.pillRadius
         v.layer?.borderWidth = 1
-        v.layer?.borderColor = (muted ? NSColor.separatorColor.withAlphaComponent(0.5) : NSColor.separatorColor).cgColor
+        v.applyColors()
 
         let l = NSTextField(labelWithString: text)
         l.font = .systemFont(ofSize: 18, weight: .medium)
@@ -167,7 +196,7 @@ final class HotkeyRecorderPanel {
         if panel != nil { return }
         // Крестик оставляем (просьба автора): закрытие окна = отмена, обрабатываем через делегата,
         // чтобы запись не осталась висеть с невидимым окном.
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 380, height: 230),
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: 230),
                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
         p.title = L10n.t("hkrec.title")
         p.isReleasedWhenClosed = false     // держим панель сами (см. краш «Что нового», 27.07)
@@ -200,6 +229,7 @@ final class HotkeyRecorderPanel {
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
         hint.alignment = .center
+        hint.maximumNumberOfLines = 3
 
         commitBtn.title = L10n.t("hkrec.assign")
         commitBtn.bezelStyle = .rounded
@@ -231,15 +261,21 @@ final class HotkeyRecorderPanel {
             keysRow.centerYAnchor.constraint(equalTo: stage.centerYAnchor),
         ])
 
-        let buttons = NSStackView(views: [cancelBtn, commitBtn])
+        // Кнопки своей естественной ширины и ПАРОЙ ПО ЦЕНТРУ (решение автора 04.08.2026). Растянутые
+        // на половину окна каждая и делали его «здоровым и бесполезным»; прижатые вправо смотрелись
+        // сиротливо под центрованным текстом. Центруем двумя одинаковыми распорками по краям:
+        // так пара стоит по центру независимо от длины подписей и языка интерфейса.
+        let leftGap = NSView(), rightGap = NSView()
+        let buttons = NSStackView(views: [leftGap, cancelBtn, commitBtn, rightGap])
         buttons.orientation = .horizontal
         buttons.spacing = 10
-        buttons.distribution = .fillEqually
+        buttons.distribution = .fill
+        leftGap.widthAnchor.constraint(equalTo: rightGap.widthAnchor).isActive = true
 
         let stack = NSStackView(views: [subtitle, stage, hint, warning, buttons])
         stack.orientation = .vertical
-        stack.spacing = DS.itemGap + 6
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: DS.contentMargin, bottom: 20, right: DS.contentMargin)
+        stack.spacing = 14
+        stack.edgeInsets = NSEdgeInsets(top: 16, left: DS.contentMargin, bottom: 16, right: DS.contentMargin)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         let content = NSView()
@@ -249,6 +285,12 @@ final class HotkeyRecorderPanel {
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             stack.topAnchor.constraint(equalTo: content.topAnchor),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            // ⚠️ ШИРИНА ОКНА ПРИБИТА (04.08.2026). Раньше её задавал самый длинный НЕПЕРЕНОСИМЫЙ
+            // текст, то есть подсказка: стоило её удлинить, и окно растягивалось на пол-экрана.
+            // Теперь наоборот, ширину диктует содержимое, ради которого окно и открыто: самая
+            // длинная комбинация это четыре модификатора плюс клавиша, пять капсул по 38 с
+            // просветами, около 330 пунктов. Всё остальное переносится по этой ширине.
+            content.widthAnchor.constraint(equalToConstant: Self.panelWidth),
             stage.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: DS.contentMargin),
             stage.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -DS.contentMargin),
             // ⚠️ Поля для текста предупреждения задаём ЯВНО. Отступов стека многострочной подписи
@@ -259,7 +301,8 @@ final class HotkeyRecorderPanel {
             hint.leadingAnchor.constraint(equalTo: stack.leadingAnchor, constant: DS.contentMargin),
             hint.trailingAnchor.constraint(equalTo: stack.trailingAnchor, constant: -DS.contentMargin),
         ])
-        warning.preferredMaxLayoutWidth = 380 - 2 * (DS.contentMargin + 8)
+        warning.preferredMaxLayoutWidth = Self.panelWidth - 2 * (DS.contentMargin + 8)
+        hint.preferredMaxLayoutWidth = Self.panelWidth - 2 * DS.contentMargin
         p.contentView = content
         panel = p
     }

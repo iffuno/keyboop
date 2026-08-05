@@ -218,18 +218,54 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     /// Dev: снимок ВСЕГО окна (sidebar+detail) как видит пользователь — тёмная тема, реальные
     /// пропорции. Требует KEYBOOP_WINSHOT (непрозрачные фоны sidebar/detail → cacheDisplay ок).
+    /// Снимок ЧАСТИ окна через cacheDisplay. Вынесено, чтобы собирать кадр из кусков (см. ниже).
+    private func renderPart(_ v: NSView) -> NSImage? {
+        v.layoutSubtreeIfNeeded()
+        let b = v.bounds
+        guard b.width > 1, b.height > 1, let rep = v.bitmapImageRepForCachingDisplay(in: b) else { return nil }
+        v.cacheDisplay(in: b, to: rep)
+        let img = NSImage(size: b.size)
+        img.addRepresentation(rep)
+        return img
+    }
+
     func dumpFullWindow(section i: Int, to path: String) {
         window?.appearance = NSAppearance(named: .darkAqua)
         sidebar.select(i, animated: false)
-        guard let root = window?.contentView else { return }
-        root.layoutSubtreeIfNeeded()
-        let b = root.bounds
-        guard b.width > 1, b.height > 1,
-              let rep = root.bitmapImageRepForCachingDisplay(in: b) else { return }
-        root.cacheDisplay(in: b, to: rep)
-        if let png = rep.representation(using: .png, properties: [:]) {
-            try? png.write(to: URL(fileURLWithPath: path))
-        }
+        // ⚠️ СОБИРАЕМ ИЗ ДВУХ КУСКОВ, А НЕ СНИМАЕМ КОРЕНЬ ЦЕЛИКОМ (задача 0d, починено 05.08.2026).
+        //
+        // Раньше здесь был cacheDisplay по `window.contentView`, и на macOS 26 он стал отдавать
+        // пустой кадр. Дело не в cacheDisplay: тем же способом до сих пор исправно рисуется раздел
+        // (`renderColumnPNG`). Дело в СОСТАВЕ: на macOS 26 боковое меню стало плавающей панелью на
+        // системном материале, а NSVisualEffectView в cacheDisplay не попадает — его композитит
+        // оконный сервер. Снимая корень, мы гарантированно захватывали эту дыру.
+        //
+        // Правильный ответ не «сменить технику», а не тащить в кадр то, что ею не снимается: рисуем
+        // боковое меню и содержимое ПОРОЗНЬ (обе части обычные view) и склеиваем рядом.
+        //
+        // Почему это важнее, чем кажется: на этом снимке держится правило проекта «смотреть на
+        // пиксели до релиза», и пока он не работал, каждую проверку приходилось делать вручную через
+        // screencapture по windowID, а это требует Screen Recording и невозможно у пользователя.
+        // Правую часть берём НЕ из detail.view, а через renderColumnPNG: содержимое живёт в колонке
+        // внутри прокрутки, а сам detail.view через cacheDisplay отдаёт пустоту по той же причине,
+        // что и корень. Проверено 05.08: первая попытка нарисовала боковое меню и пустоту справа.
+        guard let left = renderPart(sidebar.view),
+              let rightData = detail.renderColumnPNG(),
+              let right = NSImage(data: rightData) else { return }
+        let size = NSSize(width: left.size.width + right.size.width,
+                          height: max(left.size.height, right.size.height))
+        let out = NSImage(size: size)
+        out.lockFocus()
+        NSColor.windowBackgroundColor.setFill()
+        NSRect(origin: .zero, size: size).fill()
+        left.draw(at: NSPoint(x: 0, y: size.height - left.size.height),
+                  from: .zero, operation: .sourceOver, fraction: 1)
+        right.draw(at: NSPoint(x: left.size.width, y: size.height - right.size.height),
+                   from: .zero, operation: .sourceOver, fraction: 1)
+        out.unlockFocus()
+        guard let tiff = out.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: URL(fileURLWithPath: path))
     }
 }
 
@@ -736,7 +772,8 @@ final class DetailVC: NSViewController {
                           enabled: settings.autoEnabled, help: L10n.t("switch.liveHelp")),
                 switchRow(L10n.t("switch.dev"), L10n.t("switch.devSub"), settings.developerMode, #selector(toggleDev),
                           help: L10n.t("switch.devHelp")),
-                controlRow(L10n.t("switch.manual"), HotkeyControl()),
+                controlRow(L10n.t("switch.manual"), HotkeyControl(),
+                           subtitle: L10n.t("switch.manualSub"), help: L10n.t("switch.manualHelp")),
                 groupConvertRow()            // «переключать несколько слов» — сразу после ручного хоткея
             ]),
             group(6),
@@ -778,13 +815,25 @@ final class DetailVC: NSViewController {
     private weak var trDownloadBtn: NSButton?
 
     private func buildTranslate() -> NSView {
+        // ⚠️ ЧЕСТНО ГОВОРИМ, ЕСЛИ ПЕРЕВОДА НЕТ (05.08.2026). Apple Translation это macOS 15+, наш пол
+        // macOS 13. Раньше на 13 и 14 раздел выглядел полностью рабочим: тумблер включён, хоткей
+        // назначен, а нажатие отвечало бипом. Хоткей мы там больше не перехватываем (EventTap), но
+        // показывать живую строку, которая ничего не делает, всё равно нельзя. Текст уже написан и
+        // до сегодня жил только в окне знакомства.
+        let translateAvailable: Bool
+        if #available(macOS 15.0, *) { translateAvailable = true } else { translateAvailable = false }
         var items: [NSView] = [
             title(L10n.t("tr.title")),
             sub(L10n.t("tr.sub")),
             group(8),
+        ]
+        if !translateAvailable { items.append(contentsOf: [hint(L10n.t("wel.trNeedOS")), group(6)]) }
+        items += [
             card([
-                switchRow(L10n.t("tr.enabled"), L10n.t("tr.enabledSub"), settings.translateEnabled, #selector(toggleTranslate)),
-                controlRow(L10n.t("tr.hotkey"), TranslateHotkeyControl())
+                switchRow(L10n.t("tr.enabled"), L10n.t("tr.enabledSub"),
+                          translateAvailable && settings.translateEnabled, #selector(toggleTranslate),
+                          enabled: translateAvailable),
+                controlRow(L10n.t("tr.hotkey"), TranslateHotkeyControl(), enabled: translateAvailable)
             ]),
             group(6),
             card([
@@ -926,20 +975,26 @@ final class DetailVC: NSViewController {
         wInput.placeholderString = L10n.t("exc.addPlaceholder")
         wInput.target = self; wInput.action = #selector(addIgnoredWord)
         wInput.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        // Высота как у чипов рядом (24). У голого NSTextField она на пару точек меньше, и рядом с
+        // кнопкой «Добавить» поле выглядело придавленным (замечание автора 04.08.2026).
+        wInput.heightAnchor.constraint(equalToConstant: 24).isActive = true
         wordInput = wInput
         let addWordBtn = NSButton(title: L10n.t("exc.addWord"), target: self, action: #selector(addIgnoredWord))
         addWordBtn.bezelStyle = .rounded; addWordBtn.controlSize = .regular
         addWordBtn.setContentHuggingPriority(.required, for: .horizontal)
         let addRow = NSStackView(views: [wInput, addWordBtn])
         addRow.orientation = .horizontal; addRow.spacing = 8; addRow.alignment = .centerY
+        // ⚠️ ПОЛЕ ВВОДА ВЫШЕ СПИСКА (автор, 04.08.2026). Было наоборот, и получалось нелогично:
+        // человек печатал слово внизу, а оно появлялось выше того места, куда он смотрел. Порядок
+        // «сначала чем добавляют, потом что добавлено» читается сверху вниз как действие и результат.
         views.append(contentsOf: [
             group(12),
             title(L10n.t("exc.title")),
             sub(L10n.t("exc.sub")),
             group(DS.itemGap - 4),
-            ChipFieldView(ignoredView),
+            addRow,
             group(6),
-            addRow
+            ChipFieldView(ignoredView)
         ])
         // Обучение на отмене: тумблер + чипы выученных слов (крестик на каждом).
         let learnedView = ChipFlowView()
@@ -1830,6 +1885,13 @@ final class DetailVC: NSViewController {
         let display: String
         let size: String
         let note: String
+        /// Развёрнутое описание под кнопкой «i»: диск, память, скорость, для чего годится.
+        /// Собирается из ключа модели и общего хвоста про память (`model.memNote`).
+        var help: String {
+            let key = engine == "parakeet" ? "voice.pkHelp" : "model.\(id.hasPrefix("large") ? "large" : id).help"
+            let body = L10n.t(key)
+            return body.contains("%@") ? String(format: body, L10n.t("model.memNote")) : body
+        }
         func isInstalled() -> Bool {
             engine == "parakeet" ? ParakeetEngine.modelInstalled : ModelDownloader.shared.isInstalled(id)
         }
@@ -2016,7 +2078,10 @@ final class DetailVC: NSViewController {
 
         let spacer = NSView(); spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1), for: .horizontal)
         spacer.setContentCompressionResistancePriority(NSLayoutConstraint.Priority(1), for: .horizontal)
-        let row = NSStackView(views: [nameCol, spacer] + right)
+        // «i» перед кнопками действия: человек должен узнать цену ДО того, как нажмёт «Скачать»,
+        // а не после того, как увидит полтора гигабайта в мониторе (задача 69).
+        let info = HelpButton(text: m.help, title: m.display)
+        let row = NSStackView(views: [nameCol, spacer, info] + right)
         row.orientation = .horizontal; row.spacing = 8; row.alignment = .centerY
         row.edgeInsets = NSEdgeInsets(top: 8, left: 14, bottom: 8, right: 14)
         row.heightAnchor.constraint(greaterThanOrEqualToConstant: 46).isActive = true
@@ -2044,10 +2109,18 @@ final class DetailVC: NSViewController {
             a.runModal()
             return
         }
+        // ⚠️ У ПАНЕЛИ ОБЯЗАН БЫТЬ ВЫХОД (отзыв #86, 04.08.2026: «на ровном месте появилось
+        // всплывающее сообщение»). Раньше стиль был [.titled, .nonactivatingPanel]: ни кнопки
+        // закрытия, ни Esc, ни таймаута. А монитор ЛОКАЛЬНЫЙ, то есть ловит нажатия, только пока
+        // фокус у нас. Достаточно было переключиться в другую программу, и панель оставалась на
+        // экране навсегда, всплывая потом «сама собой». Теперь у неё три независимых выхода:
+        // крестик, Esc и таймаут, и любой из них снимает монитор.
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 90),
-                            styleMask: [.titled, .nonactivatingPanel],
+                            styleMask: [.titled, .closable, .nonactivatingPanel],
                             backing: .buffered, defer: false)
         panel.title = "Keyboop"
+        panel.isReleasedWhenClosed = false
+        panel.level = .floating   // иначе уезжает за окно настроек и человек её теряет из виду
         let lbl = NSTextField(labelWithString: L10n.t("voice.hkTestPrompt"))
         lbl.font = .systemFont(ofSize: 14)
         lbl.translatesAutoresizingMaskIntoConstraints = false
@@ -2059,11 +2132,29 @@ final class DetailVC: NSViewController {
         panel.center()
         panel.makeKeyAndOrderFront(nil)
         var monitor: Any?
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak panel] ev in
-            guard let panel = panel else { return ev }
-            NSEvent.removeMonitor(monitor!)
-            monitor = nil
+        var closed = false
+        // Единая точка выхода: снять монитор и убрать панель. Зовётся из всех трёх путей.
+        func finish() {
+            guard !closed else { return }
+            closed = true
+            if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
             panel.orderOut(nil)
+        }
+        // Выход по времени: если человек отвлёкся или ушёл в другую программу, панель не должна
+        // пережить это молча. Пятнадцати секунд хватает на «нажми свой хоткей» с запасом.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { finish() }
+        // ⚠️ .flagsChanged ТОЖЕ, а не только .keyDown. Заводской хоткей диктовки это ОДИНОЧНЫЙ
+        // модификатор (правый ⌥), а он keyDown не порождает вовсе: проверка «нажми свой хоткей»
+        // для настройки по умолчанию не могла завершиться в принципе и висела до таймаута.
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak panel] ev in
+            guard panel != nil, !closed else { return ev }
+            // Esc — отмена проверки, а не «нажатый хоткей».
+            if ev.type == .keyDown, ev.keyCode == 53 { finish(); return nil }
+            // Отпускание модификаторов пропускаем: интересует нажатие.
+            if ev.type == .flagsChanged, ev.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
+                return ev
+            }
+            finish()
             // Что нажато
             let pressedKC = Int(ev.keyCode)
             var pressedMod: CGEventFlags = []

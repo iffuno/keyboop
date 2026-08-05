@@ -39,11 +39,20 @@ enum SelectionText {
     static func readViaClipboard() -> String? {
         let pb = NSPasteboard.general
         let before = pb.changeCount
-        // снимок ВСЕХ типов всех элементов (картинки/файлы/RTF), чтобы вернуть как было
-        let snapshot: [[NSPasteboard.PasteboardType: Data]] = (pb.pasteboardItems ?? []).map { item in
-            var d: [NSPasteboard.PasteboardType: Data] = [:]
-            for t in item.types { if let data = item.data(forType: t) { d[t] = data } }
-            return d
+        // Снимок ВСЕХ типов всех элементов (картинки/файлы/RTF), чтобы вернуть как было.
+        //
+        // ⚠️ ПОРЯДОК ТИПОВ ЗНАЧИМ, И ХРАНИТЬ ЕГО НАДО СПИСКОМ, А НЕ СЛОВАРЁМ (отзыв #88, 05.08.2026).
+        // Здесь стоял `[PasteboardType: Data]`, а обход словаря в Swift не упорядочен. Приложение при
+        // вставке берёт ПЕРВЫЙ подходящий тип из списка, поэтому после нашего восстановления первым
+        // мог оказаться любой, вплоть до приватного бинарного типа мессенджера. Человек копировал из
+        // Telegram, вставлял в Заметки и получал «шифр», а в приложения попроще, которые просят
+        // обычный текст, всё вставлялось нормально. Воспроизведено: три прогона одного и того же
+        // снимка дали три разных порядка, и в одном первым встал `org.telegram.messenger.custom`.
+        //
+        // Это ровно тот класс, ради которого написан краеугольный принцип №1: мы обещаем, что буфер
+        // после нас такой же, каким был. Порядок типов это часть «такой же».
+        let snapshot: [[(type: NSPasteboard.PasteboardType, data: Data)]] = (pb.pasteboardItems ?? []).map { item in
+            item.types.compactMap { t in item.data(forType: t).map { (type: t, data: $0) } }
         }
         sendCmdC()
         var copied: String?
@@ -58,8 +67,9 @@ enum SelectionText {
         if pb.changeCount != before {
             pb.clearContents()
             if !snapshot.isEmpty {
-                pb.writeObjects(snapshot.map { dict -> NSPasteboardItem in
-                    let it = NSPasteboardItem(); for (t, data) in dict { it.setData(data, forType: t) }
+                pb.writeObjects(snapshot.map { pairs -> NSPasteboardItem in
+                    let it = NSPasteboardItem()
+                    for p in pairs { it.setData(p.data, forType: p.type) }   // строго в исходном порядке
                     // Помечаем ВОССТАНОВЛЕНИЕ transient — менеджеры буфера (Paste/Maccy/…) игнорируют
                     // нашу служебную запись: не плодят дубликат и не «подсматривают» (анти-Punto чеклист,
                     // security-аудит L2, 01.07). Данные в item реальные → пользователь вставляет как обычно.

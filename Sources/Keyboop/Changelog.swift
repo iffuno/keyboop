@@ -51,6 +51,57 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        // 0.3.13 — БЕТА. Две правки первого класса (микрофон и буфер обмена) и разбор мелочей,
+        // найденных аудитом умолчаний. Обе крупные нашлись не по жалобе на них, а сбоку: микрофон
+        // через аудит, буфер через отзыв «вставляется шифром», где первая догадка была «это не мы».
+        Release(version: "0.3.13",
+            ru: [
+                "Микрофон больше не включается сам. Если хоткей диктовки это одиночный модификатор (по умолчанию правый ⌥), он срабатывал и внутри чужого сочетания: нажали ⌥⇧ правым Option, и попутно пошла запись. То же ловило hyper-клавишу на Caps Lock. Теперь жест засчитывается только чистым нажатием, а начатая по ошибке запись обрывается.",
+                "Копирование больше не портит буфер обмена. Когда мы читаем выделение, мы снимаем буфер и возвращаем на место, и в этом возврате терялся порядок форматов. Из-за него текст, скопированный из Telegram, мог вставиться в Заметки нечитаемой кашей, а в другие программы нормально.",
+                "«вк», «тг» и «vk» стали настоящими исключениями. Раньше они показывались в списке, но крестик на них ничего не менял: защита сидела глубже. Теперь удалили — снова переключаются, как интерфейс и обещает. Заодно латинское «vk» перестало превращаться в «мл»: на русской раскладке это миллилитр, и детектор честно его чинил.",
+                "Окно записи комбинации стало вдвое компактнее. Оно раздувалось под длину подсказки, а подсказка к тому же умалчивала, что один модификатор тоже можно назначить: достаточно нажать и отпустить. Теперь про это написано, а ⌃ добавлен в готовые варианты.",
+                "Проверка хоткея диктовки больше не зависает на экране. У окошка не было ни кнопки закрытия, ни Esc, ни времени жизни, и оно могло остаться висеть до перезапуска. Плюс оно не замечало модификаторы, то есть для настройки по умолчанию не могло завершиться в принципе.",
+                "Плашка диктовки не исчезает посреди речи. Короткое сообщение поверх неё гасило её своим таймером, даже если запись продолжалась.",
+                "Перевод выделенного больше не отбирает ⌃⌥T на macOS 13 и 14. Там его не существует (нужна macOS 15), но сочетание мы перехватывали и отвечали гудком. Теперь раздел честно говорит, что нужна система новее.",
+                "История диктовок чистится по сроку, а не только при новой записи. Продиктовали один раз и ушли — запись всё равно исчезнет вовремя.",
+                "Поле «Слово…» в исключениях переехало над списком. Раньше вы печатали внизу, а слово появлялось выше того места, куда вы смотрите.",
+                "Раздел «Приватность» перестал недоговаривать. Он называл два повода выхода в сеть, а их четыре: не хватало как раз отправки отзыва, то есть единственного случая, когда наружу уходит кусок лога. На сайте было написано верно, в приложении нет.",
+                "Капсулы клавиш в окне записи комбинации больше не теряются при смене темы. Заливка бралась один раз, а подпись перекрашивалась, и получалось тёмное по тёмному.",
+                "Модель распознавания больше не занимает память впустую. Она грелась при запуске, чтобы первая диктовка не тормозила, но срок её жизни заводился только после первой диктовки. То есть у того, кто просто держит Keyboop запущенным, полтора гигабайта висели бессрочно. Теперь модель уходит из памяти после часа простоя в любом случае.",
+                "У каждой модели появилась кнопка «i». Там написано, сколько она занимает на диске и в памяти, насколько быстрая и для чего годится. Раньше выбор выглядел как «какая точнее», а чем за это платят, человек узнавал из монитора системы.",
+            ],
+            en: [
+                "The microphone no longer switches itself on. When the dictation hotkey is a single modifier (right ⌥ by default), it also fired inside somebody else's chord: press ⌥⇧ with the right Option and recording started too. The same caught a hyper key on Caps Lock. The gesture now counts only as a clean tap, and a recording started by mistake is aborted.",
+                "Copying no longer damages the clipboard. When we read a selection we snapshot the clipboard and put it back, and that restore lost the order of formats. Because of it, text copied from Telegram could paste into Notes as unreadable garbage while other apps were fine.",
+                "«вк», «тг» and “vk” are real exceptions now. They used to be shown in the list, but the cross on them changed nothing: the protection sat deeper. Delete one and it switches again, exactly as the interface promises. Latin “vk” also stopped turning into «мл», which on a Russian layout is a millilitre, so the detector was honestly fixing it.",
+                "The shortcut recorder window is half the size. It used to stretch to fit the hint, and the hint failed to mention that a single modifier can be assigned too: press and release it. Now it says so, and ⌃ is among the ready-made choices.",
+                "The dictation hotkey test no longer hangs on screen. The little window had no close button, no Esc and no lifetime, so it could stay up until a restart. It also ignored modifiers, so with the default hotkey it could never finish.",
+                "The dictation panel no longer vanishes mid-speech. A short message shown over it used to hide it on its own timer even while recording continued.",
+                "Translating a selection no longer takes ⌃⌥T on macOS 13 and 14. Translation does not exist there (macOS 15 is required), yet we intercepted the shortcut and answered with a beep. The section now says plainly that a newer system is needed.",
+                "Dictation history is pruned by its retention time, not only when a new entry arrives. Dictate once and walk away, and the entry still disappears on schedule.",
+                "The “Word…” field in exceptions moved above the list. You used to type at the bottom while the word appeared above where you were looking.",
+                "The Privacy section stopped understating. It named two reasons for going online while there are four: the missing one was sending feedback, the single case where a piece of the log leaves the machine. The website had it right, the app did not.",
+                "Key caps in the shortcut recorder no longer get lost when the theme changes. The fill was taken once while the glyph kept repainting, so it went dark on dark.",
+                "The recognition model no longer holds memory for nothing. It was warmed up at launch so the first dictation would not lag, but its lifetime was armed only after the first dictation. So anyone simply keeping Keyboop running held a gigabyte and a half indefinitely. The model now leaves memory after an hour of idling in any case.",
+                "Every model got an “i” button. It says how much space it takes on disk and in memory, how fast it is and what it is good for. The choice used to look like “which one is more accurate”, while the price only showed up in Activity Monitor.",
+            ],
+            announce: """
+                Ночью чинил, утром выпускаю, днём на съёмку. Планировать такое я не умею, просто \
+                два бага оказались из тех, с которыми не ложатся спать.
+
+                Один включал микрофон сам. Второй портил буфер обмена. Оба ровно про то, чем \
+                Keyboop вообще отличается от предшественника, так что выбора не было.
+                """,
+            announceEnd: """
+                Приедет тем, у кого включены бета-версии. Остальным как обкатается.
+
+                Обе серьёзные правки нашлись не там, где искали: микрофон вылез при разборе \
+                настроек, а буфер из письма, где я сперва подумал, что это не мы.
+
+                Спасибо всем, кто пишет и кто заходит на keyboop.com/tips. С вами ночные правки \
+                заметно веселее.
+                """),
+
         // 0.3.12 — БЕТА. Пять правок, четыре из них по отзывам, и одна старая: светлая тема наконец
         // побеждена по-настоящему (в 0.3.10 мы дали выбор оформления, но режим «как в системе»
         // оставался сломанным: причин было две, и вторая сидела в самом инструменте проверки).
@@ -68,7 +119,23 @@ enum Changelog {
                 "The app now says when updates stopped arriving. A check could silently fail to reach the server for months, blocked by the network, a VPN, a corporate filter or antivirus. Updates settings now show an honest line and a button to send a report.",
                 "Escape with a modifier no longer cancels dictation. Tilde and Escape are neighbours, and missing ⌥` killed the recording with no explanation. Plain Escape cancels exactly as before.",
                 "A cancelled dictation no longer spoils the next one. The “history only” mark stayed behind when a recording never reached transcription, and the next recording inherited it: you dictated into a field and the text quietly went to history instead.",
-            ]),
+            ],
+            announce: """
+                Пишете вы много, и в основном спасибо. Я к такому не готовился и теперь хожу \
+                довольный: оказывается, делать полезное приятно, кто бы мог подумать.
+
+                Этот релиз из мелочей, которые давно пора было доделать. Крупное тоже растёт, \
+                просто оно поедет в 0.4, там ему просторнее.
+                """,
+            announceEnd: """
+                Приедет тем, у кого включены бета-версии. Остальным попозже, когда обкатается.
+
+                Три правки из пяти пришли прямо из ваших писем.
+
+                И отдельно. Сутки не работала касса на keyboop.com/tips: банк сменил сертификаты и \
+                забыл предупредить. Если вы в эти дни хотели закинуть монету и получили отказ, \
+                криво было у меня, а не у вас. Уже починил.
+                """),
         // 0.3.8 — БЕТА. Одна функция, по конкретной просьбе конкретного человека.
         // 0.3.11 — БЕТА. Один сюжет целиком: приложение просило не тот доступ и вело не туда.
         // Пришёл с Intel-мака (репорт #71), но касается всех: Мониторинг ввода это отдельная

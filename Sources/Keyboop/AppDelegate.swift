@@ -322,6 +322,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.openSettings()
             }
         }
+        // Dev-хук: показать окно записи комбинации (KEYBOOP_HKREC=1). Своего входа без мыши у него
+        // нет, а офскрин-рендер на macOS 26 отдаёт пустой кадр (см. задачу 0d про KEYBOOP_WINSHOT),
+        // поэтому единственный способ посмотреть на его вёрстку глазами это открыть его живьём.
+        if ProcessInfo.processInfo.environment["KEYBOOP_HKREC"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                HotkeyRecorderPanel.shared.show(what: L10n.t("hkrec.what.switch"), over: nil,
+                                                onCommit: {}, onCancel: {})
+                // Образец комбинации: иначе окно пустое и капсулы клавиш, ради которых сюда и
+                // смотрят, на снимок не попадают.
+                HotkeyRecorderPanel.shared.render(parts: ["⌘", "⇧", "K"], complete: true)
+            }
+        }
         // Dev-хук: открыть «Что нового» (KEYBOOP_WHATSNEW=1) — посмотреть список изменений глазами
         // до релиза, не кликая по «О программе».
         if ProcessInfo.processInfo.environment["KEYBOOP_WHATSNEW"] == "1" {

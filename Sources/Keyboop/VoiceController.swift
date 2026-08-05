@@ -154,7 +154,21 @@ final class VoiceController {
         if willUseParakeet {
             Task { _ = await ParakeetEngine.shared.loadIfNeeded() }
         } else {
-            transcribeQueue.async { [weak self] in self?.loadModelIfNeeded() }
+            transcribeQueue.async { [weak self] in
+                self?.loadModelIfNeeded()
+                // ⚠️ ЗАВОДИМ ТАЙМЕР ВЫГРУЗКИ СРАЗУ ПОСЛЕ ПРОГРЕВА (05.08.2026, жалоба на память).
+                //
+                // Раньше `scheduleModelRelease()` звался ровно в одном месте: после расшифровки. То
+                // есть человек, который запустил Keyboop и НИ РАЗУ не диктовал, держал модель в
+                // памяти бессрочно, потому что таймеру было неоткуда взяться: прогрев её загружает,
+                // а завести срок жизни забывает. Замер на этой машине: 1883 МБ с large-v3-turbo
+                // против ~380 МБ без модели, и они висели, пока системе не станет плохо.
+                //
+                // Страховка по нехватке памяти (setupMemoryPressureUnload) это не отменяет: она
+                // срабатывает только когда системе УЖЕ плохо, а до тех пор полтора гигабайта видно в
+                // мониторе, и человек справедливо считает это багом.
+                DispatchQueue.main.async { self?.scheduleModelRelease() }
+            }
         }
         // Потоковая модель (если фича вкл и скачана) — прогреть, чтобы первая диктовка не лагала.
         if settings.voiceStreaming && StreamingEouEngine.modelInstalled {

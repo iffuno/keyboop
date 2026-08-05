@@ -91,6 +91,10 @@ final class EventTap {
     private var lastModTap: CFTimeInterval = 0
     private var otherKeyBetweenTaps = false
     private var voiceActive = false
+    /// Взвод жеста «диктовка по одиночному модификатору» в режиме переключения. Нужен ровно затем
+    /// же, зачем `fnArmed` и `modkeyArmed`: в момент НАЖАТИЯ модификатор всегда выглядит одиночным,
+    /// и отличить «тап по ⌥» от «начало аккорда ⌥⇧» можно только к моменту отпускания.
+    private var voiceModArmed = false
     private var voiceComboArmed = false             // комбинация модификаторов диктовки сейчас зажата целиком
     private var voiceKeyArmed = false
     private var lastVoiceToggle: TimeInterval = 0   // debounce toggle (не зависит от keyUp)
@@ -391,6 +395,7 @@ final class EventTap {
             modkeyArmed = false
             otherKeyBetweenTaps = true
             fnArmed = false   // Fn+клавиша = комбинация (F1/стрелки/яркость), а не тап по 🌐
+            voiceModArmed = false   // обычная клавиша при зажатом модификаторе — это аккорд, не тап
             // ЗАПИСЬ КОМБИНАЦИИ В НАСТРОЙКАХ: пропускаем нажатие насквозь, не перехватывая свои
             // хоткеи. Иначе tap глотал ровно то, что человек пытается назначить (уже назначенную
             // комбинацию), запускал СТАРОЕ действие, а окно настроек не получало событие —
@@ -481,7 +486,13 @@ final class EventTap {
                 return swallowDown(keyCode)   // глотаем ВСЕГДА (вкл. autorepeat) — чтобы клавиша не печаталась
             }
             // Перевод выделенного по хоткею (по умолчанию ⌃⌥T). Глотаем, чтобы 'T' не печаталась.
-            if s.translateEnabled, keyMatches(keyCode, s.translateHotkeyKeyCode) {
+            //
+            // ⚠️ НО ТОЛЬКО ТАМ, ГДЕ ПЕРЕВОД ВООБЩЕ СУЩЕСТВУЕТ (аудит умолчаний, 05.08.2026).
+            // Apple Translation это macOS 15+, а наш пол это macOS 13. На 13 и 14 мы глотали
+            // сочетание при включённом тумблере (а он включён по умолчанию) и отвечали бипом: то
+            // есть молча отбирали у человека рабочую комбинацию и не давали взамен ничего. Это
+            // единственное место во всём аудите, где умолчание отнимает и не возвращает.
+            if #available(macOS 15.0, *), s.translateEnabled, keyMatches(keyCode, s.translateHotkeyKeyCode) {
                 let want = relevantMods(CGEventFlags(rawValue: s.translateHotkeyModifiers))
                 if !want.isEmpty, relevantMods(event.flags) == want {
                     onMain { [weak self] in self?.handler?.handleTranslateHotkey() }
@@ -609,6 +620,7 @@ final class EventTap {
             }
             fnArmed = false
             modkeyArmed = false
+            voiceModArmed = false
             otherKeyBetweenTaps = true    // «между тапами что-то было» — доказать обратное нечем
             otherKeyDuringCombo = true    // то же для комбинации
         }
@@ -659,14 +671,59 @@ final class EventTap {
         // Это тот же класс, что репорт #17 для одиночного модификатора, только в ветке 🌐, где мы
         // сочли проверку ненужной: у Fn отдельный флаг, но соседей по нему это не отменяет.
         else if !relevantMods(flags).isEmpty { fnArmed = false }
+        // ⚠️ ВЗВОД ДИКТОВКИ СНИМАЕМ ЗДЕСЬ, ДО ВЕТКИ НИЖЕ, И ЭТО НЕ ПРИДИРКА К МЕСТУ.
+        // Событие о ВТОРОМ модификаторе приходит с ЕГО собственным keyCode, а ветка диктовки
+        // гейтится по НАШЕЙ клавише, то есть добавление ⇧ к зажатому ⌥ проходит мимо неё целиком.
+        // Первая версия правки ставила проверку внутри ветки и потому не работала вовсе: взвод
+        // доживал до отпускания ⌥ и стрелял (проверено опытом 04.08.2026).
+        if voiceModArmed {
+            let vm = relevantMods(CGEventFlags(rawValue: s.voiceHotkeyModifiers))
+            if !relevantMods(flags).subtracting(vm).isEmpty { voiceModArmed = false }
+        }
+        // В режиме УДЕРЖАНИЯ взвода нет: запись стартует прямо по нажатию, иначе жест перестанет
+        // быть удержанием. Значит аккорд успевает её запустить, и единственное лечение это оборвать
+        // запись, как только выяснилось, что модификатор был не один. Иначе обычное выделение текста
+        // ⌥⇧ со стрелками пишет микрофон всё время, пока человек выделяет. Обрывок короче 0.3 с
+        // отбрасывается существующим порогом, то есть в историю ничего не попадёт.
+        if voiceActive, s.voiceHoldMode != "toggle", s.voiceHotkeyMode == "modkey" {
+            let vm = relevantMods(CGEventFlags(rawValue: s.voiceHotkeyModifiers))
+            if !relevantMods(flags).subtracting(vm).isEmpty {
+                voiceActive = false; VoiceGate.set(false)
+                kbLog("voice: к удерживаемому модификатору добавили другой — это аккорд, запись обрываю")
+                onMain { [weak self] in self?.handler?.handleVoiceEnd() }
+            }
+        }
         // Voice modkey-hold (напр. удержание правого ⌥ = keyCode 61): зажал → запись, отпустил → стоп.
         if s.voiceEnabled, s.voiceHotkeyMode == "modkey", keyCode == Int64(s.voiceHotkeyKeyCode) {
             let mask = CGEventFlags(rawValue: s.voiceHotkeyModifiers)
             let down = !flags.intersection(mask).isEmpty
+            // ⚠️ ОХРАННИК «ЧИСТОГО ТАПА» — ТОТ ЖЕ, ЧТО У КОНВЕРСИИ (репорт #17) И У МГНОВЕННОГО
+            // ПЕРЕКЛЮЧЕНИЯ (строки выше). Здесь его не было, и это худший класс дефекта из возможных
+            // для приложения, которое обещает, что наружу не уходит ничего: НА ЗАВОДСКИХ НАСТРОЙКАХ
+            // микрофон включался сам. Заводской хоткей конверсии это ⌥⇧, заводской хоткей диктовки
+            // это правый ⌥. Человек жмёт ⌥⇧ правым Option, попутно включается запись. Рекордер такой
+            // конфликт не ловит: он сравнивает combo с combo и не видит, что модификатор из combo
+            // совпал с одиночным модификатором другой функции. Найдено аудитом умолчаний 04.08.2026.
+            //
+            // Асимметрия намеренная: СТАРТ требует чистого тапа, ОСТАНОВКА не требует. Залипшая
+            // запись с включённым микрофоном хуже, чем незапустившаяся: первое человек может не
+            // заметить, второе он замечает сразу и жмёт ещё раз.
+            let soloVoiceTap = relevantMods(flags).subtracting(relevantMods(mask)).isEmpty
             if s.voiceHoldMode == "toggle" {
-                if down { toggleVoice() }   // нажал → старт/стоп; отпускание игнорируем
+                // ВЗВОД НА НАЖАТИИ, ВЫСТРЕЛ НА ОТПУСКАНИИ — единственный способ отличить тап от
+                // аккорда. Проверять «одиночный ли модификатор» в момент нажатия бесполезно: ⌥ в
+                // аккорде ⌥⇧ нажимается ПЕРВЫМ и в этот миг ничем не отличается от чистого тапа
+                // (проверено опытом 04.08.2026, первая версия правки от этого и не работала).
+                // Взвод снимается там же, где у соседних жестов: обычная клавиша, второй модификатор,
+                // Secure Input.
+                if down {
+                    voiceModArmed = soloVoiceTap
+                } else if voiceModArmed {
+                    voiceModArmed = false
+                    toggleVoice()
+                }
             } else {
-                if down && !voiceActive {
+                if down && !voiceActive && soloVoiceTap {
                     voiceActive = true; VoiceGate.set(true)
                     onMain { [weak self] in self?.handler?.handleVoiceBegin() }
                 } else if !down && voiceActive {

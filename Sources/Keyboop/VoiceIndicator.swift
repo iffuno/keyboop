@@ -17,6 +17,10 @@ final class VoiceIndicator {
 
     private enum Mode { case recording, processing, toast }
     private var mode: Mode = .recording
+    /// Номер текущего показа. Растёт на КАЖДЫЙ present. Нужен отложенным действиям (тост прячет себя
+    /// через 2.2с), чтобы понять: то, что я собирался спрятать, всё ещё на экране, или его давно
+    /// сменили. Без этого отложенное «спрятать» гасило чужую, более свежую плашку.
+    private var presentGen = 0
 
     private let H: CGFloat = 38         // высота плашки
     private let pad: CGFloat = 13       // боковые отступы
@@ -60,6 +64,8 @@ final class VoiceIndicator {
     func showProcessing() { DispatchQueue.main.async { self.present(L10n.t("voice.recognizing"), .processing) } }
     func hide() {
         DispatchQueue.main.async {
+            if self.panel?.isVisible == true { kbLog("hud: спрятал") }
+            self.presentGen += 1          // всё отложенное, что целилось в текущий показ, отменяется
             self.stopTimers(); self.wave.stop()
             self.panel?.orderOut(nil)
         }
@@ -71,10 +77,33 @@ final class VoiceIndicator {
     }
 
     /// Короткий тост у курсора (обучение на отмене и т.п.) — сам прячется через ~2.2с.
+    ///
+    /// ⚠️ ДВА ДЕФЕКТА, ПОЙМАННЫЕ 04.08.2026 ПО ЖАЛОБЕ «плашка „Слушаю“ иногда пропадает во время
+    /// диктовки». Оба здесь.
+    ///
+    /// Первый: отложенное `hide()` не проверяло НИЧЕГО. Показали тост, через 2.2с гасим — а за эти
+    /// 2.2 секунды человек мог начать диктовать, и таймер убивал уже другую, живую плашку. Лечится
+    /// номером показа: гасим только если с тех пор ничего нового не показывали.
+    ///
+    /// Второй: тост во время записи затирал «Слушаю» насовсем. А тосты приходят и ПОСРЕДИ диктовки
+    /// (микрофон отдал тишину, расшифровка зависла, поле оказалось паролем). Человек видел, как
+    /// индикатор записи молча исчезал, хотя запись шла. Теперь после тоста возвращаемся в «Слушаю».
     func showToast(_ text: String) {
         DispatchQueue.main.async {
+            let wasRecording = (self.mode == .recording && self.panel?.isVisible == true)
             self.present(text, .toast)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in self?.hide() }
+            let gen = self.presentGen
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
+                guard let self, self.presentGen == gen else { return }   // показали что-то новее — не наше дело
+                if wasRecording {
+                    // Запись всё ещё идёт: если бы она кончилась, VoiceController уже позвал бы
+                    // showProcessing или hide, а это сменило бы номер показа и мы бы сюда не дошли.
+                    kbLog("hud: тост отыграл, возвращаю «Слушаю» (запись продолжается)")
+                    self.present(L10n.t("voice.listening"), .recording)
+                } else {
+                    self.hide()
+                }
+            }
         }
     }
 
@@ -82,6 +111,7 @@ final class VoiceIndicator {
 
     private func present(_ text: String, _ m: Mode) {
         let p = panel ?? makePanel(); panel = p
+        presentGen += 1
         mode = m
         stopTimers()
         label.stringValue = text

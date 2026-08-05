@@ -130,6 +130,15 @@ enum L10n {
         "switch.devSub":  [.ru: "Бережёт код: одиночные буквы и короткие сочетания (переменные, команды) не трогаем нигде. В IDE и терминалах авто выключено целиком.",
                            .en: "Protects code: single letters and short combos (variables, commands) are left alone everywhere. In IDEs and terminals auto-switch is fully off."],
         "switch.manual":  [.ru: "Ручное переключение", .en: "Manual switch"],
+        // ⚠️ ПОДПИСЬ И «i» ДОБАВЛЕНЫ 04.08.2026, ПОТОМУ ЧТО СТРОКА МОЛЧАЛА. У неё был только
+        // заголовок и поле с комбинацией, то есть человек видел ЧТО назначено, но не ЗАЧЕМ. Двое
+        // написали автору, что не разобрались, как переключить слово руками и как отменить автозамену.
+        // Главное, чего никто не угадывал: переключает и отменяет ОДНА И ТА ЖЕ комбинация.
+        // Коротко до предела: справа стоит поле с комбинацией, оно шире тумблера, и места под подпись
+        // остаётся мало. Строки в настройках не переносятся принципиально (иначе едет вся сетка),
+        // поэтому подпись обязана влезать целиком, а подробности живут в «i».
+        "switch.manualSub":  [.ru: "Переключить последнее слово, ею же отменить",
+                              .en: "Flip the last word, or undo with the same combo"],
         "switch.hkPrefix":[.ru: "Хоткей:  ", .en: "Hotkey:  "],
         "switch.hkRecord":[.ru: "Нажми комбинацию…  (Esc — отмена)", .en: "Press a combo…  (Esc to cancel)"],
         "hk.custom":      [.ru: "Свой…", .en: "Custom…"],
@@ -152,8 +161,15 @@ enum L10n {
         "hkrec.title":    [.ru: "Новая комбинация", .en: "New shortcut"],
         "hkrec.for":      [.ru: "Для действия: %@", .en: "For: %@"],
         "hkrec.waiting":  [.ru: "нажмите клавиши", .en: "press keys"],
-        "hkrec.hint":     [.ru: "Держите модификаторы и нажмите клавишу. Esc — отмена.",
-                           .en: "Hold modifiers and press a key. Esc to cancel."],
+        // ⚠️ ПОДСКАЗКА ПРЯТАЛА ПОЛОВИНУ ВОЗМОЖНОСТЕЙ (отзыв, 04.08.2026). Было: «Держите модификаторы
+        // и нажмите клавишу». Модификаторы во множественном числе, и обязательно «плюс клавиша», из
+        // чего человек честно делал вывод, что одной клавишей обойтись нельзя, и просил добавить то,
+        // что уже работало. Одиночный модификатор код принимает с самого начала: нажал, отпустил,
+        // назначилось. Не было сказано только об этом. Пишем оба способа, второй с примером.
+        // Короче на треть: текст переносится по ширине окна, и три строки мелким кеглем читаются
+        // хуже двух. Про Esc не пишем, рядом стоит кнопка «Отмена» и она виднее.
+        "hkrec.hint":     [.ru: "Держите модификаторы и нажмите клавишу. Либо просто нажмите и отпустите один модификатор.",
+                           .en: "Hold modifiers and press a key. Or just press and release a single modifier."],
         "hkrec.assign":   [.ru: "Назначить", .en: "Assign"],
         // Предупреждения ВНУТРИ окна записи. Тон: понятно, без занудства, с лёгкой усмешкой.
         // ⚠️ Советов «добавьте ⌥ или ⌃» здесь нет намеренно (автор 28.07): объясняем, почему нельзя,
@@ -218,6 +234,26 @@ enum L10n {
         "ret.8h":         [.ru: "8 часов",  .en: "8 hours"],
         "ret.never":      [.ru: "Не удалять", .en: "Keep all"],
         // Описания моделей Whisper (ModelDownloader.catalog хранит ключи)
+        // ⚠️ ЧЕТЫРЕ ЧИСЛА НА КАЖДУЮ МОДЕЛЬ (задача автора 04.08.2026, повод — жалоба на память).
+        // Подписи выше отвечают на «какая лучше», но не на «чем я за это плачу». Человек выбирал
+        // самую точную, потому что «аккуратнее с пунктуацией», и получал полтора гигабайта в памяти,
+        // о чём его никто не предупредил.
+        //
+        // Числа памяти ИЗМЕРЕНЫ 05.08.2026 на M-маке, а не прикинуты: без модели приложение занимает
+        // ~285 МБ, с large-v3-turbo ~1885 МБ. Разница ровно в размер файла модели, поэтому для
+        // остальных берём их размер: у whisper модель кладётся в память целиком.
+        "model.memNote":    [.ru: "Пока модель загружена, она занимает в памяти примерно столько же, сколько весит на диске. Само приложение без модели это около 285 МБ. Модель выгружается после часа без диктовки, а если системе не хватает памяти, то раньше.",
+                             .en: "While a model is loaded it takes roughly as much memory as it takes on disk. The app itself without a model is about 285 MB. A model is unloaded after an hour without dictation, and sooner if the system runs short of memory."],
+        "model.base.help":  [.ru: "Самая маленькая и быстрая. 142 МБ на диске, столько же в памяти. Годится, если нужно просто разобрать короткую фразу и не жалко точности: длинные предложения и имена она путает заметно чаще остальных.\n\n%@",
+                             .en: "The smallest and fastest. 142 MB on disk and about the same in memory. Fine if you just need a short phrase transcribed and can live with mistakes: it garbles long sentences and names noticeably more often.\n\n%@"],
+        "model.small.help": [.ru: "Разумная середина. 466 МБ на диске и в памяти. Заметно точнее базовой на длинных фразах, при этом не съедает гигабайты. Хороший выбор, если Parakeet вам не подходит.\n\n%@",
+                             .en: "The sensible middle. 466 MB on disk and in memory. Noticeably better than base on long sentences without eating gigabytes. A good choice if Parakeet does not suit you.\n\n%@"],
+        "model.medium.help":[.ru: "Точнее средней, но платите вы дважды: 1.5 ГБ на диске, столько же в памяти, и распознавание идёт ощутимо дольше. Смысл есть, если диктуете сложные тексты и готовы ждать.\n\n%@",
+                             .en: "More accurate than small, but you pay twice: 1.5 GB on disk, the same in memory, and recognition takes noticeably longer. Worth it if you dictate difficult texts and can wait.\n\n%@"],
+        "model.large.help": [.ru: "Самая аккуратная с пунктуацией и связностью речи. 1.6 ГБ на диске и примерно столько же в памяти (замер: 1885 МБ против 285 МБ без модели), распознавание на 1–4 секунды дольше. Берите, если качество текста важнее скорости и памяти.\n\n%@",
+                             .en: "The best at punctuation and phrasing. 1.6 GB on disk and about the same in memory (measured: 1885 MB against 285 MB with no model), recognition takes 1 to 4 seconds longer. Take it if text quality matters more than speed and memory.\n\n%@"],
+        "voice.pkHelp":     [.ru: "Быстрая модель, считающая на нейродвижке Apple, а не на процессоре: поэтому она почти не греет мак и отвечает быстрее whisper. 465 МБ на диске и в памяти. Знает 25 языков, но есть честная оговорка: задать ей язык распознавания нельзя, это ограничение самой модели. Выбор языка у неё работает как фильтр письменности.\n\nТребует Apple Silicon: на процессорах Intel нейродвижка нет, и там её просто не существует.\n\n%@",
+                             .en: "A fast model that runs on Apple’s neural engine rather than the CPU, so it barely heats the Mac and answers quicker than whisper. 465 MB on disk and in memory. It knows 25 languages, with one honest caveat: you cannot tell it which language to expect, that is a limit of the model itself. The language picker acts as a script filter.\n\nRequires Apple Silicon: Intel chips have no neural engine, so it does not exist there.\n\n%@"],
         "model.base.note":  [.ru: "быстрая, базовая точность", .en: "fast, basic accuracy"],
         "model.small.note": [.ru: "баланс качества и скорости", .en: "balance of quality and speed"],
         "model.medium.note":[.ru: "выше точность, медленнее", .en: "higher accuracy, slower"],
@@ -258,10 +294,13 @@ enum L10n {
         "exc.addApp":     [.ru: "Добавить программу…", .en: "Add app…"],
         "exc.fromRunning":[.ru: "Из запущенных…", .en: "From running…"],
         "exc.title":      [.ru: "Исключения", .en: "Exceptions"],
-        "exc.sub":        [.ru: "Слова, которые трогать не надо. Впиши и нажми Enter или «Добавить». «вк», «тг» добавлены как образец — это бренды, их раскладка случайно совпадает с английским словом.",
-                           .en: "Words to leave alone. Type one and press Enter or “Add”. «вк», «тг» are added as examples — brands whose layout-swap happens to be an English word."],
-        "exc.hint":       [.ru: "Удалить слово — крестик ✕ на нём. Бренды вроде «вк»/«тг» защищены в любом случае.",
-                           .en: "Remove a word — the ✕ on it. Brands like «вк»/«тг» stay protected regardless."],
+        // ⚠️ ТЕКСТ ПЕРЕПИСАН 04.08.2026 ВМЕСТЕ С МЕХАНИКОЙ. Раньше слова назывались «образцом», хотя
+        // на деле были декорацией: настоящая защита сидела в глобальном списке, и удаление чипа
+        // ничего не меняло. Теперь это обычные исключения, и подпись говорит именно это.
+        "exc.sub":        [.ru: "Слова, которые трогать не надо. Впиши и нажми Enter или «Добавить». «вк», «тг» и «vk» добавлены сразу: их раскладочная пара случайно совпадает со словом другого языка, и без исключения они ломались бы.",
+                           .en: "Words to leave alone. Type one and press Enter or “Add”. «вк», «тг» and “vk” come pre-added: each one’s layout-swap happens to be a real word in the other language, so without an exception they would get mangled."],
+        "exc.hint":       [.ru: "Удалить слово — крестик ✕ на нём. Удалите «вк» или «vk» — они снова начнут переключаться: это обычные исключения, без особых прав.",
+                           .en: "Remove a word — the ✕ on it. Delete «вк» or “vk” and they start switching again: these are ordinary exceptions, with no special powers."],
         "exc.empty":      [.ru: "Пока пусто.", .en: "Empty so far."],
         "exc.addPlaceholder":[.ru: "Слово…", .en: "Word…"],
         "exc.addWord":    [.ru: "Добавить", .en: "Add"],
@@ -299,8 +338,12 @@ enum L10n {
         "priv.title":     [.ru: "Не звонит домой", .en: "Doesn't phone home"],
         "priv.body":      [.ru: "Keyboop не следит за тобой. Ни телеметрии, ни аналитики, ни кейлоггинга — всё, что ты печатаешь и говоришь, остаётся на твоём Mac.",
                            .en: "Keyboop doesn't track you. No telemetry, no analytics, no keylogging — whatever you type and say stays on your Mac."],
-        "priv.body2":     [.ru: "В сеть Keyboop выходит только в двух случаях: ты сам качаешь языковую модель, и проверка обновлений. Проверка шлёт лишь твой IP и номер версии — как любой заход на сайт, ничего из набранного. Обновление ставится только с твоего согласия; всё это выключается в Настройках → Обновления.",
-                           .en: "Keyboop goes online for just two things: when you download a voice model, and update checks. A check sends only your IP and version number — like any website visit, nothing you typed. Updates install only with your consent; all of this can be turned off in Settings → Updates."],
+        // ⚠️ ТЕКСТ РАСХОДИЛСЯ С САЙТОМ, И НЕ В ПОЛЬЗУ ЧЕСТНОСТИ (аудит, 05.08.2026). Здесь стояло «только
+        // в двух случаях: модель и обновления», а страница приватности перечисляет ЧЕТЫРЕ повода. Не
+        // хватало ровно того, где наружу уходит содержимое: отправки отзыва вместе с хвостом лога.
+        // Обещание, сказанное двумя разными числами в двух местах, перестаёт быть обещанием.
+        "priv.body2":     [.ru: "В сеть Keyboop выходит по четырём поводам, и три из них начинаешь ты: скачать языковую модель, открыть сайт или телеграм из меню, отправить отзыв (уходит ровно то, что видно в окне отправки). Четвёртый — проверка обновлений: она шлёт только твой IP и номер версии, как любой заход на сайт. Ни буквы из набранного или надиктованного. Всё выключается в Настройках → Обновления.",
+                           .en: "Keyboop goes online for four reasons, and you start three of them: downloading a voice model, opening the site or Telegram from the menu, sending feedback (only what you see in the send window goes out). The fourth is the update check: it sends your IP and version number, the same as visiting any website. Not a letter of what you typed or dictated. All of it can be turned off in Settings → Updates."],
         "priv.update":    [.ru: "Обновления — на keyboop.com", .en: "Updates — at keyboop.com"],
         "priv.foot":      [.ru: "Спокойно. Всё остаётся на твоём Mac.", .en: "Calm. It all stays on your Mac."],
         "gen.title":      [.ru: "Общие", .en: "General"],
@@ -706,6 +749,12 @@ enum L10n {
         "switch.twoCapsSub": [.ru: "«КОгда» превращается в «Когда»", .en: "“WHen” becomes “When”"],
         "switch.twoCapsHelp": [.ru: "Так выходит, когда Shift отпущен на миг позже, чем нажата вторая буква. Keyboop чинит только этот случай: ровно две первые буквы заглавные, третья строчная, и в слове одни буквы. Слова целиком заглавными, вроде ГОСТ или USB, а также короткие «ДА» и «ОК» не трогаются. Выключено по умолчанию, потому что это правка самого текста, а не раскладки.",
                               .en: "This happens when Shift is released a moment after the second letter is pressed. Keyboop fixes only that case: exactly the first two letters capital, the third lowercase, and nothing but letters in the word. All-caps words like USB, and short ones like OK, are left alone. Off by default, because this edits your text rather than its layout."],
+        // ⚠️ КОРОТКО НАМЕРЕННО (автор, 04.08.2026). Первый вариант был вдвое длиннее: туда попало и
+        // обучение на отмене, и почему не помогает стереть слово и набрать заново. Всё это правда, но
+        // подсказка у строки отвечает на один вопрос — что делает ЭТА комбинация. Длинный текст в
+        // маленьком поповере путает ровно того, кто уже не разобрался, а именно ради него он и писан.
+        "switch.manualHelp": [.ru: "Переключает последнее набранное слово в другую раскладку, ждать пробела не нужно. Если Keyboop переключил слово сам и зря, эта же комбинация вернёт его как было. А когда ничего не набрано, просто меняется язык, как обычным переключателем раскладки.",
+                              .en: "Flips the last word you typed into the other layout, no need to wait for a space. If Keyboop flipped a word by itself and got it wrong, the same combo puts it back. And when nothing is typed, it simply switches the language, like the system layout switcher."],
         "switch.arrowsHelp": [.ru: "Речь о четырёх клавишах курсора. Пока вы печатаете слово, Keyboop держит его в памяти, чтобы починить. Стрелка означает, что курсор уехал и слово, скорее всего, уже не то — поэтому память сбрасывается. Выключите, если часто двигаете курсор посреди слова и хотите, чтобы починка всё равно сработала.",
                               .en: "This is about the four cursor keys. While you type a word, Keyboop keeps it in memory so it can fix it. An arrow means the caret moved and the word is probably no longer the one you meant, so the memory is dropped. Turn this off if you often move the caret mid-word and still want the fix."],
         "hist.lockHelp":  [.ru: "Окно истории будет спрашивать пароль при каждом открытии. Сам пароль хранится в связке ключей macOS, а записи шифруются — мы их не видим и восстановить не сможем. Защита от того, кто сядет за ваш незаблокированный Mac, а не от кражи диска.",
