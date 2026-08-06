@@ -8,6 +8,21 @@ final class Engine: EventTapHandler {
     let layout = LayoutManager()
     private let buffer = KeystrokeBuffer()
     private let eventTap = EventTap()
+
+    /// Переключить диктовку не с клавиатуры (быстрое действие в строке меню, задача 21).
+    func toggleVoiceFromMenu() { eventTap.toggleVoiceExternally() }
+
+    /// Вставка выбранного сниппета. Идём тем же путём, что и голосовой ввод: печать Unicode
+    /// без буфера обмена (принцип №1) и без бэкспейсов, потому что стирать нечего.
+    /// Буфер набора чистим: в чужом поле только что появился текст, которого мы не печатали,
+    /// и продолжать считать его частью набираемого слова нельзя.
+    func handleSnippetPicked(_ text: String) {
+        guard !text.isEmpty else { return }
+        buffer.clear()
+        liveFixLast = ""
+        TextReplacer.insert(text)
+        kbLog("сниппет по хоткею: вставлено \(text.count) симв.")
+    }
     private let settings = AppSettings.shared
 
     /// Пока true — игнорируем входящие события (это наша же синтетика).
@@ -201,6 +216,12 @@ final class Engine: EventTapHandler {
                 // клик мышью идёт отдельным путём (handleContextReset → полный clear, каретка сдвинута).
                 self?.pendingSoftReset = true
                 self?.refreshFrontmostAppCache()   // inline-путь читает кеш (в колбэке NSWorkspace нельзя)
+            }
+            // Выбор сниппета МЫШЬЮ. Ведём в тот же обработчик, что и цифра в перехватчике:
+            // одна дорога вставки, а не две.
+            SnippetPicker.shared.onPick = { [weak self] idx in
+                guard let text = SnippetPicker.shared.pick(index: idx) else { return }
+                self?.handleSnippetPicked(text)
             }
             // Открытие и закрытие Spotlight системой не объявляется, поэтому наблюдатель сообщает
             // об этом сам — и дальше всё идёт тем же путём, что и обычная смена программы.

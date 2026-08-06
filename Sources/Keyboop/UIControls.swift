@@ -263,12 +263,40 @@ enum HotkeyGuard {
     /// Текст «нужен хотя бы один модификатор».
     static func needsModifierMessage() -> String { L10n.t("hkrec.warn.bare") }
 
-    /// nil — комбинация допустима; иначе текст, чем именно она занята.
+    /// ДВА РАЗНЫХ «ЗАНЯТО» (решение автора 06.08.2026), и разница принципиальная.
+    ///
+    /// `blocked` — то, что отбирать нельзя ни при каких обстоятельствах: ⌘C, ⌘V, ⌘Z и прочая
+    /// мышечная память. Человек, назначивший туда нашу функцию, сломает себе не Keyboop, а вообще
+    /// весь Mac, и связать это с нами не сможет.
+    ///
+    /// `warn` — системные функции macOS (Spotlight, Mission Control, переключение раскладки). Это
+    /// его Mac и его выбор: он вправе отключить системное сочетание в настройках и занять его нами.
+    /// Наше дело предупредить, а не запретить. Кнопка «Назначить» остаётся живой.
+    enum Verdict {
+        case ok
+        case blocked(String)
+        case warn(String)
+    }
+
+    static func verdict(keyCode: Int, mods: CGEventFlags) -> Verdict {
+        if let hard = rejection(keyCode: keyCode, mods: mods) { return .blocked(hard) }
+        if let who = SystemHotkeys.takenBy(keyCode: keyCode, mods: mods) { return .warn(who) }
+        return .ok
+    }
+
+    /// Мягкое предупреждение: занято системой, но назначить можно.
+    static func conflictMessage(_ what: String) -> String {
+        String(format: L10n.t("hkrec.warn.system"), what)
+    }
+
+    /// nil — комбинация допустима; иначе текст, чем именно она занята. ТОЛЬКО жёсткие запреты.
     static func rejection(keyCode: Int, mods: CGEventFlags) -> String? {
         let onlyCmd = mods == .maskCommand
         if onlyCmd, let name = cmdCritical[keyCode] { return name }
         // Одиночный ⌘+любая буква — почти всегда занято приложением; просим добавить ⌥ или ⌃.
         if onlyCmd { return "⌘ + клавиша" }
+        // ⚠️ Системные сочетания сюда НЕ входят: они мягкие и живут в `verdict` (автор 06.08).
+        // Здесь только то, что не обсуждается.
         return nil
     }
 }
@@ -303,9 +331,9 @@ final class HotkeyControl: NSView {
     }
 
     /// Зафиксировать набранное: остаётся на экране, кнопка «Назначить» становится активной.
-    private func freeze(_ parts: [String]) {
+    private func freeze(_ parts: [String], warning: String? = nil) {
         frozen = true
-        HotkeyRecorderPanel.shared.render(parts: parts, complete: true)
+        HotkeyRecorderPanel.shared.render(parts: parts, complete: true, warning: warning)
     }
 
     /// Отказ БЕЗ прерывания записи: показываем причину в самом окне, человек жмёт другое сочетание.
@@ -447,7 +475,8 @@ final class HotkeyControl: NSView {
                             parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
                 return
             }
-            if let busy = HotkeyGuard.rejection(keyCode: Int(ev.keyCode), mods: mods) {
+            let verdict = HotkeyGuard.verdict(keyCode: Int(ev.keyCode), mods: mods)
+            if case .blocked(let busy) = verdict {
                 warnInPanel(HotkeyGuard.busyMessage(busy),
                             parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
                 return
@@ -458,7 +487,13 @@ final class HotkeyControl: NSView {
                 s.hotkeyMode = "key"; s.hotkeyKeyCode = kc
                 s.hotkeyModifiers = mods.rawValue; s.hotkeyKeyLabel = label
             }
-            freeze(HotkeyRecorderPanel.parts(mods: mods, keyLabel: label))
+            // Мягкий конфликт показываем ВМЕСТЕ с кандидатом: кнопка «Назначить» остаётся живой,
+            // человек решает сам (автор 06.08).
+            if case .warn(let who) = verdict {
+                freeze(HotkeyRecorderPanel.parts(mods: mods, keyLabel: label), warning: HotkeyGuard.conflictMessage(who))
+            } else {
+                freeze(HotkeyRecorderPanel.parts(mods: mods, keyLabel: label))
+            }
         } else {
             // Пока на экране висит зафиксированный кандидат, ОТПУСКАНИЕ клавиш его не трогает —
             // иначе человек не успевал донести мышь до «Назначить». Сброс только на новом наборе
@@ -635,9 +670,9 @@ final class VoiceHotkeyControl: NSView {
     }
 
     /// Зафиксировать набранное: остаётся на экране, кнопка «Назначить» становится активной.
-    private func freeze(_ parts: [String]) {
+    private func freeze(_ parts: [String], warning: String? = nil) {
         frozen = true
-        HotkeyRecorderPanel.shared.render(parts: parts, complete: true)
+        HotkeyRecorderPanel.shared.render(parts: parts, complete: true, warning: warning)
     }
 
     /// Отказ БЕЗ прерывания записи: показываем причину в самом окне, человек жмёт другое сочетание.
@@ -789,7 +824,8 @@ final class VoiceHotkeyControl: NSView {
                             parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
                 return
             }
-            if let busy = HotkeyGuard.rejection(keyCode: Int(ev.keyCode), mods: mods) {
+            let verdict = HotkeyGuard.verdict(keyCode: Int(ev.keyCode), mods: mods)
+            if case .blocked(let busy) = verdict {
                 warnInPanel(HotkeyGuard.busyMessage(busy),
                             parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
                 return
@@ -800,7 +836,13 @@ final class VoiceHotkeyControl: NSView {
                 s.voiceHotkeyMode = "key"; s.voiceHotkeyKeyCode = kc
                 s.voiceHotkeyModifiers = mods.rawValue; s.voiceHotkeyKeyLabel = label
             }
-            freeze(HotkeyRecorderPanel.parts(mods: mods, keyLabel: label))
+            // Мягкий конфликт показываем ВМЕСТЕ с кандидатом: кнопка «Назначить» остаётся живой,
+            // человек решает сам (автор 06.08).
+            if case .warn(let who) = verdict {
+                freeze(HotkeyRecorderPanel.parts(mods: mods, keyLabel: label), warning: HotkeyGuard.conflictMessage(who))
+            } else {
+                freeze(HotkeyRecorderPanel.parts(mods: mods, keyLabel: label))
+            }
             return
         }
         // flagsChanged: одиночный модификатор = hold-to-talk (modkey).
@@ -911,9 +953,9 @@ final class TranslateHotkeyControl: NSView {
     }
 
     /// Зафиксировать набранное: остаётся на экране, кнопка «Назначить» становится активной.
-    private func freeze(_ parts: [String]) {
+    private func freeze(_ parts: [String], warning: String? = nil) {
         frozen = true
-        HotkeyRecorderPanel.shared.render(parts: parts, complete: true)
+        HotkeyRecorderPanel.shared.render(parts: parts, complete: true, warning: warning)
     }
 
     /// Отказ БЕЗ прерывания записи: показываем причину в самом окне, человек жмёт другое сочетание.
@@ -1054,7 +1096,8 @@ final class TranslateHotkeyControl: NSView {
                         parts: HotkeyRecorderPanel.parts(mods: m, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
             return
         }
-        if let busy = HotkeyGuard.rejection(keyCode: Int(ev.keyCode), mods: m) {
+        let verdict = HotkeyGuard.verdict(keyCode: Int(ev.keyCode), mods: m)
+        if case .blocked(let busy) = verdict {
                 warnInPanel(HotkeyGuard.busyMessage(busy),
                             parts: HotkeyRecorderPanel.parts(mods: m, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
                 return
@@ -1066,7 +1109,11 @@ final class TranslateHotkeyControl: NSView {
             s.translateHotkeyModifiers = m.rawValue
             s.translateHotkeyKeyLabel = label
         }
-        freeze(HotkeyRecorderPanel.parts(mods: m, keyLabel: label))
+        if case .warn(let who) = verdict {
+            freeze(HotkeyRecorderPanel.parts(mods: m, keyLabel: label), warning: HotkeyGuard.conflictMessage(who))
+        } else {
+            freeze(HotkeyRecorderPanel.parts(mods: m, keyLabel: label))
+        }
     }
 }
 
@@ -1108,9 +1155,9 @@ final class InstantSwitchControl: NSView {
     }
 
     /// Зафиксировать набранное: остаётся на экране, кнопка «Назначить» становится активной.
-    private func freeze(_ parts: [String]) {
+    private func freeze(_ parts: [String], warning: String? = nil) {
         frozen = true
-        HotkeyRecorderPanel.shared.render(parts: parts, complete: true)
+        HotkeyRecorderPanel.shared.render(parts: parts, complete: true, warning: warning)
     }
 
     /// Отказ БЕЗ прерывания записи: показываем причину в самом окне, человек жмёт другое сочетание.
@@ -1303,7 +1350,8 @@ final class InstantSwitchControl: NSView {
                             parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
                 return
             }
-            if let busy = HotkeyGuard.rejection(keyCode: Int(ev.keyCode), mods: mods) {
+            let verdict = HotkeyGuard.verdict(keyCode: Int(ev.keyCode), mods: mods)
+            if case .blocked(let busy) = verdict {
                 warnInPanel(HotkeyGuard.busyMessage(busy),
                             parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: KeyLabels.symbol(forKeyCode: Int(ev.keyCode))))
                 return
@@ -1319,7 +1367,13 @@ final class InstantSwitchControl: NSView {
             pendingApply = { [weak self] in
                 self?.apply(mode: "key", keyCode: kc, mods: mods.rawValue, label: label)
             }
-            freeze(HotkeyRecorderPanel.parts(mods: mods, keyLabel: label))
+            // Мягкий конфликт показываем ВМЕСТЕ с кандидатом: кнопка «Назначить» остаётся живой,
+            // человек решает сам (автор 06.08).
+            if case .warn(let who) = verdict {
+                freeze(HotkeyRecorderPanel.parts(mods: mods, keyLabel: label), warning: HotkeyGuard.conflictMessage(who))
+            } else {
+                freeze(HotkeyRecorderPanel.parts(mods: mods, keyLabel: label))
+            }
         } else {
             // ⚠️ Показали отказ, а клавиши всё ещё ФИЗИЧЕСКИ зажаты. Их отпускание по одной приходит
             // сюда обычным flagsChanged, и накопитель принимает его за НАЧАЛО нового набора: в

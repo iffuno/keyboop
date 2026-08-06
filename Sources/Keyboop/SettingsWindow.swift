@@ -1196,6 +1196,38 @@ final class DetailVC: NSViewController {
         disabled.isHidden = !settings.snippetsDisabled
         snipDisabledLabel = disabled
 
+        // ВТОРОЙ СПИСОК — сниппеты для вставки. Тот же редактор, другое хранилище и другие подписи
+        // колонок: там «что заменять → на что», здесь «название → текст».
+        let textsEditor = SnippetsEditor(frame: .zero, store: TextSnippetStore.shared,
+                                         phLeft: "snip.phName", phRight: "snip.phText")
+        textsEditor.translatesAutoresizingMaskIntoConstraints = false
+
+        // Приглашение вместо пустоты: список стартует пустым (вариант А), и человеку надо показать,
+        // откуда взять содержимое, а не оставить его перед пустой таблицей.
+        let copyBtn = NSButton(title: L10n.t("snip.copyFrom"), target: self, action: #selector(copyFromAutoreplace))
+        copyBtn.bezelStyle = .rounded
+        let copyHint = hint(L10n.t("snip.copyFromHint"))
+        let showInvite = TextSnippetStore.shared.isEmpty && !SnippetStore.shared.pairs().filter { !$0.0.isEmpty }.isEmpty
+        copyBtn.isHidden = !showInvite
+        copyHint.isHidden = !showInvite
+
+        // ВСТАВКА ПО СОЧЕТАНИЮ (задача 17). Тумблер включает саму функцию, список рядом выбирает
+        // сочетание. Последняя строка списка — запись своего.
+        let pickPop = NSPopUpButton()
+        pickPop.addItems(withTitles: snipPickPresets.map { $0.0 } + [L10n.t("snip.pickCustom")])
+        pickPop.selectItem(at: snipPickPresets.firstIndex {
+            $0.1 == settings.snippetPickKeyCode && $0.2 == settings.snippetPickModifiers
+        } ?? 0)
+        pickPop.target = self; pickPop.action = #selector(snipPickChanged(_:))
+
+        // Строка сочетания РАСКРЫВАЕТСЯ по тумблеру, а не сереет: тот же приём, что у скрытого
+        // значка в «Общих». Выключенная функция не должна занимать место настройкой, которая ни на
+        // что не влияет.
+        var pickRows: [NSView] = [
+            switchRow(L10n.t("snip.pickOn"), nil, settings.snippetPickEnabled, #selector(snipPickToggled(_:)))
+        ]
+        if settings.snippetPickEnabled { pickRows.append(controlRow(L10n.t("snip.pickCombo"), pickPop)) }
+
         return vstack([
             title(L10n.t("snip.title")),
             sub(L10n.t("snip.sub")),
@@ -1205,7 +1237,20 @@ final class DetailVC: NSViewController {
             sectionTitle(L10n.t("snip.expandOn")),
             keys,                        // [Пробел] [Enter] [Tab]
             disabled,                    // «Автозамена отключена…» — видна, когда все галочки сняты
-            hint(L10n.t("snip.hint"))    // раскладка/регистр не учитываются + пример
+            hint(L10n.t("snip.hint")),   // раскладка/регистр не учитываются + пример
+            group(DS.itemGap),
+            sectionTitle(L10n.t("snip.textsTitle")),
+            sub(L10n.t("snip.textsSub")),
+            group(4),
+            // ПОРЯДОК: сначала включаем функцию и назначаем сочетание, потом заполняем список
+            // (автор 06.08). Список без включённой функции это ящик, который некуда открыть.
+            card(pickRows),
+            group(2),
+            hint(L10n.t("snip.pickHint")),
+            group(6),
+            textsEditor,
+            copyHint,
+            copyBtn
         ])
     }
     private weak var snipDisabledLabel: NSTextField?
@@ -1290,6 +1335,40 @@ final class DetailVC: NSViewController {
         iconSeg.selectedSegment = iconStyleKeys.firstIndex(of: settings.menuBarStyle) ?? 1
         iconSeg.target = self; iconSeg.action = #selector(iconStyleSegChanged(_:))
 
+        // БЫСТРОЕ ДЕЙСТВИЕ ПРАВЫМ КЛИКОМ (задача 21). Порядок пунктов не случайный: первым стоит
+        // умолчание, дальше по убыванию пользы, как договорились с автором 05.08.
+        let quickPop = NSPopUpButton()
+        quickPop.addItems(withTitles: quickActionKeys.map { L10n.t("quick." + $0) })
+        quickPop.selectItem(at: quickActionKeys.firstIndex(of: settings.quickAction) ?? 0)
+        quickPop.target = self; quickPop.action = #selector(quickActionChanged(_:))
+
+        let pausePop = NSPopUpButton()
+        pausePop.addItems(withTitles: pauseLenMinutes.map { m in
+            m < 60 ? "\(m) мин" : (m == 60 ? "1 час" : "\(m / 60) часа")
+        })
+        pausePop.selectItem(at: pauseLenMinutes.firstIndex(of: settings.pauseMinutes) ?? 0)
+        pausePop.target = self; pausePop.action = #selector(pauseLenChanged(_:))
+
+        // ⚠️ ДОСТУПНОСТЬ СЧИТАЕТСЯ НЕ ПО «СКРЫТ ЛИ ЗНАЧОК» (автор 06.08, и это тонкое место).
+        // Пункт исчезает из строки меню, только если убраны И значок, И индикатор языка: при
+        // скрытом значке, но включённом языке в строке остаётся «RU/EN», и правый клик по нему
+        // прекрасно работает. Гасить функцию в этом случае значило бы соврать.
+        let quickOK = !(settings.menuBarStyle == "hidden" && !settings.menuBarShowLanguage)
+        Self.setEnabledDeep(quickPop, quickOK)
+        Self.setEnabledDeep(pausePop, quickOK)
+
+        // Кнопка «i» остаётся живой даже когда строка приглушена: именно из неё человек и узнает,
+        // ПОЧЕМУ недоступно. Приглушённая строка без объяснения читается как поломка.
+        var quickRows: [NSView] = [
+            controlRow(L10n.t("quick.action"), quickPop, enabled: quickOK,
+                       help: L10n.t(quickOK ? "quick.help" : "quick.helpOff"))
+        ]
+        // «Сколько молчать» показываем ТОЛЬКО у паузы: остальным действиям эта строка не нужна и
+        // только засоряет раздел. Тот же приём, что у зависимых настроек в других разделах.
+        if settings.quickAction == "pause" {
+            quickRows.append(controlRow(L10n.t("quick.pauseLen"), pausePop, enabled: quickOK))
+        }
+
         var general: [NSView] = [
             title(L10n.t("gen.title")),
             sub(L10n.t("gen.sub")),
@@ -1309,6 +1388,11 @@ final class DetailVC: NSViewController {
             ]),
             group(2),
             hint(L10n.t("gen.iconHint")),
+            group(6),
+            sectionTitle(L10n.t("quick.title")),
+            card(quickRows),
+            group(2),
+            hint(L10n.t("quick.sub")),
         ]
         if settings.menuBarStyle == "hidden" {
             // Значок скрыт — всегда объясняем, как добраться до приложения. Текст зависит от языка:
@@ -1332,6 +1416,139 @@ final class DetailVC: NSViewController {
 
     /// Ключи стилей значка в порядке сегментов (см. AppSettings.menuBarStyle).
     private let iconStyleKeys = ["brand", "keyboard", "flag", "hidden"]
+
+    /// Готовые сочетания для вставки сниппета. Взяты те, что редко заняты системой и чужими
+    /// программами: ⌃⌥ и ⌥⌘ с буквой S (snippet) и с пробелом.
+    /// ⚠️ ПЕРВЫЙ В СПИСКЕ = УМОЛЧАНИЕ. Тумблер, включаясь впервые, ставит именно его, поэтому
+    /// порядок здесь не оформление, а поведение. ⌃⌥V выбран автором 06.08: V от «вставить», а ⌃⌥
+    /// свободнее прочих сочетаний в системе.
+    private let snipPickPresets: [(String, Int, UInt64)] = [
+        ("⌃⌥V", 9, CGEventFlags([.maskControl, .maskAlternate]).rawValue),
+        ("⌃⌥S", 1, CGEventFlags([.maskControl, .maskAlternate]).rawValue),
+        ("⌥⌘S", 1, CGEventFlags([.maskAlternate, .maskCommand]).rawValue),
+        // ⚠️ ЗДЕСЬ БЫЛ ⌃⌥Space, и его пришлось убрать (проверка 06.08). Это СИСТЕМНОЕ сочетание
+        // macOS «предыдущий источник ввода», оно нашлось включённым в com.apple.symbolichotkeys
+        // на живой машине. Предлагать в готовых вариантах то, что уже занято системой, значит
+        // раздавать заведомо неработающие настройки.
+        ("⌃⌥E", 14, CGEventFlags([.maskControl, .maskAlternate]).rawValue),
+    ]
+
+    /// ЗАПИСЬ СВОЕГО СОЧЕТАНИЯ для вставки сниппета (просьба автора 06.08).
+    ///
+    /// ⚠️ Намеренно НЕ копируем сюда конечный автомат из `VoiceHotkeyControl`/`TranslateHotkeyControl`:
+    /// он там уже в двух почти одинаковых экземплярах, и третий был бы худшим решением из возможных.
+    /// Пользуемся общей обвязкой: `HotkeyRecording.begin` глушит перехват на время записи (иначе
+    /// набираемое сочетание сработало бы как чужой хоткей), а панель показывает набранное.
+    private var snipRecMonitor: Any?
+    /// Что применить, если человек нажмёт «Назначить». Пока nil — применять нечего.
+    private var snipPendingApply: (() -> Void)?
+
+    private func startSnippetHotkeyRecording() {
+        snipPendingApply = nil
+        HotkeyRecording.begin(stop: { [weak self] in self?.stopSnippetHotkeyRecording() }, in: view.window)
+        HotkeyRecorderPanel.shared.show(what: L10n.t("snip.pickOn"), over: view.window,
+                                        onCommit: { [weak self] in self?.commitSnippetHotkey() },
+                                        onCancel: { [weak self] in self?.stopSnippetHotkeyRecording() })
+        snipRecMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] e in
+            guard let self else { return nil }
+            let mods = CGEventFlags(rawValue: UInt64(e.modifierFlags.rawValue))
+                .intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift])
+            if e.type == .keyDown {
+                guard e.keyCode != 53 else { self.stopSnippetHotkeyRecording(); return nil }
+                // Одиночная клавиша без модификаторов отобрала бы у человека обычный ввод.
+                guard !mods.isEmpty else {
+                    HotkeyRecorderPanel.shared.warn(L10n.t("snip.needMods"),
+                                                    parts: HotkeyRecorderPanel.parts(mods: mods))
+                    return nil
+                }
+                let parts = HotkeyRecorderPanel.parts(mods: mods,
+                                                      keyLabel: KeyLabels.symbol(forKeyCode: Int(e.keyCode)))
+                // Общий вердикт, как у остальных контролов: жёсткое запрещаем, мягкое показываем и
+                // отдаём решение человеку. Своих правил здесь нет намеренно.
+                switch HotkeyGuard.verdict(keyCode: Int(e.keyCode), mods: mods) {
+                case .blocked(let busy):
+                    HotkeyRecorderPanel.shared.warn(HotkeyGuard.busyMessage(busy), parts: parts)
+                    return nil
+                case .warn(let who):
+                    self.armSnippetHotkey(keyCode: Int(e.keyCode), mods: mods, parts: parts,
+                                          warning: HotkeyGuard.conflictMessage(who))
+                case .ok:
+                    self.armSnippetHotkey(keyCode: Int(e.keyCode), mods: mods, parts: parts, warning: nil)
+                }
+                return nil
+            }
+            HotkeyRecorderPanel.shared.render(parts: HotkeyRecorderPanel.parts(mods: mods), complete: false)
+            return nil
+        }
+    }
+
+    /// Кандидат набран и показан. Настройки НЕ трогаем до нажатия «Назначить»: так человек успевает
+    /// прочитать предупреждение и передумать, а не узнаёт о конфликте после того, как всё применилось.
+    private func armSnippetHotkey(keyCode: Int, mods: CGEventFlags, parts: [String], warning: String?) {
+        snipPendingApply = { [weak self] in
+            self?.settings.snippetPickKeyCode = keyCode
+            self?.settings.snippetPickModifiers = mods.rawValue
+        }
+        HotkeyRecorderPanel.shared.render(parts: parts, complete: true, warning: warning)
+    }
+
+    private func commitSnippetHotkey() {
+        let apply = snipPendingApply
+        stopSnippetHotkeyRecording()
+        apply?()
+        reshow()
+    }
+
+    private func stopSnippetHotkeyRecording() {
+        if let m = snipRecMonitor { NSEvent.removeMonitor(m); snipRecMonitor = nil }
+        snipPendingApply = nil
+        HotkeyRecording.end()
+        HotkeyRecorderPanel.shared.hide()
+        reshow()
+    }
+
+    @objc private func copyFromAutoreplace() {
+        TextSnippetStore.shared.copyFromAutoreplace()
+        reshow()
+    }
+
+    @objc private func snipPickToggled(_ sw: NSSwitch) {
+        if sw.state == .on {
+            // Включили, а сочетание ещё не выбрано — ставим первое из готовых, иначе тумблер стоит
+            // «вкл», а функции нет, и это выглядит как поломка.
+            if !settings.snippetPickEnabled {
+                settings.snippetPickKeyCode = snipPickPresets[0].1
+                settings.snippetPickModifiers = snipPickPresets[0].2
+            }
+        } else {
+            settings.snippetPickKeyCode = -1
+            settings.snippetPickModifiers = 0
+        }
+        reshow()          // строка сочетания появляется и исчезает вместе с тумблером
+    }
+
+    @objc private func snipPickChanged(_ p: NSPopUpButton) {
+        let i = p.indexOfSelectedItem
+        if i >= snipPickPresets.count {          // последняя строка — «Назначить свою…»
+            startSnippetHotkeyRecording()
+            return
+        }
+        let preset = snipPickPresets[i]
+        settings.snippetPickKeyCode = preset.1
+        settings.snippetPickModifiers = preset.2
+    }
+
+    /// Порядок = порядок в меню выбора. Первый элемент это умолчание.
+    private let quickActionKeys = ["copyVoice", "pause", "dictate", "history", "settings"]
+    private let pauseLenMinutes = [15, 60, 180, 300]
+
+    @objc private func quickActionChanged(_ p: NSPopUpButton) {
+        settings.quickAction = quickActionKeys[max(0, min(quickActionKeys.count - 1, p.indexOfSelectedItem))]
+        reshow()   // строка «Сколько молчать» есть только у паузы, раздел надо пересобрать
+    }
+    @objc private func pauseLenChanged(_ p: NSPopUpButton) {
+        settings.pauseMinutes = pauseLenMinutes[max(0, min(pauseLenMinutes.count - 1, p.indexOfSelectedItem))]
+    }
 
     @objc private func iconStyleSegChanged(_ s: NSSegmentedControl) {
         settings.menuBarStyle = iconStyleKeys[max(0, min(s.selectedSegment, iconStyleKeys.count - 1))]

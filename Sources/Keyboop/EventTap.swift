@@ -14,6 +14,9 @@ protocol EventTapHandler: AnyObject {
     /// ТОЛЬКО смена языка (RU↔EN), без конвертации набранного — действие клавиши 🌐/Fn.
     func handleLayoutSwitchOnly()
     func handleContextReset()
+    /// Человек выбрал сниппет цифрой в списке (задача 17). Текст вставляется как есть,
+    /// удалять нечего: триггер никто не печатал.
+    func handleSnippetPicked(_ text: String)
     func handleVoiceBegin()
     func handleVoiceEnd()
     func handleTranslateHotkey()
@@ -121,6 +124,22 @@ final class EventTap {
     private var swallowedDownKeyCodes = Set<Int64>()
 
     /// Проглотить keyDown, запомнив клавишу: её keyUp тоже нельзя пускать в приложение.
+    /// keyCode цифр верхнего ряда 1…9 → индекс 0…8. Нампад намеренно НЕ поддержан: на ноутбуках
+    /// его нет, а раскладка цифр там своя, и молчаливое расхождение поведения хуже, чем его отсутствие.
+    /// Какой «девяткой» адресует этот набор модификаторов: 0 — голая цифра, 1 — с ⇧, 2 — с ⌘.
+    /// Всё остальное (⌥, ⌃, сочетания модификаторов) не наше: пусть уходит в приложение.
+    private static func digitBank(_ mods: CGEventFlags) -> Int? {
+        if mods.isEmpty { return 0 }
+        if mods == [.maskShift] { return 1 }
+        if mods == [.maskCommand] { return 2 }
+        return nil
+    }
+
+    private static func digitIndex(_ keyCode: Int64) -> Int? {
+        let row: [Int64] = [18, 19, 20, 21, 23, 22, 26, 28, 25]   // 1 2 3 4 5 6 7 8 9
+        return row.firstIndex(of: keyCode)
+    }
+
     private func swallowDown(_ keyCode: Int64) -> Unmanaged<CGEvent>? {
         swallowedDownKeyCodes.insert(keyCode)
         return nil
@@ -268,6 +287,9 @@ final class EventTap {
                 self.modkeyArmed = false
                 self.fnArmed = false
                 self.voiceModArmed = false
+                // Клик МИМО списка сниппетов закрывает его. Клик ПО списку сюда не попадает: панель
+                // забирает событие себе, и глобальный монитор его уже не видит.
+                if SnippetPicker.shared.isOpen { onMain { SnippetPicker.shared.hide() } }
                 self.otherKeyBetweenTaps = true
                 self.otherKeyDuringCombo = true
                 self.handler?.handleContextReset()
@@ -334,6 +356,10 @@ final class EventTap {
            event.getIntegerValueField(.eventSourceUserData) == kbSyntheticMarker {
             return Unmanaged.passUnretained(event)
         }
+        // ПАУЗА: пропускаем событие насквозь, не разбирая. Стоит ЗДЕСЬ, после отсева собственной
+        // синтетики и до всей логики, чтобы молчали разом и авто-исправление, и хоткеи, и диктовка.
+        // Одно сравнение с часами, настройки не читаем (см. `Pause`).
+        if Pause.active { return Unmanaged.passUnretained(event) }
         let s = AppSettings.shared
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
@@ -518,6 +544,31 @@ final class EventTap {
             // сочетание при включённом тумблере (а он включён по умолчанию) и отвечали бипом: то
             // есть молча отбирали у человека рабочую комбинацию и не давали взамен ничего. Это
             // единственное место во всём аудите, где умолчание отнимает и не возвращает.
+            // ВЫБОР СНИППЕТА (задача 17). Пока список открыт, цифра выбирает, Escape закрывает, а
+            // ЛЮБАЯ другая клавиша просто закрывает список и уходит дальше своим ходом: человек
+            // передумал и продолжил печатать, отбирать у него нажатие за это нельзя.
+            if SnippetPicker.shared.isOpen {
+                if keyCode == 53 { onMain { SnippetPicker.shared.hide() }; return swallowDown(keyCode) }
+                if let d = Self.digitIndex(keyCode), let bank = Self.digitBank(relevantMods(event.flags)) {
+                    // Нумерация продолжается модификаторами (автор 06.08): 1…9, затем ⇧1…⇧9, затем
+                    // ⌘1…⌘9. Дальше только мышью — четвёртый ряд пришлось бы вешать на ⌥ или ⌃, а
+                    // они у нас уже разобраны под жесты, и отбирать их у собственных функций нельзя.
+                    let idx = bank * 9 + d
+                    onMain { [weak self] in
+                        guard let text = SnippetPicker.shared.pick(index: idx) else { return }
+                        self?.handler?.handleSnippetPicked(text)
+                    }
+                    return swallowDown(keyCode)
+                }
+                onMain { SnippetPicker.shared.hide() }
+                // не глотаем: клавиша принадлежит человеку
+            } else if s.snippetPickEnabled, keyMatches(keyCode, s.snippetPickKeyCode) {
+                let want = relevantMods(CGEventFlags(rawValue: s.snippetPickModifiers))
+                if relevantMods(event.flags) == want {
+                    onMain { _ = SnippetPicker.shared.show() }
+                    return swallowDown(keyCode)
+                }
+            }
             if #available(macOS 15.0, *), s.translateEnabled, keyMatches(keyCode, s.translateHotkeyKeyCode) {
                 let want = relevantMods(CGEventFlags(rawValue: s.translateHotkeyModifiers))
                 if !want.isEmpty, relevantMods(event.flags) == want {
@@ -895,6 +946,11 @@ final class EventTap {
     /// ИСТОЧНИК ИСТИНЫ — реальное состояние записи (VoiceController.isRecording), НЕ локальный
     /// флаг voiceActive: он рассинхронивался, если begin() молча не стартовал (busy / микрофон
     /// занят / нет модели) — тогда «нажал, ничего, нажал ещё — пошло» (баг 1-к-8, 2026-06-09).
+    /// Тот же путь, что и по хоткею, но из меню (быстрое действие, задача 21). Держим ОДНУ
+    /// реализацию: развилка start/stop атомарна (VoiceGate.flip), и второй копии этой логики
+    /// быть не должно, иначе рассинхрон вернётся.
+    func toggleVoiceExternally() { toggleVoice() }
+
     private func toggleVoice() {
         // Решение start/stop — СИНХРОННОЕ и атомарное (VoiceGate.flip), иначе быстрый второй тап
         // видел устаревшее состояние: «нажал — ничего, нажал ещё — пошло» (баг 1-к-8, 09.06).

@@ -17,14 +17,24 @@ private final class FlippedClipView: NSClipView { override var isFlipped: Bool {
 /// появляется новая пустая. Сохраняем в SnippetStore на каждое изменение и на конец редактирования.
 final class SnippetsEditor: NSView, NSTextFieldDelegate {
     private var rows: [(String, String)] = []
-    private let store = SnippetStore.shared
+    /// Какой список редактируем. Их два и они не связаны: автозамена и сниппеты для вставки.
+    private let store: PairListStore
+    /// Подписи-приглашения в пустой строке: у списков разный смысл колонок.
+    private let phLeft: String
+    private let phRight: String
     private let rowsStack = NSStackView()
     private let scroll = NSScrollView()
     private let rowHeight: CGFloat = 30
-    private let trigW: CGFloat = 150
+    /// Ширина левой колонки. 120 вместо 150 (автор 06.08): и триггер автозамены, и название
+    /// сниппета короткие, а отнятые 30 пунктов уходят туда, где текст длинный.
+    private let trigW: CGFloat = 120
     private let trashW: CGFloat = 24
 
-    override init(frame frameRect: NSRect) {
+    init(frame frameRect: NSRect, store: PairListStore = SnippetStore.shared,
+         phLeft: String = "snip.phTrigger", phRight: String = "snip.phExpansion") {
+        self.store = store
+        self.phLeft = phLeft
+        self.phRight = phRight
         super.init(frame: frameRect)
         rows = store.pairs()
         normalizeTrailing()
@@ -110,9 +120,9 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
         let isLast = index == rows.count - 1
 
         let trig = field(mono: true,  value: rows[index].0, id: "trig",
-                         placeholder: isLast ? L10n.t("snip.phTrigger") : nil)
+                         placeholder: isLast ? L10n.t(phLeft) : nil)
         let exp  = field(mono: false, value: rows[index].1, id: "exp",
-                         placeholder: isLast ? L10n.t("snip.phExpansion") : nil)
+                         placeholder: isLast ? L10n.t(phRight) : nil)
 
         let trash = NSButton(title: "", target: self, action: #selector(deleteRowAction(_:)))
         trash.bezelStyle = .regularSquare

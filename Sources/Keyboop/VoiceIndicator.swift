@@ -26,6 +26,8 @@ final class VoiceIndicator {
     private let pad: CGFloat = 13       // боковые отступы
     private let gap: CGFloat = 9        // зазор иконка↔текст
     private let waveW: CGFloat = 54     // ширина waveform
+    private let dotW: CGFloat = 7       // диаметр точки-статуса у тоста
+    private let dot = NSView()
     private let maxLiveW: CGFloat = 460 // потолок для живого текста стриминга (дальше режем хвостом)
 
     func showRecording() { DispatchQueue.main.async { self.present(L10n.t("voice.listening"), .recording) } }
@@ -115,7 +117,11 @@ final class VoiceIndicator {
         mode = m
         stopTimers()
         label.stringValue = text
-        label.textColor = m == .toast ? NSColor.systemGreen : .labelColor
+        // ⚠️ БЫЛ СИСТЕМНЫЙ ЗЕЛЁНЫЙ (автор 06.08: «очень странный цвет»). Зелёный не наш: во всём
+        // приложении статус показывает коралловый акцент, а текст остаётся белым. Зелёная строка на
+        // тёмной плашке читалась как чужой элемент, попавший сюда по ошибке.
+        label.textColor = .labelColor
+        dot.isHidden = (m != .toast)
 
         let showWave = (m != .toast)
         relayout(text: text, showWave: showWave, panel: p)
@@ -140,8 +146,10 @@ final class VoiceIndicator {
     private func relayout(text: String, showWave: Bool, panel p: NSPanel) {
         let font = label.font ?? .systemFont(ofSize: 12, weight: .medium)
         let lblW = ceil((text as NSString).size(withAttributes: [.font: font]).width) + 1
-        let iconW = showWave ? waveW : 0
-        let iconGap = showWave ? gap : 0
+        // У записи слева waveform, у тоста точка. Ширина считается одинаково, поэтому боковые
+        // отступы у всех состояний совпадают и плашка не «прыгает» при смене режима.
+        let iconW = showWave ? waveW : dotW
+        let iconGap = showWave ? gap : gap - 1
         let total = pad + iconW + iconGap + lblW + pad
 
         var f = p.frame
@@ -151,6 +159,7 @@ final class VoiceIndicator {
 
         wave.isHidden = !showWave
         if showWave { wave.frame = NSRect(x: pad, y: (H - 20) / 2, width: waveW, height: 20) }
+        dot.frame = NSRect(x: pad, y: (H - dotW) / 2, width: dotW, height: dotW)
         let lx = pad + iconW + iconGap
         label.frame = NSRect(x: lx, y: (H - 18) / 2, width: lblW, height: 18)
     }
@@ -182,6 +191,14 @@ final class VoiceIndicator {
         bg = v
 
         v.addSubview(wave)
+
+        // Точка-статус для тостов: у плашки записи роль индикатора играет waveform, а тост без
+        // него выглядел голым текстом в прямоугольнике. Одна коралловая точка возвращает ему вид
+        // сообщения и держит ту же ритмику отступов, что у остальных состояний.
+        dot.wantsLayer = true
+        dot.layer?.backgroundColor = Self.coral.cgColor
+        dot.layer?.cornerRadius = dotW / 2
+        v.addSubview(dot)
 
         label.font = .systemFont(ofSize: 12, weight: .medium)
         label.textColor = .labelColor

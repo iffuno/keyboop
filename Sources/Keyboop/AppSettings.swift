@@ -192,6 +192,54 @@ final class AppSettings {
     /// ⌘Enter). Просьба автора 29.07 по обратной связи от людей. Храним маску CGEventFlags.
     var voiceAutoEnterMods: UInt64 { get { UInt64(bitPattern: Int64(d.integer(forKey: "voiceAutoEnterMods"))) } set { d.set(Int(bitPattern: UInt(newValue)), forKey: "voiceAutoEnterMods") } }
 
+    // MARK: - Выбор сниппета по хоткею (задача 17, автор 06.08.2026)
+
+    /// Клавиша общего хоткея выбора сниппета. -1 = функция выключена (умолчание).
+    /// Выключено по умолчанию осознанно: это новый перехват сочетания, и включать его всем без
+    /// спроса значит отобрать у кого-то работающий хоткей чужой программы.
+    var snippetPickKeyCode: Int {
+        get { d.object(forKey: "snippetPickKeyCode") == nil ? -1 : d.integer(forKey: "snippetPickKeyCode") }
+        set { d.set(newValue, forKey: "snippetPickKeyCode") }
+    }
+    var snippetPickModifiers: UInt64 {
+        get { UInt64(bitPattern: Int64(d.integer(forKey: "snippetPickModifiers"))) }
+        set { d.set(Int(bitPattern: UInt(newValue)), forKey: "snippetPickModifiers") }
+    }
+    var snippetPickEnabled: Bool { snippetPickKeyCode >= 0 }
+
+    // MARK: - Быстрое действие и пауза (задача 21, автор 05.08.2026)
+
+    /// Что делает ПРАВЫЙ клик по значку в строке меню. Левый по-прежнему открывает меню.
+    /// Значения: `copyVoice` (умолчание) · `pause` · `dictate` · `history`.
+    ///
+    /// ⚠️ Почему среди действий нет «вставить» и «исправить последнее слово», хотя их просят первыми:
+    /// клик по значку делает активными НАС, а не то приложение, где стоит курсор. Любое действие,
+    /// печатающее в «текущее поле», напечатало бы в самого Keyboop. Копирование работает именно
+    /// потому, что чужой фокус ему не нужен.
+    var quickAction: String {
+        get { d.string(forKey: "quickAction") ?? "copyVoice" }
+        set { d.set(newValue, forKey: "quickAction") }
+    }
+
+    /// На сколько минут усыпляет действие «пауза». 15 · 60 · 180 · 300 (выбор автора 05.08).
+    var pauseMinutes: Int {
+        get { let v = d.integer(forKey: "pauseMinutes"); return v > 0 ? v : 15 }
+        set { d.set(newValue, forKey: "pauseMinutes") }
+    }
+
+    /// До какого момента (unix-время) приложение молчит. 0 = не на паузе.
+    ///
+    /// ⚠️ ХРАНИМ НА ДИСКЕ, а не в памяти. Пауза на пять часов, пережившая перезапуск как «снова
+    /// работаю», это ровно тот сорт сюрприза, ради которого паузу и включали (демонстрация экрана,
+    /// игра, чужой ноутбук). Перезапуск не повод передумать за человека.
+    var pausedUntil: Double {
+        get { d.double(forKey: "pausedUntil") }
+        set { d.set(newValue, forKey: "pausedUntil") }
+    }
+
+    /// Сейчас на паузе? Единственный источник правды для всех потребителей.
+    var isPaused: Bool { pausedUntil > Date().timeIntervalSince1970 }
+
     var voiceTrailingSpace: Bool {
         get { d.object(forKey: "voiceTrailingSpace") == nil ? true : d.bool(forKey: "voiceTrailingSpace") }
         set { d.set(newValue, forKey: "voiceTrailingSpace") }

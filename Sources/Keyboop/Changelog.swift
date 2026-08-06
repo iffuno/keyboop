@@ -51,6 +51,37 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        // 0.3.15 — БЕТА. Две новые функции (сниппеты по сочетанию и быстрое действие правым
+        // кликом) плюс проверка занятости сочетаний, выросшая из вопроса «а не занято ли ⌃⌥V».
+        Release(version: "0.3.15",
+            ru: [
+                "Сниппеты стали отдельным списком и вставляются по сочетанию. Автозамена срабатывает сама по аббревиатуре, а эти вставляются осознанно: нажали сочетание, увидели список, выбрали цифрой или мышью. Сюда просится то, что на аббревиатуру вешать страшно: длинные команды, реквизиты, шаблоны писем.",
+                "У значка в строке меню появилось быстрое действие по правому клику. Левый по-прежнему открывает меню, правый сразу делает выбранное: копирует последнюю диктовку, начинает диктовку, открывает историю или настройки.",
+                "Keyboop можно попросить помолчать. Пауза на 15 минут, час, три или пять часов: всё это время он не трогает ни текст, ни сочетания, а потом возвращается к работе сам. Тем и отличается от выключенного тумблера, про который забывают на неделю.",
+                "При назначении сочетания видно, если оно уже занято. Критичные вроде ⌘C и ⌘V не отдадим никогда, а про системные функции macOS предупредим и всё равно дадим назначить: это ваш Mac и ваш выбор.",
+                "Две настройки назвали понятнее. «Исправлять слово после пробела» стало «Автоматическое исправление раскладки», а «Менять раскладку своей клавишей» стало «Менять раскладку без задержки». Со второй заодно снята пометка «бета».",
+                "Сообщение «Скопировано» выглядит как остальные плашки. Раньше текст в нём был выкрашен в чужой зелёный цвет.",
+            ],
+            en: [
+                "Snippets are a separate list now and get inserted by a shortcut. Autoreplace fires by itself on an abbreviation; these are inserted deliberately: press the shortcut, see the list, pick with a digit or the mouse. This is the place for what you would rather not bind to an abbreviation: long commands, bank details, letter templates.",
+                "The menu bar icon gained a quick action on right click. Left click still opens the menu, right click does the chosen thing at once: copies the last dictation, starts dictation, opens the history or the settings.",
+                "You can ask Keyboop to keep quiet. A pause for 15 minutes, an hour, three or five: it touches neither text nor shortcuts for that long, then comes back on its own. That is what makes it different from a switch you turn off and forget for a week.",
+                "Assigning a shortcut now shows when it is already taken. Critical ones like ⌘C and ⌘V we will never give away, and about macOS system functions we warn but still let you assign: it is your Mac and your call.",
+                "Two settings got clearer names. «Fix the word after a space» became «Automatic layout correction», and «Change layout with your own key» became «Change layout without the delay». The latter also dropped its «beta» tag.",
+                "The «Copied» message looks like the rest of the panels. Its text used to be painted in a stray green.",
+            ],
+            announce: """
+                Длинный ровный день за кодом, без съёмок и без пожаров. Такие я люблю больше всего: \
+                садишься утром, а к вечеру в приложении две новые функции.
+                """,
+announceEnd: """
+                Приедет тем, у кого включены бета-версии. Остальным как обкатается.
+
+                Спасибо всем, кто заходит на keyboop.com/tips. И если приложение пригодилось, \
+                поставьте звезду на GitHub: это ускоряет попадание в Homebrew, а по-человечески \
+                приятно видеть, что нас не двое.
+                """),
+
         // 0.3.14 — БЕТА. Четыре правки, и ни одна не была той задачей, за которую садились: клик с
         // модификатором вылез из проверки чужой просьбы, Spotlight из слияния дублей, а имя раскладки
         // «U.S.» из трассировки совсем другой починки.

@@ -75,7 +75,9 @@ final class HotkeyRecorderPanel {
 
     /// Отрисовать сочетание. `parts` — подписи клавиш по порядку (["⌘", "⇧", "K"]).
     /// `complete` — сочетание зафиксировано и его можно назначать.
-    func render(parts: [String], complete: Bool) {
+    /// `warning` — МЯГКОЕ предупреждение: сочетание занято системной функцией, но назначить
+    /// можно. Тем и отличается от `warn(_:parts:)`, который гасит кнопку: там отказ, здесь выбор.
+    func render(parts: [String], complete: Bool, warning: String? = nil) {
         keysRow.arrangedSubviews.forEach { $0.removeFromSuperview() }
         placeholder.isHidden = !parts.isEmpty
         for (i, part) in parts.enumerated() {
@@ -85,6 +87,12 @@ final class HotkeyRecorderPanel {
         commitBtn.isEnabled = complete
         commitBtn.keyEquivalent = ""   // подтверждаем только мышью, см. build()
         clearWarning()
+
+        if let w = warning, !w.isEmpty {
+            self.warning.stringValue = w
+            self.warning.isHidden = false
+            hint.isHidden = true
+        }
     }
 
     /// Показать отказ ПРЯМО в окне: сочетание видно, объяснение под ним, запись продолжается.

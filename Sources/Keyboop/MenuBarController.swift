@@ -19,6 +19,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     var onOpenSettings: (() -> Void)?
     var onShowVoiceHistory: (() -> Void)?
+    /// Старт диктовки из быстрого действия (задача 21).
+    var onQuickDictate: (() -> Void)?
     var onToggleAuto: ((Bool) -> Void)?
     var onCheckUpdates: (() -> Void)?
     var onQuit: (() -> Void)?
@@ -322,11 +324,67 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         return img
     }
 
+    /// Меню живёт ОДНИМ объектом и открывается нами вручную (`showMenu`), а не через
+    /// `statusItem.menu`. Причина одна: пока меню назначено пункту, macOS открывает его на ЛЮБОЙ
+    /// клик, и правый от левого не отличить. Быстрое действие (задача 21) требует их различать.
+    /// Содержимое по-прежнему пересобирается в момент открытия, через `menuNeedsUpdate`.
+    private let menu = NSMenu()
+
     private func buildMenu() {
-        let menu = NSMenu()
         menu.delegate = self
-        populate(menu)
-        statusItem.menu = menu
+        guard let button = statusItem.button else { return }
+        statusItem.menu = nil
+        button.target = self
+        button.action = #selector(statusItemClicked)
+        button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+    }
+
+    @objc private func statusItemClicked() {
+        // ⌃-клик система штатно считает правым, и человек с трекпадом часто именно им и пользуется.
+        let e = NSApp.currentEvent
+        let right = e?.type == .rightMouseUp || e?.modifierFlags.contains(.control) == true
+        if right { runQuickAction() } else { showMenu() }
+    }
+
+    /// ⚠️ ОТКРЫВАЕМ ЧЕРЕЗ `performClick`, А НЕ ЧЕРЕЗ `popUp` (автор 06.08, вернулись назад).
+    ///
+    /// Ради различения левого и правого клика меню перестали держать на `statusItem.menu`, и левый
+    /// клик показывал его вручную через `popUp`. Выглядело это неправильно: у меню появлялась
+    /// стрелка прокрутки сверху, а шапка с версией уезжала за край и «отскакивала» при наведении.
+    /// `popUp` рисует меню как контекстное, в отрыве от пункта строки меню, и системную геометрию
+    /// не воспроизводит.
+    ///
+    /// Возврат к штатному пути: назначаем меню на время клика и снимаем сразу после. Комментарий
+    /// выше про «не подменять открывающееся меню» остаётся в силе и не нарушается: мы подменяем ДО
+    /// открытия и снимаем ПОСЛЕ закрытия (performClick блокирующий), а не на лету.
+    private func showMenu() {
+        guard let button = statusItem.button else { return }
+        statusItem.menu = menu          // содержимое соберёт menuNeedsUpdate, как и раньше
+        button.performClick(nil)
+        // ⚠️ Снимаем меню в `menuDidClose`, а НЕ строкой ниже. `performClick` блокирует, пока меню
+        // открыто, но полагаться на это опасно: стоит ему на какой-нибудь версии вернуться сразу,
+        // и меню закроется в тот же миг, то есть по левому клику не откроется вовсе. Событие
+        // закрытия говорит правду в любом случае.
+    }
+
+    /// БЫСТРОЕ ДЕЙСТВИЕ ПО ПРАВОМУ КЛИКУ (задача 21, автор 05.08.2026).
+    ///
+    /// ⚠️ Здесь не может быть действий, печатающих в «текущее поле». Клик по значку делает активными
+    /// НАС, и любая вставка ушла бы в Keyboop, а не туда, где стоит курсор. Поэтому в списке только
+    /// то, чему чужой фокус не нужен: копирование, пауза, диктовка и окно истории.
+    private func runQuickAction() {
+        switch settings.quickAction {
+        case "pause":
+            if Pause.active { Pause.stop(); VoiceIndicator.shared.showToast(L10n.t("quick.resumed")) }
+            else {
+                Pause.start(minutes: settings.pauseMinutes)
+                VoiceIndicator.shared.showToast(L10n.t("quick.paused"))
+            }
+        case "dictate":  onQuickDictate?()
+        case "history":  onShowVoiceHistory?()
+        case "settings": onOpenSettings?()
+        default:         copyLastDictation()
+        }
     }
 
     /// ⚠️ ПЕРЕСБОРКА В МОМЕНТ ОТКРЫТИЯ (30.07). Раньше меню собиралось только по событиям — смена
@@ -341,6 +399,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
         populate(menu)
+    }
+
+    /// Меню закрылось — отвязываем его от пункта, иначе правый клик снова начнёт открывать меню
+    /// вместо быстрого действия (см. `showMenu`).
+    func menuDidClose(_ menu: NSMenu) {
+        statusItem.menu = nil
     }
 
     private func populate(_ menu: NSMenu) {
@@ -365,6 +429,20 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         header.isEnabled = false
         menu.addItem(header)
         menu.addItem(.separator())
+
+        // ПАУЗА — первой строкой и только когда она есть. Состояние, из-за которого человек решит,
+        // что программа сломалась, обязано быть видно сразу, а не третьим пунктом снизу.
+        if let until = Pause.until, Pause.active {
+            let f = DateFormatter(); f.dateFormat = "HH:mm"
+            let row = NSMenuItem(title: String(format: L10n.t("menu.pausedUntil"), f.string(from: until)),
+                                 action: nil, keyEquivalent: "")
+            row.isEnabled = false
+            menu.addItem(row)
+            let resume = NSMenuItem(title: L10n.t("menu.resumeNow"), action: #selector(resumePause), keyEquivalent: "")
+            resume.target = self
+            menu.addItem(resume)
+            menu.addItem(.separator())
+        }
 
         if needsPermission {
             // ⚠️ НАЗЫВАЕМ ТОТ ДОСТУП, КОТОРОГО НЕТ (репорт #71, 03.08.2026).
@@ -570,6 +648,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         NSPasteboard.general.setString(text, forType: .string)
         VoiceIndicator.shared.showToast(L10n.t("menu.copyLastDone"))
     }
+    /// Пауза изменилась: меню пересобирается при открытии само, но значок и подсказка живут
+    /// отдельно, и им нужен толчок.
+    func refreshAfterPauseChange() { applyIconStyle() }
+
+    @objc private func resumePause() { Pause.stop() }
     @objc private func reportProblem() { FeedbackWindowController.shared.show() }
     @objc private func openPermissions() { Permissions.openAccessibilitySettings() }
     @objc private func openInputMonitoring() {

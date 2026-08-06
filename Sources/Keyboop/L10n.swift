@@ -84,6 +84,39 @@ enum L10n {
         "sec.updates":    [.ru: "Обновления",   .en: "Updates"],
         "sec.about":      [.ru: "О программе",   .en: "About"],
 
+        // Быстрые действия по правому клику и пауза (задача 21, 05.08.2026)
+        "quick.title":    [.ru: "Быстрое действие правым кликом", .en: "Quick action on right click"],
+        "quick.sub":      [.ru: "Левый клик по значку открывает меню, правый сразу делает выбранное", .en: "Left click opens the menu, right click does the chosen thing at once"],
+        "quick.copyVoice":[.ru: "Копировать последнюю диктовку", .en: "Copy the last dictation"],
+        "quick.pause":    [.ru: "Помолчать", .en: "Keep quiet for a while"],
+        "quick.dictate":  [.ru: "Начать диктовку", .en: "Start dictation"],
+        "quick.history":  [.ru: "Открыть историю диктовок", .en: "Open the dictation history"],
+        // Сниппеты как ОТДЕЛЬНЫЙ список (решение автора 06.08.2026)
+        "snip.textsTitle":[.ru: "Сниппеты для вставки", .en: "Snippets to insert"],
+        "snip.textsSub":  [.ru: "Отдельный список. Автозамена срабатывает сама по аббревиатуре, а это вставляется осознанно: длинные команды, реквизиты, шаблоны писем.", .en: "A separate list. Autoreplace fires by itself on an abbreviation; these are inserted deliberately: long commands, bank details, letter templates."],
+        "snip.phName":    [.ru: "название", .en: "name"],
+        "snip.phText":    [.ru: "текст для вставки", .en: "text to insert"],
+        "snip.copyFrom":  [.ru: "Скопировать из автозамены", .en: "Copy from autoreplace"],
+        "snip.copyFromHint":[.ru: "Список пуст. Если что-то подходящее уже лежит в автозамене, можно скопировать его сюда — там оно останется.", .en: "The list is empty. If something suitable already sits in autoreplace, copy it here; it stays there too."],
+        "snip.pickOn":    [.ru: "Вставлять сниппет по сочетанию", .en: "Insert a snippet by shortcut"],
+        "snip.pickCombo": [.ru: "Сочетание", .en: "Shortcut"],
+        "snip.pickCustom":[.ru: "Назначить свою…", .en: "Set your own…"],
+        // Выбор сниппета по хоткею (задача 17, 06.08.2026)
+        "snip.pickHotkey":[.ru: "Вставить сниппет по сочетанию", .en: "Insert a snippet by shortcut"],
+        "snip.pickHint":  [.ru: "Нажмите сочетание — появится список, дальше цифра 1-9. Удобно для того, что не хочется вешать на аббревиатуру: длинные команды, реквизиты, шаблоны писем.", .en: "Press the shortcut for a list, then a digit 1-9. Handy for what you would rather not bind to an abbreviation: long commands, bank details, letter templates."],
+        "snip.pickOff":   [.ru: "Выключено", .en: "Off"],
+        "snip.pickTip":   [.ru: "цифра вставит · Esc закроет", .en: "a digit inserts · Esc closes"],
+        "snip.pickTipMore":[.ru: "цифра · ⇧цифра · ⌘цифра вставят, дальше мышью · Esc закроет", .en: "digit · ⇧digit · ⌘digit insert, the rest by mouse · Esc closes"],
+        "snip.pickEmpty": [.ru: "Список автозамен пуст", .en: "The snippet list is empty"],
+        "quick.action":   [.ru: "Действие", .en: "Action"],
+        "quick.settings": [.ru: "Открыть настройки", .en: "Open settings"],
+        "quick.help":     [.ru: "Правый клик по значку Keyboop в строке меню (рядом с часами) сразу делает выбранное, не открывая меню. Левый клик по-прежнему открывает меню.", .en: "Right-clicking the Keyboop icon in the menu bar (up by the clock) does the chosen thing at once, without opening the menu. Left click still opens the menu."],
+        "quick.helpOff":  [.ru: "Сейчас недоступно: значок Keyboop убран из строки меню, а кликать не по чему. Верните значок или индикатор языка в разделе «Строка меню» выше.", .en: "Unavailable right now: the Keyboop icon is hidden from the menu bar, so there is nothing to click. Bring back the icon or the language badge in «Menu bar» above."],
+        "quick.pauseLen": [.ru: "Сколько молчать", .en: "How long to keep quiet"],
+        "quick.paused":   [.ru: "Молчу. Разбудите правым кликом", .en: "Keeping quiet. Right click to wake me"],
+        "quick.resumed":  [.ru: "Снова на посту", .en: "Back on duty"],
+        "menu.pausedUntil":[.ru: "На паузе до %@", .en: "Paused until %@"],
+        "menu.resumeNow": [.ru: "Продолжить сейчас", .en: "Resume now"],
         "switch.title":   [.ru: "Переключение раскладки", .en: "Layout switching"],
         "switch.sub":     [.ru: "Бупни клавишу — кракозябры исчезнут.", .en: "Boop a key — the gibberish vanishes."],
         // ⚠️ ПРАВИЛО ИМЁН (T44, решение автора 30.07). Три настройки годами звучали как одно и то
@@ -92,8 +125,8 @@ enum L10n {
         //   всё, что правит текст  → начинается с «Исправлять»
         //   всё, что меняет только раскладку → начинается с «Менять раскладку»
         // Тогда первые две читаются как родственники, а разница видна в хвосте. Держаться правила.
-        "switch.auto":    [.ru: "Исправлять слово после пробела", .en: "Fix the word after a space"],
-        "switch.autoSub": [.ru: "Двусторонне, RU ↔ EN", .en: "Two-way, RU ↔ EN"],
+        "switch.auto":    [.ru: "Автоматическое исправление раскладки", .en: "Automatic layout correction"],
+        "switch.autoSub": [.ru: "Двусторонне, RU ↔ EN. Слово исправляется, когда вы его дописали", .en: "Two-way, RU ↔ EN. The word is fixed once you finish it"],
         "switch.translate":[.ru: "Перевод выделенного · ⌃⌥T", .en: "Translate selection · ⌃⌥T"],
         "switch.translateSub":[.ru: "Выдели СВОЙ текст в поле ввода и нажми ⌃⌥T — он заменится переводом RU↔EN. Там, где печатаешь (письмо, чат, заметка), а не на чужой веб-странице. Локально, macOS 15+.",
                               .en: "Select YOUR text in an input field and press ⌃⌥T — it's replaced with the RU↔EN translation. Where you type (mail, chat, notes), not on a read-only web page. Local, macOS 15+."],
@@ -170,6 +203,10 @@ enum L10n {
         // хуже двух. Про Esc не пишем, рядом стоит кнопка «Отмена» и она виднее.
         "hkrec.hint":     [.ru: "Держите модификаторы и нажмите клавишу. Либо просто нажмите и отпустите один модификатор.",
                            .en: "Hold modifiers and press a key. Or just press and release a single modifier."],
+        "snip.needMods":  [.ru: "Нужен хотя бы один модификатор: одна клавиша отберёт обычный ввод", .en: "At least one modifier is needed: a bare key would steal ordinary typing"],
+        "hkrec.warn.system":[.ru: "Это сочетание уже занято: %@. Назначить можно, но тогда системную функцию стоит отключить в настройках macOS, иначе сработают обе.",
+                           .en: "This shortcut is already taken: %@. You can still assign it, but then turn the system function off in macOS settings, or both will fire."],
+        "hk.sysGeneric":  [.ru: "системная функция macOS", .en: "a macOS system function"],
         "hkrec.assign":   [.ru: "Назначить", .en: "Assign"],
         // Предупреждения ВНУТРИ окна записи. Тон: понятно, без занудства, с лёгкой усмешкой.
         // ⚠️ Советов «добавьте ⌥ или ⌃» здесь нет намеренно (автор 28.07): объясняем, почему нельзя,
@@ -358,10 +395,10 @@ enum L10n {
         // оно уехало в подзаголовок, а в заголовок встала клавиша.
         // Правило имён T44 сохранено: настройка меняет только раскладку → начинается с «Менять
         // раскладку». Caps Lock назван в подзаголовке ДОСЛОВНО — именно это слово люди ищут глазами.
-        "is.title":       [.ru: "Менять раскладку своей клавишей (бета)", .en: "Change layout with your own key (beta)"],
-        "is.enable":      [.ru: "Менять раскладку своей клавишей", .en: "Change layout with your own key"],
-        "is.enableSub":   [.ru: "Caps Lock, 🌐 или любая ваша комбинация. Язык меняется сразу, без задержки системы. Набранное не трогаем — это просто смена раскладки, отдельно от ручного исправления слова.",
-                           .en: "Caps Lock, 🌐 or any shortcut you like. The language changes at once, with none of the system's delay. Your text isn't touched — it's just the layout, separate from fixing a word by hand."],
+        "is.title":       [.ru: "Менять раскладку без задержки", .en: "Change layout without the delay"],
+        "is.enable":      [.ru: "Менять раскладку без задержки", .en: "Change layout without the delay"],
+        "is.enableSub":   [.ru: "У системного переключения есть заметная пауза. Здесь язык меняется сразу, своей клавишей: Caps Lock, 🌐 или любой комбинацией. Набранное не трогаем, это только раскладка, отдельно от ручного исправления слова.",
+                           .en: "The system's own switch has a noticeable pause. This one changes the language at once, with a key of your choice: Caps Lock, 🌐 or any shortcut. Your text isn't touched, it's only the layout, separate from fixing a word by hand."],
         // Отказ Caps-режима, сказанный человеку. Без обвинений и без просьбы «удалите Karabiner»:
         // чужой ремап человек ставил осознанно, и ломать его молча мы не станем — об этом и пишем.
         "is.capsForeign": [.ru: "Caps Lock занят: на этом Mac уже настроен свой ремап клавиш (обычно это Karabiner или похожая утилита). Перебивать чужую настройку мы не будем — выберите другую клавишу выше, или снимите тот ремап и включите тумблер заново.",

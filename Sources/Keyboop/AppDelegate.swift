@@ -105,6 +105,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBar = MenuBarController(layout: engine.layout)
         menuBar.onOpenSettings = { [weak self] in self?.openSettings() }
         menuBar.onShowVoiceHistory = { [weak self] in self?.openVoiceHistory() }
+        menuBar.onQuickDictate = { [weak self] in self?.engine.toggleVoiceFromMenu() }
+        // Меню показывает паузу, значит обязано перерисоваться, когда она началась или кончилась.
+        Pause.onChange = { [weak self] in self?.menuBar.refreshAfterPauseChange() }
         menuBar.onCheckUpdates = { UpdaterController.shared.checkNow() }
         menuBar.onQuit = { NSApp.terminate(nil) }
         menuBar.onToggleAuto = { _ in }
@@ -333,6 +336,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // смотрят, на снимок не попадают.
                 HotkeyRecorderPanel.shared.render(parts: ["⌘", "⇧", "K"], complete: true)
             }
+        }
+        // Dev-хук: показать тост (KEYBOOP_TOAST=1). Тост живёт две секунды и появляется по
+        // действию, которое руками к моменту снимка уже не повторить, поэтому без хука его
+        // внешний вид проверялся «на память». автор 06.08 нашёл там чужой зелёный цвет.
+        if ProcessInfo.processInfo.environment["KEYBOOP_TOAST"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                VoiceIndicator.shared.showToast(L10n.t("menu.copyLastDone"))
+            }
+        }
+        // Dev-хук: показать список выбора сниппета (KEYBOOP_SNIPPICK=1). Плашка не крадёт фокус и
+        // управляется цифрами через перехватчик, поэтому руками её на снимок не поймать: любой клик
+        // мимо ничего не закроет, а нажатие цифры вставит текст в чужое окно. Хук показывает её и
+        // держит, пока смотрят.
+        if ProcessInfo.processInfo.environment["KEYBOOP_SNIPPICK"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { _ = SnippetPicker.shared.show() }
         }
         // Dev-хук: открыть «Что нового» (KEYBOOP_WHATSNEW=1) — посмотреть список изменений глазами
         // до релиза, не кликая по «О программе».
