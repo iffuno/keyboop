@@ -439,6 +439,8 @@ final class DetailVC: NSViewController {
     private var ignoredChips: ChipFlowView?
     private var learnedChips: ChipFlowView?
     private var wordInput: NSTextField?
+    /// Строка исхода под полем: добавлено / уже было / уже бережём / не сработает (P3.5).
+    private weak var wordOutcome: NSTextField?
     private var voiceModelStatus: [String: NSTextField] = [:]
     /// Кнопки «Скачать» по id модели. Как и метки выше, ПЕРЕрегистрируются при каждой сборке
     /// раздела — иначе обработчик прогресса держал бы ссылку на кнопку, которой уже нет.
@@ -741,10 +743,47 @@ final class DetailVC: NSViewController {
     private func addIgnoredFromInput() {
         guard let f = wordInput else { return }
         let raw = f.stringValue.trimmingCharacters(in: .whitespaces)
-        guard !raw.isEmpty else { return }
-        for w in raw.split(whereSeparator: { $0 == " " || $0 == "," }) { exceptions.addIgnored(String(w)) }
-        f.stringValue = ""
+        guard !raw.isEmpty else { clearAddOutcome(); return }
+        // ⚠️ РЕЖЕМ ПО ЛЮБОМУ ПРОБЕЛЬНОМУ, А НЕ ТОЛЬКО ПО ПРОБЕЛУ (ревью 07.08). Было `$0 == " "`, и
+        // список, вставленный из буфера СТРОКАМИ, приезжал одним куском с переносами внутри: он
+        // молча становился одной мёртвой записью и бодро отчитывался как добавленный. Теперь
+        // переносы и табуляции такие же разделители, как пробел, и вставка списка работает.
+        var byOutcome: [ExceptionStore.AddOutcome: [String]] = [:]
+        for w in raw.split(whereSeparator: { $0 == "," || $0.isWhitespace }) {
+            byOutcome[exceptions.addIgnored(String(w)), default: []].append(String(w))
+        }
+        // Отклонённое ОСТАЁТСЯ в поле: человеку есть что поправить, а стирать чужой ввод без спроса
+        // мы не вправе. Всё принятое из поля уходит.
+        let rejected = byOutcome[.rejected] ?? []
+        f.stringValue = rejected.joined(separator: " ")
         ignoredChips?.set(exceptions.ignoredSorted)
+        showAddOutcome(byOutcome)
+    }
+
+    /// Погасить строку исхода: прежнее сообщение относилось к прежнему действию и, провисев до
+    /// следующего, начинает врать (ревью 07.08 — оно переживало и пустой Enter, и удаление того
+    /// самого слова крестиком).
+    private func clearAddOutcome() {
+        wordOutcome?.stringValue = ""
+        wordOutcome?.isHidden = true
+    }
+
+    /// Одна строка под полем про то, что получилось. Приоритет сверху вниз: сначала то, что НЕ
+    /// сработало, потом то, что человек и так уже сделал. Показываем один исход, а не список из
+    /// четырёх: строка под полем это подсказка, а не отчёт.
+    private func showAddOutcome(_ byOutcome: [ExceptionStore.AddOutcome: [String]]) {
+        guard let label = wordOutcome else { return }
+        func names(_ o: ExceptionStore.AddOutcome) -> String? {
+            guard let list = byOutcome[o], !list.isEmpty else { return nil }
+            return list.joined(separator: ", ")
+        }
+        let text: String?
+        if let n = names(.rejected)       { text = String(format: L10n.t("exc.res.rejected"), n) }
+        else if let n = names(.alreadyBuiltin) { text = String(format: L10n.t("exc.res.builtin"), n) }
+        else if let n = names(.alreadyThere)   { text = String(format: L10n.t("exc.res.already"), n) }
+        else { text = nil }
+        label.stringValue = text ?? ""
+        label.isHidden = (text == nil)
     }
 
     // MARK: builders
@@ -966,6 +1005,7 @@ final class DetailVC: NSViewController {
         let ignoredView = ChipFlowView()
         ignoredView.emptyText = L10n.t("exc.empty")
         ignoredView.onDelete = { [weak self] w in
+            self?.clearAddOutcome()   // сообщение относилось к прежнему действию
             self?.exceptions.removeIgnored(w)
             self?.ignoredChips?.set(self?.exceptions.ignoredSorted ?? [])
         }
@@ -987,12 +1027,18 @@ final class DetailVC: NSViewController {
         // ⚠️ ПОЛЕ ВВОДА ВЫШЕ СПИСКА (автор, 04.08.2026). Было наоборот, и получалось нелогично:
         // человек печатал слово внизу, а оно появлялось выше того места, куда он смотрел. Порядок
         // «сначала чем добавляют, потом что добавлено» читается сверху вниз как действие и результат.
+        // Строка исхода. Пустая по умолчанию и НЕ занимает места: заводить под неё постоянный отступ
+        // значило бы держать дырку в разделе ради сообщения, которое человек видит раз в месяц.
+        let outcome = sub("")
+        outcome.isHidden = true
+        wordOutcome = outcome
         views.append(contentsOf: [
             group(12),
             title(L10n.t("exc.title")),
             sub(L10n.t("exc.sub")),
             group(DS.itemGap - 4),
             addRow,
+            outcome,
             group(6),
             ChipFieldView(ignoredView)
         ])
@@ -1343,9 +1389,7 @@ final class DetailVC: NSViewController {
         quickPop.target = self; quickPop.action = #selector(quickActionChanged(_:))
 
         let pausePop = NSPopUpButton()
-        pausePop.addItems(withTitles: pauseLenMinutes.map { m in
-            m < 60 ? "\(m) мин" : (m == 60 ? "1 час" : "\(m / 60) часа")
-        })
+        pausePop.addItems(withTitles: pauseLenMinutes.map(Pause.lengthLabel))
         pausePop.selectItem(at: pauseLenMinutes.firstIndex(of: settings.pauseMinutes) ?? 0)
         pausePop.target = self; pausePop.action = #selector(pauseLenChanged(_:))
 
@@ -1540,7 +1584,7 @@ final class DetailVC: NSViewController {
 
     /// Порядок = порядок в меню выбора. Первый элемент это умолчание.
     private let quickActionKeys = ["copyVoice", "pause", "dictate", "history", "settings"]
-    private let pauseLenMinutes = [15, 60, 180, 300]
+    private var pauseLenMinutes: [Int] { Pause.lengths }   // список один на меню и настройки
 
     @objc private func quickActionChanged(_ p: NSPopUpButton) {
         settings.quickAction = quickActionKeys[max(0, min(quickActionKeys.count - 1, p.indexOfSelectedItem))]

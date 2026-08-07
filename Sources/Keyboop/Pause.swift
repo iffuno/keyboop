@@ -30,6 +30,14 @@ enum Pause {
     /// Когда закончится — для строки в меню.
     static var until: Date? { untilCache > 0 ? Date(timeIntervalSince1970: untilCache) : nil }
 
+    /// Отрезки, из которых выбирают. ОДИН список на оба места, где он показывается: подменю в
+    /// строке меню и список в настройках. Порядок здесь и есть порядок на экране.
+    static let lengths = [15, 60, 180, 300]
+
+    /// Подпись отрезка. Тоже одна на оба места: «3 часа» в меню и «3 ч» в настройках читались бы
+    /// как две разные настройки, хотя это одна.
+    static func lengthLabel(_ minutes: Int) -> String { L10n.t("pause.len.\(minutes)") }
+
     static func start(minutes: Int) {
         untilCache = Date().timeIntervalSince1970 + Double(minutes) * 60
         AppSettings.shared.pausedUntil = untilCache

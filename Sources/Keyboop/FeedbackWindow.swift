@@ -57,9 +57,13 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             let f = self.textView.frame, c = self.textView.textContainer?.containerSize ?? .zero
-            kbLog(String(format: "feedback: поле %.0f×%.0f, контейнер %.0f×%.0f, скролл %.0f×%.0f",
-                         f.width, f.height, c.width, c.height,
-                         self.textScroll.frame.width, self.textScroll.frame.height))
+            // ⚠️ Высота контейнера при переносе по ширине равна `.greatestFiniteMagnitude`, а `%.0f`
+            // печатает её числом в 309 цифр. Строка распирала лог, который человек присылает нам
+            // вместе с отзывом, и читалась как поломка, хотя это штатное «не ограничено».
+            func dim(_ v: CGFloat) -> String { v > 1e6 ? "∞" : String(format: "%.0f", v) }
+            kbLog("feedback: поле \(dim(f.width))×\(dim(f.height)), "
+                  + "контейнер \(dim(c.width))×\(dim(c.height)), "
+                  + "скролл \(dim(self.textScroll.frame.width))×\(dim(self.textScroll.frame.height))")
         }
     }
 
@@ -319,7 +323,7 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         // писались только строкой `launched` при старте, а в багрепорт попадали последние 60 строк —
         // у человека, который пользуется приложением неделю, эта строка давно вымылась. То есть
         // ровно то, что объясняет половину репортов «не работает», мы систематически НЕ видели.
-        let health = AppHealth.blockingProblem ?? "работает"
+        let health = AppHealth.blockingProblem ?? "Работает"   // строки health.* с заглавной, фолбэк тоже
         // ⚠️ НАСТРОЙКИ ХОТКЕЕВ обязательны: без них весь класс «приложение блокирует пробел»
         // (репорты #13/#22/#30) по репорту принципиально неразрешим — мы не знаем, что человек
         // назначил. Это ЗНАЧЕНИЯ настроек, не пользовательский текст: принцип №2 не затронут.

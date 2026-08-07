@@ -68,13 +68,18 @@ enum L10n {
                        .en: "Who wins"],
         "amb.sub":     [.ru: "Эти слова набираются одними и теми же клавишами и существуют в обоих языках. Мы не можем угадать за тебя: кто-то пишет «versus» каждый день, кто-то — «мы» в каждом втором предложении. Выбери, что должно получаться.",
                        .en: "These words are typed with the very same keys and exist in both languages. We can't guess for you: some people write “versus” daily, others write “мы” in every other sentence. Pick what should come out."],
-        "amb.auto":    [.ru: "по контексту", .en: "by context"],
-        "amb.rowTip":  [.ru: "«%@» и «%@» набираются одними клавишами. По контексту — решаем сами, по словарю и языку соседних слов.",
-                       .en: "“%@” and “%@” are typed with the same keys. By context — we decide, using the dictionary and the language of neighbouring words."],
+        "amb.auto":    [.ru: "по умолчанию", .en: "default"],
+        // ⚠️ ФОРМУЛИРОВКА ИСПРАВЛЕНА 07.08 ПОТОМУ, ЧТО ОНА ВРАЛА. Было «по контексту решаем сами, по
+        // словарю и языку соседних слов», а на деле слово, валидное в языке набора, держится
+        // БЕЗУСЛОВНО (strict-gate, принцип «валидное слово не трогаем никогда»), и контекст в этих
+        // парах не читается вовсе. Обещать разбор по контексту там, где его нет, хуже, чем честно
+        // назвать правило: человек не понимает, почему «выбор по контексту» не срабатывает.
+        "amb.rowTip":  [.ru: "«%@» и «%@» набираются одними клавишами. Пока выбор не сделан, побеждает то, что является словом того языка, на котором набрано.",
+                       .en: "“%@” and “%@” are typed with the same keys. Until you choose, the winner is whichever is a real word in the language it was typed in."],
         "amb.back":    [.ru: "‹ Исключения", .en: "‹ Exceptions"],
         "amb.open":    [.ru: "Открыть список…", .en: "Open the list…"],
-        "amb.openSub": [.ru: "Слова, которые набираются одними и теми же клавишами и существуют в обоих языках («vs» и «мы»). По умолчанию решает контекст — но можно закрепить победителя.",
-                       .en: "Words typed with the very same keys that exist in both languages (“vs” and “мы”). Context decides by default — but you can pin a winner."],
+        "amb.openSub": [.ru: "Слова, которые набираются одними и теми же клавишами и существуют в обоих языках («vs» и «мы»). Пока выбор не сделан, побеждает язык, на котором набрано — но можно закрепить победителя.",
+                       .en: "Words typed with the very same keys that exist in both languages (“vs” and “мы”). Until you choose, the language it was typed in wins — but you can pin a winner."],
         "amb.hint":    [.ru: "Выбор сильнее всех встроенных правил — он попадает в исключения. Слово, которого тут нет, всегда можно добавить вручную на странице «Исключения».",
                        .en: "Your choice outranks every built-in rule — it goes into exceptions. A pair that isn't listed can always be added by hand on the Exceptions page."],
 
@@ -88,7 +93,12 @@ enum L10n {
         "quick.title":    [.ru: "Быстрое действие правым кликом", .en: "Quick action on right click"],
         "quick.sub":      [.ru: "Левый клик по значку открывает меню, правый сразу делает выбранное", .en: "Left click opens the menu, right click does the chosen thing at once"],
         "quick.copyVoice":[.ru: "Копировать последнюю диктовку", .en: "Copy the last dictation"],
-        "quick.pause":    [.ru: "Помолчать", .en: "Keep quiet for a while"],
+        // ⚠️ ИМЯ ФУНКЦИИ ЖИВЁТ В ЧЕТЫРЁХ СТРОКАХ СРАЗУ (переименование, автор 07.08). Было
+        // «Помолчать», и оно путалось с нашей же настройкой «без звуков»: читалось как «выключи
+        // звуки», хотя речь про ввод. «Не мешать» опирается на готовую привычку от системного
+        // «Не беспокоить». Меняя одну из этих строк, меняй все: пункт меню, подпись в настройках,
+        // тост и строку активной паузы это ОДНА функция, и звать её надо одинаково.
+        "quick.pause":    [.ru: "Не мешать", .en: "Do not disturb"],
         "quick.dictate":  [.ru: "Начать диктовку", .en: "Start dictation"],
         "quick.history":  [.ru: "Открыть историю диктовок", .en: "Open the dictation history"],
         // Сниппеты как ОТДЕЛЬНЫЙ список (решение автора 06.08.2026)
@@ -112,11 +122,19 @@ enum L10n {
         "quick.settings": [.ru: "Открыть настройки", .en: "Open settings"],
         "quick.help":     [.ru: "Правый клик по значку Keyboop в строке меню (рядом с часами) сразу делает выбранное, не открывая меню. Левый клик по-прежнему открывает меню.", .en: "Right-clicking the Keyboop icon in the menu bar (up by the clock) does the chosen thing at once, without opening the menu. Left click still opens the menu."],
         "quick.helpOff":  [.ru: "Сейчас недоступно: значок Keyboop убран из строки меню, а кликать не по чему. Верните значок или индикатор языка в разделе «Строка меню» выше.", .en: "Unavailable right now: the Keyboop icon is hidden from the menu bar, so there is nothing to click. Bring back the icon or the language badge in «Menu bar» above."],
-        "quick.pauseLen": [.ru: "Сколько молчать", .en: "How long to keep quiet"],
-        "quick.paused":   [.ru: "Молчу. Разбудите правым кликом", .en: "Keeping quiet. Right click to wake me"],
+        "quick.pauseLen": [.ru: "Как долго не мешать", .en: "For how long"],
+        "quick.paused":   [.ru: "Не мешаю. Вернуть правым кликом", .en: "Not disturbing you. Right click to bring me back"],
         "quick.resumed":  [.ru: "Снова на посту", .en: "Back on duty"],
-        "menu.pausedUntil":[.ru: "На паузе до %@", .en: "Paused until %@"],
+        "menu.pausedUntil":[.ru: "Не мешаю до %@", .en: "Not disturbing you until %@"],
         "menu.resumeNow": [.ru: "Продолжить сейчас", .en: "Resume now"],
+        // ⚠️ ПОДПИСИ ДЛИТЕЛЬНОСТЕЙ ЛЕЖАТ ЗДЕСЬ, А НЕ СОБИРАЮТСЯ СТРОКОЙ НА МЕСТЕ. Раньше их
+        // клеил `"\(m / 60) часа"` прямо в списке настроек: во-первых, только по-русски, во-вторых
+        // 300 минут читались как «5 часа». Набор фиксированный (`pauseLenMinutes`), поэтому четыре
+        // готовые строки честнее любых правил склонения. Меню и настройки берут их отсюда обе.
+        "pause.len.15":   [.ru: "15 минут", .en: "15 minutes"],
+        "pause.len.60":   [.ru: "1 час",    .en: "1 hour"],
+        "pause.len.180":  [.ru: "3 часа",   .en: "3 hours"],
+        "pause.len.300":  [.ru: "5 часов",  .en: "5 hours"],
         "switch.title":   [.ru: "Переключение раскладки", .en: "Layout switching"],
         "switch.sub":     [.ru: "Бупни клавишу — кракозябры исчезнут.", .en: "Boop a key — the gibberish vanishes."],
         // ⚠️ ПРАВИЛО ИМЁН (T44, решение автора 30.07). Три настройки годами звучали как одно и то
@@ -179,18 +197,44 @@ enum L10n {
         // Окно записи комбинации (HotkeyRecorderPanel)
         // Состояния, в которых Keyboop не может работать (AppHealth). Пишем ЧТО не так и что делать,
         // без паники: человек и так уже видит, что ничего не происходит.
-        "health.noAccessibility": [.ru: "не выдан доступ к Универсальному доступу",
+        "health.noAccessibility": [.ru: "Не выдан доступ к Универсальному доступу",
                                    .en: "Accessibility permission not granted"],
-        "health.engineDown":      [.ru: "движок не запущен", .en: "engine not running"],
-        // Фрагмент в общем ряду со строками выше: система штормила отключениями тапа, и мы сняли
+        "health.engineDown":      [.ru: "Движок не запущен", .en: "Engine is not running"],
+        // Система штормила отключениями тапа, и мы сняли
         // перехват сами, чтобы не держать ввод. Формулировка без терминов: человеку важно, что это
         // наше решение и что оно обратимо, а не что такое «event tap».
-        "health.tapSuspended":    [.ru: "перехват снят: система его глушила, я приостановился",
-                                   .en: "interception is off: the system kept killing it, so I stopped"],
-        "health.secureInput":     [.ru: "включён Secure Input — macOS прячет клавиатуру от всех программ",
-                                   .en: "Secure Input is on, macOS hides the keyboard from every app"],
-        "health.secureInputHolder": [.ru: "включён Secure Input (держит %@) — macOS прячет клавиатуру",
-                                     .en: "Secure Input is on (held by %@), macOS hides the keyboard"],
+        "health.tapSuspended":    [.ru: "Перехват снят: система его глушила, я приостановился",
+                                   .en: "Interception is off: the system kept killing it, so I stopped"],
+        // ⚠️ КОРОТКО, И ЭТО НЕ ПРИДИРКА К СТИЛЮ (автор 07.08). Было «включён Secure Input (держит
+        // Пароли Safari) — macOS прячет клавиатуру»: одна эта строка растягивала всё меню до 578
+        // пунктов при том, что любой другой пункт укладывается вдвое у́же. Строка стоит в меню,
+        // в подсказке значка и в диагностике отзыва, то есть чинить её надо один раз здесь.
+        //
+        // Заодно ушёл сам термин (P3.3). «Secure Input» это внутреннее имя механизма Apple, и для
+        // человека оно не значит ничего, кроме того, что программа ругается непонятным.
+        //
+        // ⚠️ И НЕ «БЕЗОПАСНЫЙ ВВОД» (автор 07.08, отверг). Прямой перевод термина заводит шкалу,
+        // которой нет: если ЭТОТ ввод безопасный, то весь остальной, выходит, опасный. «Скрытый»
+        // описывает ровно то, что происходит (система прячет от нас клавиши), и ничего не оценивает.
+        //
+        // ⚠️ ДВОЕТОЧИЕ ПЕРЕД ИМЕНЕМ ОБЯЗАТЕЛЬНО, иначе ломается согласование. Имена держателей
+        // бывают во множественном числе («Системные настройки», «Пароли»), и «клавиатуру держит
+        // Системные настройки» читается как ошибка. Двоеточие снимает вопрос о числе вовсе.
+        //
+        // Зачин выбран КОРОТКИМ намеренно: длина зачина и место под имя это одна величина, и при
+        // «где-то открыто поле пароля: » имени оставалось бы четыре символа. Обрезка имени по
+        // ширине живёт в AppHealth.problem(rowWidth:).
+        "health.secureInput":     [.ru: "Скрытый ввод в другой программе", .en: "Hidden input in another app"],
+        "health.secureInputHolder": [.ru: "Скрытый ввод: %@", .en: "Hidden input: %@"],
+        // Подсказки значка (P3.4). Эти две ЦЕЛЫЕ фразы, а не фрагменты общего ряда, потому что
+        // висят сами по себе при наведении. Про паузу отдельной строки нет намеренно: её текст
+        // берётся из menu.pausedUntil, чтобы значок и меню называли одно состояние одинаково.
+        "health.ok":              [.ru: "Keyboop работает", .en: "Keyboop is working"],
+        // Имя держателя, которого не удалось назвать: демоны вроде loginwindow не GUI-приложения,
+        // и NSRunningApplication про них ничего не знает. Раньше тут стоял русский литерал прямо
+        // в Engine, и он приезжал «зайцем» в английский текст.
+        "health.holderUnknown":   [.ru: "фоновый процесс", .en: "a background process"],
+        "health.autoOff":         [.ru: "Авто-переключение выключено", .en: "Auto-switch is off"],
         "hkrec.title":    [.ru: "Новая комбинация", .en: "New shortcut"],
         "hkrec.for":      [.ru: "Для действия: %@", .en: "For: %@"],
         "hkrec.waiting":  [.ru: "нажмите клавиши", .en: "press keys"],
@@ -341,6 +385,15 @@ enum L10n {
         "exc.empty":      [.ru: "Пока пусто.", .en: "Empty so far."],
         "exc.addPlaceholder":[.ru: "Слово…", .en: "Word…"],
         "exc.addWord":    [.ru: "Добавить", .en: "Add"],
+        // Исход добавления слова в исключения (P3.5). Обращаемся на «ты», как соседние строки
+        // этого же раздела («Впиши и нажми Enter», «Добавь программу ниже»).
+        // ⚠️ «Уже бережём» СООБЩАЕТ, а не отказывает: слово всё равно добавлено, см. addIgnored.
+        "exc.res.rejected":[.ru: "«%@» так не сработает: в слове не может быть пробела",
+                            .en: "«%@» will never match: a word cannot contain a space"],
+        "exc.res.builtin": [.ru: "«%@» мы и так бережём, но теперь это и твоя запись",
+                            .en: "«%@» is protected out of the box, but now it is yours too"],
+        "exc.res.already": [.ru: "«%@» уже в списке",
+                            .en: "«%@» is already in the list"],
         "exc.builtinTitle":[.ru: "Уже бережём", .en: "Already protected"],
         "exc.builtinBody": [.ru: "Популярные сервисы, чья раскладка случайно совпадает с английским словом, не трогаем по умолчанию — например «вк», «тг». Список вшит и обновляется с приложением.",
                             .en: "Popular services whose layout-swap happens to be an English word are left alone by default — e.g. «вк», «тг». The list is built in and ships with updates."],
@@ -954,7 +1007,6 @@ enum L10n {
         // дольше кода, и удалить строку дешевле, чем однажды обнаружить пустой пункт меню у того,
         // у кого сборка старше словаря. Если через пару релизов он так и не понадобится — убрать.
         "menu.perm":      [.ru: "Нужен доступ (Accessibility)…", .en: "Needs access (Accessibility)…"],
-        "menu.switchWord":[.ru: "Переключить слово:  %@", .en: "Switch word:  %@"],
         "menu.mic":       [.ru: "Микрофон", .en: "Microphone"],
         "menu.micDefault":[.ru: "По умолчанию (система)", .en: "Default (system)"],
         "menu.quitConfirm":[.ru: "Выйти из Keyboop?", .en: "Quit Keyboop?"],

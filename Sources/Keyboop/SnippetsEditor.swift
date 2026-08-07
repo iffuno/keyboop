@@ -30,6 +30,22 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
     private let trigW: CGFloat = 120
     private let trashW: CGFloat = 24
 
+    /// ВЫСОТА СПИСКА ПО СОДЕРЖИМОМУ (автор 06.08.2026). Раньше стояла жёсткая константа 470, то есть
+    /// почти шестнадцать строк ВСЕГДА: у человека с двумя сниппетами полраздела занимала пустота, а
+    /// у человека с тридцатью список всё равно скроллился. Теперь растём по числу строк.
+    ///
+    /// Границы: не ниже трёх строк, чтобы пустой список не выглядел щелью и в него было куда целить
+    /// мышью, и не выше десяти, иначе один длинный список выдавит из раздела всё остальное. Дальше
+    /// прокрутка, она тут была и раньше.
+    private let minRows = 3
+    private let maxRows = 10
+    private var scrollH: NSLayoutConstraint!
+
+    /// `count` уже включает пустую строку-приглашение в конце, отдельно её не добавляем.
+    private func heightForRows(_ count: Int) -> CGFloat {
+        CGFloat(min(maxRows, max(minRows, count))) * rowHeight + 2   // +2 на рамку
+    }
+
     init(frame frameRect: NSRect, store: PairListStore = SnippetStore.shared,
          phLeft: String = "snip.phTrigger", phRight: String = "snip.phExpansion") {
         self.store = store
@@ -83,11 +99,12 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
         add.translatesAutoresizingMaskIntoConstraints = false
         addSubview(add)
 
+        scrollH = scroll.heightAnchor.constraint(equalToConstant: heightForRows(rows.count))
         NSLayoutConstraint.activate([
             scroll.topAnchor.constraint(equalTo: topAnchor),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scroll.heightAnchor.constraint(equalToConstant: 470),
+            scrollH,
             add.topAnchor.constraint(equalTo: scroll.bottomAnchor, constant: 8),
             add.leadingAnchor.constraint(equalTo: leadingAnchor),
             add.widthAnchor.constraint(equalToConstant: 30),
@@ -107,6 +124,8 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
     private func rebuild() {
         for v in rowsStack.arrangedSubviews { rowsStack.removeArrangedSubview(v); v.removeFromSuperview() }
         for i in rows.indices { addRow(i) }
+        // Высота меняется вместе с числом строк: добавили сниппет — список подрос, удалили — сжался.
+        scrollH?.constant = heightForRows(rows.count)
     }
 
     private func addRow(_ index: Int) {

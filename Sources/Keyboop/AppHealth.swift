@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Состояния, в которых Keyboop не может делать свою работу, — в одном месте.
@@ -33,6 +34,14 @@ enum AppHealth {
     /// имя ищется асинхронно через ioreg и может не успеть).
     static var secureInputOn = false
 
+    /// ⚠️ ТОЛЬКО ДЛЯ DEV-ХУКА `KEYBOOP_FAKEHOLD`, и заведён отдельным полем не для красоты.
+    /// Сначала хук ставил боевой `secureInputOn`, и это было не «понарошку»: тот же флаг читает
+    /// `EventTap` и снимает со взвода жесты по одиночному модификатору. То есть инструмент для
+    /// разглядывания надписи молча ломал хоткеи на всю сессию (ревью 07.08). Показывающие пути
+    /// (`iconState`, `problem`) смотрят на оба флага, перехват — только на настоящий.
+    static var fakeSecureInput = false
+    private static var secureInputForDisplay: Bool { secureInputOn || fakeSecureInput }
+
     /// Когда приложение запустилось — чтобы отличать «только что стартовал» от «работает неделями».
     static let launchedAt = ProcessInfo.processInfo.systemUptime
     static var uptimeDescription: String {
@@ -52,17 +61,109 @@ enum AppHealth {
     /// инструктировала бы сломать рабочую программу.
     /// Поэтому живой детектор здесь — состояние тапа, а TCC спрашиваем только чтобы отличить
     /// «доступа не дали» от «дали, но старт не удался».
-    static var blockingProblem: String? {
+    static var blockingProblem: String? { problem(rowWidth: nil) }
+
+    /// `rowWidth` — ширина в пунктах, в которую обязана уложиться ВСЯ строка. nil = не ограничивать.
+    ///
+    /// Ограничение нужно ровно одному потребителю, строке меню: имя держателя приходит от чужой
+    /// программы и бывает какой угодно длины, а меню растягивается по самому широкому пункту.
+    /// «Битрикс24 Рабочий стол» в этой строке раздувал всё меню вдвое. Подсказка значка и
+    /// диагностика отзыва берут имя ЦЕЛИКОМ: там место есть, а в отчёте обрезанное имя это потеря
+    /// улики.
+    static func problem(rowWidth: CGFloat?) -> String? {
         // Сдача проверяется ПЕРВОЙ: это наше собственное решение, а не отказ системы, и человеку
         // надо сказать именно это, иначе он пойдёт чинить доступы, которые в полном порядке.
         if tapSuspended { return L10n.t("health.tapSuspended") }
         if !engineRunning {
             return Permissions.isTrusted() ? L10n.t("health.engineDown") : L10n.t("health.noAccessibility")
         }
-        if secureInputOn {
-            if let h = secureInputHolder { return String(format: L10n.t("health.secureInputHolder"), h) }
-            return L10n.t("health.secureInput")
+        if secureInputForDisplay {
+            guard let h = secureInputHolder else { return L10n.t("health.secureInput") }
+            let fmt = L10n.t("health.secureInputHolder")
+            guard let budget = rowWidth else { return String(format: fmt, h) }
+            // Сколько остаётся имени, считаем от САМОЙ строки, а не от числа в коде: у английского
+            // текста зачин другой длины, и зашитая константа врала бы ровно наполовину случаев.
+            let room = budget - width(String(format: fmt, ""))
+            return String(format: fmt, fit(h, into: room))
         }
         return nil
+    }
+
+    private static func width(_ s: String) -> CGFloat {
+        (s as NSString).size(withAttributes: [.font: NSFont.menuFont(ofSize: 0)]).width
+    }
+
+    /// Уложить имя в отведённую ширину, обрезая ПО ГРАНИЦЕ СЛОВА.
+    /// «Системные…» читается как сокращение, «Системные н…» — как сбой отрисовки.
+    /// Если в лимит не влезает даже первое слово, режем по буквам: это лучше пустоты.
+    private static func fit(_ name: String, into limit: CGFloat) -> String {
+        guard width(name) > limit else { return name }
+        var acc = ""
+        for word in name.split(separator: " ") {
+            let next = acc.isEmpty ? String(word) : acc + " " + word
+            if width(next + "…") > limit { break }
+            acc = next
+        }
+        if !acc.isEmpty { return acc + "…" }
+        var s = ""
+        for ch in name {
+            if width(s + String(ch) + "…") > limit { break }
+            s.append(ch)
+        }
+        return s + "…"
+    }
+
+    // MARK: - Что значок говорит о себе (P3.4)
+
+    /// Состояние значка в строке меню. Ровно одно за раз.
+    enum IconState: Equatable { case ok, tapSuspended, engineDown, secureInput, paused, autoOff }
+
+    /// ⚠️ ЗДЕСЬ ТОЛЬКО ЧТЕНИЯ ПОЛЕЙ, НИКАКОГО TCC. Это читает тик значка дважды в секунду, а
+    /// `Permissions.isTrusted()` — это IPC в TCC. Опрос TCC по таймеру в этом проекте уже однажды
+    /// подвесил ВЕСЬ ввод в системе, включая мышь: разбор в `EventTap`, вывод там сформулирован как
+    /// «пробник обязан быть бесплатным». Дорогое различение «доступа не дали» против «дали, но старт
+    /// не удался» живёт в `iconTip`, а он зовётся только в момент СМЕНЫ состояния.
+    ///
+    /// Порядок совпадает с `blockingProblem`, и это не случайность: значок и строка меню обязаны об
+    /// одном симптоме говорить одно и то же. Сначала то, с чем надо что-то делать, потом то, что
+    /// человек выбрал сам.
+    static var iconState: IconState {
+        if tapSuspended { return .tapSuspended }
+        if !engineRunning { return .engineDown }
+        if secureInputForDisplay { return .secureInput }
+        if Pause.active { return .paused }
+        if !AppSettings.shared.autoEnabled { return .autoOff }
+        return .ok
+    }
+
+    /// Гасить ли значок. Гасим, только когда молчит ВСЁ.
+    ///
+    /// ⚠️ При выключенном авто НЕ гасим, хотя соблазн есть. Диктовка, хоткеи и сниппеты в этом
+    /// состоянии живы, а у того, кто держит авто выключенным намеренно, вечно приглушённый значок за
+    /// неделю превратится в фон и перестанет что-либо значить. Тогда он не сработает и в тот раз,
+    /// когда сломается по-настоящему, а это единственное, ради чего он заводится.
+    static func iconDimmed(_ s: IconState) -> Bool {
+        switch s {
+        case .ok, .autoOff:                                  return false
+        case .tapSuspended, .engineDown, .secureInput, .paused: return true
+        }
+    }
+
+    /// Подсказка под состояние. Зовётся ТОЛЬКО при смене состояния, поэтому тут уже можно позволить
+    /// себе и TCC внутри `blockingProblem`, и разбор даты.
+    static func iconTip(_ s: IconState) -> String {
+        switch s {
+        case .ok:      return L10n.t("health.ok")
+        case .autoOff: return L10n.t("health.autoOff")
+        case .paused:
+            guard let until = Pause.until else { return L10n.t("health.ok") }
+            let f = DateFormatter(); f.dateFormat = "HH:mm"
+            return String(format: L10n.t("menu.pausedUntil"), f.string(from: until))
+        case .tapSuspended, .engineDown, .secureInput:
+            // Берём ТУ ЖЕ строку, что показывает меню: один симптом — одно объяснение.
+            // Регистр не трогаем: с 07.08 строки health.* написаны с заглавной прямо в каталоге,
+            // потому что каждая стоит самостоятельной строкой меню, а не фрагментом общего ряда.
+            return blockingProblem ?? L10n.t("health.ok")
+        }
     }
 }

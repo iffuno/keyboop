@@ -127,12 +127,45 @@ final class ExceptionStore {
         return changed
     }
 
-    func addIgnored(_ word: String) {
+    /// Чем кончилась попытка добавить слово. Раньше `addIgnored` молчал в любом случае, и человек
+    /// не отличал «добавлено» от «оно и так было» и от «это никогда не сработает» (P3.5).
+    enum AddOutcome { case added, alreadyThere, alreadyBuiltin, rejected }
+
+    /// ⚠️ ОТКАЗЫВАЕМ ТОЛЬКО ТОМУ, ЧТО ДОКАЗУЕМО МЕРТВО (решение автора 07.08).
+    ///
+    /// Спецификация просила отказывать всему, что не состоит из одних букв, на том основании, что
+    /// движок якобы требует «только буквы» до обращения к списку. Проверка по коду это опровергла
+    /// ДВАЖДЫ: `LayoutDetector.liveDecide` СРЕЗАЕТ ведущие и концевые цифры до проверки, а
+    /// `isExceptionOrPrefix` ищет не равенством, а ПРЕФИКСОМ (`$0.count > w.count && hasPrefix`).
+    /// То есть «вк2» в списке живёт и работает. Слепой отказ убрал бы рабочее поведение у тех, кто
+    /// это уже настроил.
+    ///
+    /// Пробельный символ — другое дело: токен у нас всегда одно слово, запись с пробелом внутри не
+    /// совпадёт ни с чем и не станет ничьим префиксом. Она мертва при любом раскладе.
+    ///
+    /// ⚠️ ЛЮБОЙ ПРОБЕЛЬНЫЙ, А НЕ ТОЛЬКО ОБЫЧНЫЙ ПРОБЕЛ (ревью 07.08). Проверка на `" "` была
+    /// недостижима: поле ввода режет ввод по пробелу первым, так что до сюда такой токен не
+    /// доезжал в принципе. А вот перенос строки, табуляция и неразрывный пробел доезжали и
+    /// молча оседали мёртвой записью — ровно то, от чего мы тут защищаемся.
+    static func isReachable(_ word: String) -> Bool {
+        word.rangeOfCharacter(from: .whitespacesAndNewlines) == nil
+    }
+
+    @discardableResult
+    func addIgnored(_ word: String) -> AddOutcome {
         let w = word.lowercased()
-        guard !w.isEmpty else { return }
+        guard !w.isEmpty else { return .rejected }
+        guard Self.isReachable(w) else { return .rejected }
+        // ⚠️ «Уже во встроенном списке» СООБЩАЕТ, а не запрещает: слово всё равно добавляем. Встроенный
+        // список меняется с версиями, и человек, однажды получивший отказ, остался бы без защиты в тот
+        // день, когда мы оттуда что-то уберём.
+        let builtin = ExtraWords.defaultKeep.contains(w)
+        let had = ignored.contains(w)
         ignored.insert(w)
         forceSwap.remove(w)
         save()
+        if builtin { return .alreadyBuiltin }
+        return had ? .alreadyThere : .added
     }
 
     func addForceSwap(_ word: String) {

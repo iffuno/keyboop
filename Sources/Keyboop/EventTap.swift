@@ -69,7 +69,12 @@ final class EventTap {
     private static func eventAgeMs(_ event: CGEvent) -> Double {
         let stamp = event.timestamp
         let now = mach_absolute_time()
-        if stampIsNanos == nil, stamp > 0 {
+        // ⚠️ Событие БЕЗ штампа возраста не имеет. Такие приходят (в логе за 06.08 их двое), и
+        // без этой строки они считались как «now − 0», то есть возрастом во весь аптайм: в логе
+        // стояло «пролежало 860386056 мс», без малого десять суток. Замер, который иногда врёт на
+        // семь порядков, хуже отсутствующего: именно по нему мы судим, не тормозим ли мы ввод.
+        guard stamp > 0 else { return 0 }
+        if stampIsNanos == nil {
             // Тики и наносекунды на этой машине различаются в numer/denom раз (~41). Берём отношение:
             // если штамп ЗАМЕТНО больше текущих тиков — он в наносекундах.
             let ratio = Double(stamp) / Double(max(now, 1))

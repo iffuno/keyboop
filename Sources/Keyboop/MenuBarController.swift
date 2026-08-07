@@ -56,7 +56,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         buildMenu()
     }
 
-    @objc private func languageChanged() { buildMenu() }
+    @objc private func languageChanged() {
+        // Подсказка значка собрана на прежнем языке и сама себя не пересоберёт: состояние-то
+        // не изменилось. Сбрасываем метку, и ближайший тик перепишет её на новом языке.
+        shownIconState = nil
+        buildMenu()
+    }
 
     private func configureButton() {
         applyIconStyle()
@@ -140,6 +145,23 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// Язык, под который уже нарисован флаг. Меняем картинку ТОЛЬКО при реальной смене раскладки:
     /// иначе трогали бы NSStatusItem.button дважды в секунду на ровном месте.
     private var lastFlagLang = ""
+    /// Что за состояние уже нарисовано на значке. Нужно, чтобы опрос дважды в секунду не
+    /// пересчитывал текст подсказки и не трогал AppKit там, где ничего не менялось.
+    /// nil = «покажи заново», им же сбрасываем при смене языка интерфейса и после диктовки.
+    private var shownIconState: AppHealth.IconState?
+
+    /// Забыть нарисованное, чтобы ближайший тик собрал подсказку заново.
+    ///
+    /// ⚠️ ЗАЧЕМ ЭТО СНАРУЖИ (ревью 07.08, дефект был внесён в тот же день). Состояние «клавиатуру
+    /// занял кто-то другой» наступает СРАЗУ, а ИМЯ держателя приезжает через ~0.7 с, отдельным
+    /// ответом ioreg. Кэш ключуется состоянием, состояние за эти 0.7 с не меняется, и подсказка
+    /// навсегда оставалась без имени: в меню «Скрытый ввод: Пароли Safari», а при наведении на
+    /// значок «Скрытый ввод в другой программе». Один симптом, два разных текста.
+    ///
+    /// Кэшировать сам ТЕКСТ подсказки вместо состояния нельзя: тогда `iconTip` считался бы каждые
+    /// полсекунды, а на ветке «движок не запущен» он доходит до TCC, и это ровно тот запрет, из-за
+    /// которого у нас однажды встал весь ввод в системе.
+    func invalidateIconState() { shownIconState = nil }
 
     /// Флаг для языка, а если такого флага у нас нет — обычный значок клавиатуры.
     private func flagOrKeyboard(_ lang: String) -> NSImage? {
@@ -178,7 +200,22 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private func updateTitle() {
         if voiceState != .idle { return }   // во время диктовки иконку держит voice-индикатор
         guard let button = statusItem.button else { return }
-        if needsPermission { button.title = " ⚠︎"; return }
+
+        // ЗНАЧОК РАССКАЗЫВАЕТ О СЕБЕ (P3.4). Пока Keyboop молчал — не выдан доступ, кто-то держит
+        // Secure Input, идёт пауза — значок выглядел ровно так же, как когда всё работает. Человеку
+        // оставалось решить, что программа сломалась: в поле зафиксировано удержание loginwindow
+        // длиной 6 ч 51 мин, и всё это время значок был обычным.
+        //
+        // ⚠️ СОСТОЯНИЕ СЧИТАЕМ КАЖДЫЙ ТИК, А ТЕКСТ — ТОЛЬКО НА СМЕНЕ. `iconState` это чтения полей,
+        // их не жалко дважды в секунду. `iconTip` внутри доходит до TCC, и звать его по таймеру
+        // нельзя (см. запрет в EventTap). Заодно не трогаем AppKit там, где ничего не изменилось.
+        let health = AppHealth.iconState
+        if health != shownIconState {
+            shownIconState = health
+            button.toolTip = AppHealth.iconTip(health)
+            button.appearsDisabled = AppHealth.iconDimmed(health)
+        }
+
         // Раскладку спрашиваем ОДИН раз на тик: и флагу, и подписи нужен один и тот же код.
         // currentCodeLive, а НЕ currentCode: в фоновом агенте чтение TIS не следует за внешними
         // переключениями раскладки (замер 25.07 — см. LayoutManager.currentCodeLive).
@@ -189,9 +226,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             lastFlagLang = code
             button.image = flagOrKeyboard(code)
         }
-        guard settings.menuBarShowLanguage else { button.title = ""; return }   // язык скрыт
-        // Без значка (hidden) язык без ведущего пробела; со значком — с отступом от него.
-        button.title = settings.menuBarStyle == "hidden" ? code : " \(code)"
+
+        // ⚠️ ЗНАК ТЕПЕРЬ ДОБАВЛЯЕТСЯ К ЯЗЫКУ, А НЕ ЗАМЕНЯЕТ ЕГО. Раньше при нехватке доступа стояло
+        // `button.title = " ⚠︎"` вместо кода раскладки: человек, у которого в строке меню только
+        // язык и есть, терял его целиком и получал вместо диагноза вторую поломку. И появлялся знак
+        // только на доступах, тогда как молчать мы умеем ещё тремя способами.
+        let lang = settings.menuBarShowLanguage ? code : ""
+        let mark = (needsPermission || AppHealth.iconDimmed(health)) ? "⚠︎" : ""
+        let parts = [lang, mark].filter { !$0.isEmpty }
+        guard !parts.isEmpty else { button.title = ""; return }
+        let text = parts.joined(separator: " ")
+        // Без значка (hidden) подпись без ведущего пробела; со значком — с отступом от него.
+        button.title = settings.menuBarStyle == "hidden" ? text : " \(text)"
     }
 
     /// Индикатор диктовки в статус-баре: запись / распознавание / покой.
@@ -203,6 +249,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             stopWave()
             applyIconStyle()                              // вернуть выбранный пользователем значок (не хардкод)
         case .recording:
+            // Значок на время записи забирает индикатор диктовки, и наши подсказка с приглушением
+            // на нём остались бы висеть от прошлого состояния. Снимаем и помечаем «показать заново»,
+            // чтобы возврат в покой их восстановил (updateTitle выходит первой строкой, пока идёт
+            // запись, и сам этого не сделает).
+            button.toolTip = nil
+            button.appearsDisabled = false
+            shownIconState = nil
             // Живой waveform «K + столбики по громкости» вместо «микрофон + точка».
             // В режиме «без значка» код языка на время записи НЕ прячем: он там единственное, что
             // человек согласился видеть, и его исчезновение читалось бы как ещё одна поломка.
@@ -357,6 +410,17 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// Возврат к штатному пути: назначаем меню на время клика и снимаем сразу после. Комментарий
     /// выше про «не подменять открывающееся меню» остаётся в силе и не нарушается: мы подменяем ДО
     /// открытия и снимаем ПОСЛЕ закрытия (performClick блокирующий), а не на лету.
+    /// СНИМОК МЕНЮ (`KEYBOOP_MENUSHOT=1`, 07.08). Меню оставалось единственной поверхностью без
+    /// хука: у баннера, настроек, формы отзыва, тоста и панели сниппетов он есть, а тут не было.
+    /// Руками меню не снять — оно закрывается на любом клике мимо, в том числе на попытке навести
+    /// на него утилиту снимка. Цена этого пробела уже заплачена: стрелку прокрутки в меню 06.08
+    /// нашёл автор, а не я, потому что смотреть было нечем.
+    /// Открывает меню через 2 с после запуска; снимок снимает снаружи `Tools/menushot.sh`.
+    func openMenuForShot() {
+        guard ProcessInfo.processInfo.environment["KEYBOOP_MENUSHOT"] == "1" else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in self?.showMenu() }
+    }
+
     private func showMenu() {
         guard let button = statusItem.button else { return }
         statusItem.menu = menu          // содержимое соберёт menuNeedsUpdate, как и раньше
@@ -480,7 +544,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // репортёра держатель даже назван по имени, а человек об этом так и не узнал и написал
         // «не работает» (причём написал в неверной раскладке — мы не сконвертировали, потому что были
         // слепы). Показываем прямо в меню, с именем держателя, если успели его найти.
-        if let problem = AppHealth.blockingProblem {
+        // ⚠️ БЮДЖЕТ ШИРИНЫ, А НЕ «СКОЛЬКО ВЛЕЗЕТ» (автор 07.08). Меню растягивается по самому широкому
+        // пункту, а имя держателя приходит от чужой программы и бывает любой длины: «Битрикс24 Рабочий
+        // стол» раздувал меню вдвое. 260 pt это самый широкий обычный пункт (220) плюс небольшой запас,
+        // при котором ни одно реальное имя из наших диагностик ещё не режется. Обрезка ниже по коду это
+        // страховка на неведомое, а не штатный режим.
+        if let problem = AppHealth.problem(rowWidth: 260) {
             // Значок вместо прежнего «⚠︎ » в тексте: символ рисуется цветным и стоит в общей колонке
             // иконок, а не съедает начало строки, где важен сам текст проблемы.
             let warn = NSMenuItem(title: problem, action: nil, keyEquivalent: "")
@@ -499,12 +568,35 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                           "arrow.2.squarepath")
         menu.addItem(auto)
 
-        // Строка-подсказка, а не действие, но иконка ей нужна: без неё она одна в группе съедет вправо.
-        let hot = NSMenuItem(title: String(format: L10n.t("menu.switchWord"), hotkeyDisplayString()),
-                             action: nil, keyEquivalent: "")
-        hot.isEnabled = false
-        hot.image = icon("keyboard")
-        menu.addItem(hot)
+        // ПАУЗА — СРАЗУ ПОД АВТОПЕРЕКЛЮЧЕНИЕМ, вместо прежней строки-подсказки «Переключить слово:
+        // ⌥⇧» (автор 07.08). Место выбрано по смыслу: это соседний тумблер того же самого, только на
+        // время, и стоять он должен рядом со своим постоянным собратом, а не отдельной группой.
+        // Подсказка про хоткей была строкой без действия и уступила место живому пункту; само
+        // сочетание никуда не делось и видно в настройках.
+        //
+        // Раньше меню показывало паузу, ТОЛЬКО когда она уже идёт, то есть включить её было неоткуда,
+        // кроме заранее настроенного правого клика. Для функции «не мешай сейчас» это ровно наоборот:
+        // нужна она внезапно и на месте (задача 88).
+        //
+        // ⚠️ ПУНКТ ЕСТЬ, ТОЛЬКО ПОКА АВТОПЕРЕКЛЮЧЕНИЕ ВКЛЮЧЕНО (решение автора 07.08): пауза по сути
+        // и есть «выключить авто на время», и предлагать её тому, у кого авто уже выключено, значит
+        // предлагать выключить выключенное.
+        // Оговорка на будущее, если вернёмся: `Pause` глушит ВЕСЬ перехват (`EventTap:367`), а не
+        // только авто. У человека с выключенным авто, но живыми хоткеями и сниппетами из меню теперь
+        // нет способа их придержать. Случай редкий, но он существует.
+        if settings.autoEnabled, !Pause.active {
+            let pause = NSMenuItem(title: L10n.t("quick.pause"), action: nil, keyEquivalent: "")
+            pause.image = icon("pause.circle")
+            let sub = NSMenu()
+            for m in Pause.lengths {
+                let row = NSMenuItem(title: Pause.lengthLabel(m), action: #selector(startPause(_:)), keyEquivalent: "")
+                row.target = self
+                row.tag = m          // минуты несём в теге: свой @objc-метод на каждый отрезок не нужен
+                sub.addItem(row)
+            }
+            pause.submenu = sub
+            menu.addItem(pause)
+        }
 
         menu.addItem(.separator())
 
@@ -653,6 +745,20 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     func refreshAfterPauseChange() { applyIconStyle() }
 
     @objc private func resumePause() { Pause.stop() }
+
+    /// Минуты приходят в `tag` пункта — см. сборку подменю «Не мешать».
+    ///
+    /// ⚠️ ТОСТ ЗДЕСЬ СВОЙ, А НЕ ОБЩИЙ С БЫСТРЫМ ДЕЙСТВИЕМ (ревью 07.08). `quick.paused` говорит
+    /// «Вернуть правым кликом», и для быстрого действия это правда по построению: его туда и
+    /// назначили. А из меню паузу включает кто угодно, и у большинства правый клик делает совсем
+    /// другое (по умолчанию копирует последнюю диктовку). Называем тот выход, который есть у всех:
+    /// он же стоит первой строкой меню, пока пауза идёт.
+    @objc private func startPause(_ sender: NSMenuItem) {
+        Pause.start(minutes: sender.tag)
+        let f = DateFormatter(); f.dateFormat = "HH:mm"
+        let until = Date().addingTimeInterval(TimeInterval(sender.tag) * 60)
+        VoiceIndicator.shared.showToast(String(format: L10n.t("menu.pausedUntil"), f.string(from: until)))
+    }
     @objc private func reportProblem() { FeedbackWindowController.shared.show() }
     @objc private func openPermissions() { Permissions.openAccessibilitySettings() }
     @objc private func openInputMonitoring() {

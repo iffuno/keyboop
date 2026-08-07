@@ -53,6 +53,39 @@ enum Changelog {
     static let releases: [Release] = [
         // 0.3.15 — БЕТА. Две новые функции (сниппеты по сочетанию и быстрое действие правым
         // кликом) плюс проверка занятости сочетаний, выросшая из вопроса «а не занято ли ⌃⌥V».
+        Release(version: "0.3.16",
+            ru: [
+                "Паузу теперь видно в меню. Пункт «Не мешать» стоит сразу под автопереключением и предлагает помолчать 15 минут, час, три или пять. Раньше она показывалась, только когда уже шла, а включить её оттуда было нельзя.",
+                "Значок в строке меню говорит, когда Keyboop молчит. Наведите на него, и он ответит, что мешает: не выдан доступ, идёт пауза, клавиатуру занял кто-то другой. Пока молчим, значок приглушён.",
+                "Предупреждение больше не съедает код языка. Раньше при нехватке доступа вместо «RU» появлялся треугольник, и язык пропадал целиком. Теперь знак стоит рядом с ним, а не вместо.",
+                "Сообщение про занятую клавиатуру стало человеческим. Было «включён Secure Input (держит Пароли Safari)», стало «Скрытый ввод: Пароли Safari». Заодно оно перестало растягивать меню вдвое.",
+                "Списки автозамены и сниппетов подстраиваются под содержимое. Раньше они были фиксированной высоты и занимали пол-окна даже с тремя записями.",
+                "Поле исключений отвечает, что получилось: слово уже в списке, или мы его и так бережём. Заодно список, вставленный строками, добавляется по словам, а не одной мёртвой записью.",
+            ],
+            en: [
+                "The pause is now visible in the menu. «Do not disturb» sits right under auto-switch and offers 15 minutes, an hour, three or five. Before, it showed up only once it was already running, and could not be started from there.",
+                "The menu bar icon now tells you when Keyboop is silent. Hover over it and it says what exactly is in the way: a permission is missing, a pause is running, another app has taken the keyboard. While we are silent the icon is dimmed.",
+                "The warning sign no longer eats the language code. Before, a missing permission replaced «EN» with a triangle and the language vanished. The sign now stands next to it, not instead of it.",
+                "The message about a busy keyboard is in plain words now. It used to read «Secure Input is on (held by Safari Passwords)» and now reads «Hidden input: Safari Passwords». It also stopped stretching the whole menu to twice its width.",
+                "The autoreplace and snippet lists now fit their contents. They used to be a fixed height and took up half the window even with three entries.",
+                "The exceptions field tells you what happened: the word is already listed, or already protected out of the box. A list pasted as separate lines is now added word by word, not as one dead entry.",
+            ],
+            announce: """
+                Сегодня почти выходной: готовил дома еду, сходил в зал, сделал пару добрых \
+                дел. В зале, к слову, познакомился с девушкой, очень спортивной и очень красивой, \
+                так что мотивация ходить туда выросла сама собой. За проект всё равно сел: открыл \
+                поправить одну строчку в меню, строчка стала короче на сорок символов, а вечер \
+                длиннее на четыре часа.
+                """,
+            announceEnd: """
+                Приедет тем, у кого включены бета-версии. Остальным как обкатается.
+
+                Просьба: когда пишете о проблеме, прикладывайте лог из формы отзыва. Без него причин \
+                бесконечно много, с ним обычно одна.
+
+                Спасибо всем, кто поддержал на keyboop.com/tips.
+                """),
+
         Release(version: "0.3.15",
             ru: [
                 "Сниппеты стали отдельным списком и вставляются по сочетанию. Автозамена срабатывает сама по аббревиатуре, а эти вставляются осознанно: нажали сочетание, увидели список, выбрали цифрой или мышью. Сюда просится то, что на аббревиатуру вешать страшно: длинные команды, реквизиты, шаблоны писем.",

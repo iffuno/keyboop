@@ -28,11 +28,34 @@ final class TranslationEngine {
         return await withTimeout(8) { [model] in await model.translate(text: text, from: from, to: to) }
     }
 
-    /// Установлен ли языковой пакет для пары (для UI настроек). true = .installed.
-    func isInstalled(from: String, to: String) async -> Bool {
+    /// Что система говорит про языковую пару. ТРИ состояния, а не два.
+    ///
+    /// ⚠️ РАЗВЕДЕНО ПО ОТЗЫВУ #102 (07.08.2026). Человек пишет «после каждого обновления приходится
+    /// пак языка ставить заново», а разобрать это оказалось нечем: мы схлопывали ответ системы в
+    /// Bool и нигде его не логировали. В итоге «пакет не установлен» и «система вообще не умеет эту
+    /// пару» выглядели одинаково и для нас, и для человека, а в диагностике не оставалось ни следа.
+    /// Механизм жалобы так и не найден (разбор 07.08 опроверг собственную версию про смену SDK:
+    /// все выпущенные сборки собраны одним и тем же), поэтому чинить вслепую нечего — но следующий
+    /// такой отзыв должен приходить с ответом внутри.
+    enum PackStatus { case installed, notDownloaded, unsupported }
+
+    func packStatus(from: String, to: String) async -> PackStatus {
         let s = await LanguageAvailability().status(from: Locale.Language(identifier: from),
                                                     to: Locale.Language(identifier: to))
-        switch s { case .installed: return true; default: return false }
+        let mapped: PackStatus
+        switch s {
+        case .installed:   mapped = .installed
+        case .supported:   mapped = .notDownloaded
+        case .unsupported: mapped = .unsupported
+        @unknown default:  mapped = .unsupported
+        }
+        kbLog("translate: пара \(from)→\(to) — система отвечает «\(s)» → \(mapped)")
+        return mapped
+    }
+
+    /// Установлен ли пакет. Оставлено для тех мест, которым правда нужен только да/нет.
+    func isInstalled(from: String, to: String) async -> Bool {
+        await packStatus(from: from, to: to) == .installed
     }
 
     private var downloadWindow: NSWindow?

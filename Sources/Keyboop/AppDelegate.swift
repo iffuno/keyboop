@@ -110,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Pause.onChange = { [weak self] in self?.menuBar.refreshAfterPauseChange() }
         menuBar.onCheckUpdates = { UpdaterController.shared.checkNow() }
         menuBar.onQuit = { NSApp.terminate(nil) }
+        menuBar.openMenuForShot()   // KEYBOOP_MENUSHOT=1: сам открывает меню под снимок, иначе молчит
         menuBar.onToggleAuto = { _ in }
         // Через main: колбэк зовётся СИНХРОННО из обработчика события (Enter-pre конверсия), а
         // menuBar.refresh() трогает NSStatusItem.button (NSView) — AppKit не для колбэка тапа.
@@ -219,7 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Настройки через applicationShouldHandleReopen / single-instance-сигнал. Закрытие окна → снова
         // чистый агент (windowWillClose → .accessory). Не лезем поверх онбординга, авто-обновления
         // (Sparkle перезапускает сам), скриншот-режимов и dev-флага --settings.
-        let screenshotMode = ["KEYBOOP_DUMP", "KEYBOOP_WINSHOT", "KEYBOOP_WELCOMESHOT"]
+        let screenshotMode = ["KEYBOOP_DUMP", "KEYBOOP_WINSHOT", "KEYBOOP_WELCOMESHOT", "KEYBOOP_MENUSHOT"]
             .contains { ProcessInfo.processInfo.environment[$0] == "1" }
         let settingsArg = CommandLine.arguments.contains { $0.hasPrefix("--settings") }
         if launchedManually, !welcomePending, updatedFrom == nil, !screenshotMode, !settingsArg {
@@ -312,6 +313,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // ПОНАРОШКУ ЗАНЯТАЯ КЛАВИАТУРА (`KEYBOOP_FAKEHOLD="Пароли Safari"`, 07.08).
+        //
+        // Состояние, в котором клавиатуру держит чужая программа, руками не вызвать по заказу: оно
+        // зависит от того, открыл ли кто-то поле пароля, и уж тем более нельзя заказать конкретного
+        // держателя с длинным именем. А посмотреть на него надо: именно из-за длины этой строки
+        // меню разъезжается в ширину, и именно этот же случай показывает баннер из P3.2.
+        //
+        // ⚠️ ЧЕРЕЗ ОТДЕЛЬНЫЙ ФЛАГ, А НЕ ЧЕРЕЗ БОЕВОЙ `secureInputOn` (ревью 07.08). Сначала хук ставил
+        // настоящий флаг, и «понарошку» получалось только на словах: тот же флаг читает EventTap и
+        // снимает со взвода жесты по одиночному модификатору, то есть инструмент для разглядывания
+        // надписи ломал хоткеи на всю сессию. Теперь врём только показывающим путям.
+        // Значение переменной это имя держателя; пустая строка = держатель не найден (тоже рабочий
+        // случай, ioreg иногда промахивается).
+        if let fake = ProcessInfo.processInfo.environment["KEYBOOP_FAKEHOLD"] {
+            AppHealth.fakeSecureInput = true
+            AppHealth.secureInputHolder = fake.isEmpty ? nil : fake
+            kbLog("ХУК: клавиатура «занята» понарошку, держатель \(fake.isEmpty ? "не найден" : fake)")
+        }
         // Dev-хук: открыть окно настроек сразу (для скриншотов/отладки дизайна).
         //
         // ⚠️ ТОЛЬКО ОТКРЫТЬ. Раньше этот хук следом гнал `dump()` по всем девяти разделам, а `dump()`

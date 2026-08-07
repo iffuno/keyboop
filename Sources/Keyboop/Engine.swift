@@ -117,12 +117,19 @@ final class Engine: EventTapHandler {
                 return
             }
             // NSRunningApplication знает только GUI-приложения; демоны (loginwindow и пр.) — по pid.
-            let name = NSRunningApplication(processIdentifier: pid)?.localizedName ?? "не-GUI процесс"
+            // ⚠️ Заглушка через L10n, а не литералом: с 07.08 это имя подставляется в строку,
+            // которую человек видит и по-английски («Hidden input: %@»), и русское «не-GUI процесс»
+            // приезжало бы туда «зайцем».
+            let name = NSRunningApplication(processIdentifier: pid)?.localizedName
+                ?? L10n.t("health.holderUnknown")
             // Пишем с main: читают отсюда меню и диагностика, оба на главном потоке (ревью 28.07 —
             // раньше запись шла с фоновой очереди ioreg, а чтение с main, без синхронизации).
             DispatchQueue.main.async {
                 guard AppHealth.secureInputOn else { return }   // за время ioreg (~0.7с) могли уже снять
                 AppHealth.secureInputHolder = name
+                // Строку меню перерисует refresh(), а вот подсказка значка кэширована ПО СОСТОЯНИЮ,
+                // и оно за эти 0.7 с не изменилось. Без сброса имя в неё не попадёт никогда.
+                MenuBarController.shared?.invalidateIconState()
                 MenuBarController.shared?.refresh()             // имя нашлось — обновляем строку в меню
             }
             kbLog("secure input: держатель — \(name) (pid \(pid))")
