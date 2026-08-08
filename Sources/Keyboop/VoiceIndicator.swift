@@ -27,7 +27,27 @@ final class VoiceIndicator {
     private let gap: CGFloat = 9        // зазор иконка↔текст
     private let waveW: CGFloat = 54     // ширина waveform
     private let dotW: CGFloat = 7       // диаметр точки-статуса у тоста
-    private let dot = NSView()
+    /// ⚠️ БЫЛ БЕЗЫМЯННЫЙ КРУЖОК (автор 08.08). Коралловая точка ничего не означала и занимала место,
+    /// где по смыслу стоит знак того, кто говорит. Берём тот же рисунок, что в строке меню, значит
+    /// плашка узнаётся как наша с первого взгляда и без подписи.
+    private let dot = NSImageView()
+
+    /// Знак Keyboop для плашки. Рисунок общий со строкой меню (`menubar-mark.png`), поэтому он и
+    /// там, и тут один и тот же, а не две похожие картинки.
+    ///
+    /// ⚠️ БЕЛЫЙ, КАК В ОРИГИНАЛЕ (автор 08.08: «логотип в оригинале белым, без вольностей»). Сначала
+    /// я перекрасил его в коралловый, чтобы он занял место коралловой точки. Это была отсебятина:
+    /// знак есть знак, и перекрашивать его под соседний элемент нельзя.
+    private static let markImage: NSImage? = {
+        guard let url = Bundle.main.url(forResource: "menubar-mark", withExtension: "png"),
+              let src = NSImage(contentsOf: url) else { return nil }
+        let h: CGFloat = 13, w = (h * (src.size.width / max(src.size.height, 1))).rounded()
+        let img = NSImage(size: NSSize(width: w, height: h))
+        img.lockFocus()
+        src.draw(in: NSRect(x: 0, y: 0, width: w, height: h), from: .zero, operation: .sourceOver, fraction: 1)
+        img.unlockFocus()
+        return img
+    }()
     private let maxLiveW: CGFloat = 460 // потолок для живого текста стриминга (дальше режем хвостом)
 
     func showRecording() { DispatchQueue.main.async { self.present(L10n.t("voice.listening"), .recording) } }
@@ -109,6 +129,33 @@ final class VoiceIndicator {
         }
     }
 
+    /// СНИМОК ПЛАШКИ В ФАЙЛ (dev-хук `KEYBOOP_TOAST=1`, 08.08.2026).
+    ///
+    /// Хук показывал плашку, но снимка не сохранял, а поймать её снаружи не выходит: она живёт две
+    /// секунды и ускользает между опросами списка окон (проверено). Для переделки внешнего вида на
+    /// неё надо смотреть много раз, а «на память» мы уже смотрели — так в ней до 06.08 жил чужой
+    /// зелёный цвет.
+    ///
+    /// ⚠️ Подложку рисуем САМИ. Фон плашки это `NSVisualEffectView` с размытием ПОЗАДИ окна, и в
+    /// битмап он приходит пустым: размывать в отрыве от экрана нечего. Без подложки снимок выходит
+    /// прозрачным, и белый текст на нём не виден вовсе.
+    func saveShot(to path: String) {
+        guard let p = panel, let v = p.contentView else { return }
+        guard let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return }
+        v.cacheDisplay(in: v.bounds, to: rep)
+        let img = NSImage(size: v.bounds.size)
+        img.lockFocus()
+        NSColor(calibratedWhite: 0.13, alpha: 1).setFill()   // тон HUD-плашки, чтобы снимок читался
+        NSBezierPath(roundedRect: v.bounds, xRadius: 10, yRadius: 10).fill()
+        rep.draw(in: v.bounds)
+        img.unlockFocus()
+        guard let tiff = img.tiffRepresentation,
+              let bmp = NSBitmapImageRep(data: tiff),
+              let png = bmp.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: URL(fileURLWithPath: path))
+        kbLog("hud: снимок плашки сохранён (\(Int(v.bounds.width))×\(Int(v.bounds.height)))")
+    }
+
     // MARK: -
 
     private func present(_ text: String, _ m: Mode) {
@@ -136,6 +183,10 @@ final class VoiceIndicator {
             startDecoderLoop(text)
         case .toast:
             wave.stop()
+            // ⚠️ ОДНА ВСПЫШКА, А НЕ ЦИКЛ. У «распознаю» декодер повторяется раз в три секунды, потому
+            // что ожидание там длинное и его надо чем-то занять. Тост живёт 2.2 с, и повтор съел бы
+            // время у самого сообщения: вспышка тратит 0.34 с, читать остаётся полторы секунды.
+            decoderFlash(text)
         }
 
         positionAtCursor(p)
@@ -148,8 +199,18 @@ final class VoiceIndicator {
         let lblW = ceil((text as NSString).size(withAttributes: [.font: font]).width) + 1
         // У записи слева waveform, у тоста точка. Ширина считается одинаково, поэтому боковые
         // отступы у всех состояний совпадают и плашка не «прыгает» при смене режима.
-        let iconW = showWave ? waveW : dotW
-        let iconGap = showWave ? gap : gap - 1
+        let markSize = Self.markImage?.size ?? NSSize(width: dotW, height: dotW)
+        let iconW = showWave ? waveW : markSize.width
+        // ⚠️ У ТОСТА ЗАЗОР УЖЕ, ЧЕМ У ЗАПИСИ, И ЭТО НЕ ПРОИЗВОЛ (замер 08.08.2026, жалоба пользователя
+        // «плохо выравнивание точки и текста»). Померил плашку по пикселям: по вертикали точка
+        // стоит ровно (расхождение 0.2 пт, невидимо), поля слева и справа равны. Кривым выглядело
+        // другое: зазор до текста был 10.5 пт при внешнем поле 13, то есть почти такой же. Глаз
+        // видел не «значок и текст», а три равноудалённых пятна, и точка читалась как отдельный
+        // элемент, а не часть сообщения. Группировка требует, чтобы внутренний зазор был заметно
+        // меньше внешнего поля.
+        // У waveform зазор оставлен прежним: он широкий сам по себе и в отдельный элемент не
+        // распадается.
+        let iconGap = showWave ? gap : gap - 4
         let total = pad + iconW + iconGap + lblW + pad
 
         var f = p.frame
@@ -159,7 +220,8 @@ final class VoiceIndicator {
 
         wave.isHidden = !showWave
         if showWave { wave.frame = NSRect(x: pad, y: (H - 20) / 2, width: waveW, height: 20) }
-        dot.frame = NSRect(x: pad, y: (H - dotW) / 2, width: dotW, height: dotW)
+        dot.frame = NSRect(x: pad, y: ((H - markSize.height) / 2).rounded(),
+                           width: markSize.width, height: markSize.height)
         let lx = pad + iconW + iconGap
         label.frame = NSRect(x: lx, y: (H - 18) / 2, width: lblW, height: 18)
     }
@@ -195,9 +257,8 @@ final class VoiceIndicator {
         // Точка-статус для тостов: у плашки записи роль индикатора играет waveform, а тост без
         // него выглядел голым текстом в прямоугольнике. Одна коралловая точка возвращает ему вид
         // сообщения и держит ту же ритмику отступов, что у остальных состояний.
-        dot.wantsLayer = true
-        dot.layer?.backgroundColor = Self.coral.cgColor
-        dot.layer?.cornerRadius = dotW / 2
+        dot.image = Self.markImage
+        dot.imageScaling = .scaleNone
         v.addSubview(dot)
 
         label.font = .systemFont(ofSize: 12, weight: .medium)
@@ -267,11 +328,17 @@ final class VoiceIndicator {
         let chars = Array(finalText)
         let n = chars.count
         guard n > 0 else { return }
-        let glyphs = Array("АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЭЮЯ#%&@$/\\?01")
+        // ⚠️ ШУМ ПОДБИРАЕМ ПОД ПИСЬМЕННОСТЬ ТЕКСТА. Набор был только кириллическим, и на английском
+        // интерфейсе латинская фраза «дешифровалась» бы русскими буквами — читается как сбой шрифта,
+        // а не как эффект.
+        let cyr = finalText.unicodeScalars.contains { $0.value >= 0x0400 && $0.value <= 0x04FF }
+        let glyphs = Array(cyr ? "АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЭЮЯ#%&@$/\\?01"
+                               : "ABCDEFGHIJKLMNOPQRSTUVWXYZ#%&@$/\\?01")
         let frames = 12
         var fr = 0
         let t = Timer(timeInterval: 0.028, repeats: true) { [weak self] timer in
-            guard let self, self.mode == .processing else { timer.invalidate(); return }
+            // Тост тоже «дешифруется»: одна вспышка на появлении (автор 08.08).
+            guard let self, self.mode == .processing || self.mode == .toast else { timer.invalidate(); return }
             fr += 1
             let lockUntil = Int((CGFloat(fr) / CGFloat(frames)) * CGFloat(n))
             var s = String(); s.reserveCapacity(n)

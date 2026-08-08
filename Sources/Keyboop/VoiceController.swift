@@ -242,6 +242,10 @@ final class VoiceController {
                 transcribeQueue.async { [weak self] in self?.loadModelIfNeeded() }
             }
             if abortStart { VoiceGate.set(false); setState(.idle); return }
+            // ⚠️ УРОВЕНЬ ВХОДА ПОДНИМАЕМ ЗДЕСЬ, А НЕ В setState(.recording): тот вызывается уже ПОСЛЕ
+            // recorder.start(), и первые слова ушли бы с прежней громкостью. Функция выключена по
+            // умолчанию и на устройствах без регулятора молча ничего не делает.
+            MicVolume.raiseIfEnabled()
             do {
                 try recorder.start()
                 if abortStart {        // отпустили ровно в момент старта — стоп немедленно

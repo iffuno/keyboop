@@ -53,6 +53,38 @@ enum Changelog {
     static let releases: [Release] = [
         // 0.3.15 — БЕТА. Две новые функции (сниппеты по сочетанию и быстрое действие правым
         // кликом) плюс проверка занятости сочетаний, выросшая из вопроса «а не занято ли ⌃⌥V».
+        Release(version: "0.3.17",
+            ru: [
+                "Keyboop может поднимать громкость микрофона перед диктовкой. Уровень входа на маке умеет уползать вниз сам по себе, и следующая диктовка выходит тихой, а на тихой записи распознавание чаще ошибается. Включается в «Голосовой набор» → «Микрофон»; по умолчанию выключено, потому что настройка общая для всей системы.",
+                "Языковой пакет перевода наконец ставится честно. Раньше окно закрывалось как при удаче, даже если пакет так и не установился, и приходилось повторять всё заново. Теперь мы дожидаемся подтверждения от системы, а если не вышло, так и говорим и показываем, где видно настоящий прогресс.",
+                "Короткие русские слова после английских стали переключаться. «Figma d HA» и «telegram b whatsapp» оставались как есть, потому что фильтр коротких слов глушил и предлоги заодно с переменными. Самые частые из них теперь проходят, а спорные пары добавлены в «Кто побеждает», где победителя выбираете вы.",
+                "Плашка «Скопировано» стала выглядеть как своя. Знак Keyboop вместо безымянной точки, текст говорит, что именно скопировано, и появляется он короткой дешифровкой.",
+            ],
+            en: [
+                "Keyboop can raise the microphone level before dictation. The input level on a Mac tends to creep downwards on its own, the next dictation comes out quiet, and speech recognition makes more mistakes on a quiet recording. Turn it on in «Dictation» → «Microphone»; off by default, because the setting is system-wide.",
+                "The translation language pack now installs honestly. The window used to close as if all was well even when the pack never arrived, and you had to start over. We now wait for the system to confirm it, and if it did not work we say so and point at the place where the real progress is visible.",
+                "Short Russian words after English ones get switched now. «Figma d HA» and «telegram b whatsapp» stayed as typed, because the short-word filter silenced prepositions along with variable names. The most frequent ones now pass, and the arguable pairs went into «Who wins», where you pick the winner.",
+                "The «Copied» badge now looks like ours. The Keyboop mark instead of a nameless dot, the text says what exactly was copied, and it arrives with a short decoding flourish.",
+            ],
+            announce: """
+                Сокрушаюсь, что лето идёт, а я всё сижу за компьютером. Обещал себе, что сегодня, в \
+                субботу, точно выйду проветрить голову. Вместо этого завёл страницу на Boosty, о \
+                которой давно спрашивали. Прогресс налицо: раньше я \
+                сидел дома вообще без страницы на Boosty.
+                """,
+            announceEnd: """
+                Если пропустили: правый клик по значку сразу делает выбранное действие, выбрать \
+                можно в настройках.
+
+                Приедет тем, у кого включены бета-версии. Остальным как обкатается.
+
+                Спасибо всем, кто поддержал на keyboop.com/tips, вы оплачиваете мне не только \
+                сервер, но и упрямство. Кому удобнее подпиской, есть boosty.to/iffun.
+
+                И если приложение пригодилось, поставьте звезду на GitHub. Она бесплатная, а я \
+                проверяю счётчик так, будто на него капают проценты.
+                """),
+
         Release(version: "0.3.16",
             ru: [
                 "Паузу теперь видно в меню. Пункт «Не мешать» стоит сразу под автопереключением и предлагает помолчать 15 минут, час, три или пять. Раньше она показывалась, только когда уже шла, а включить её оттуда было нельзя.",

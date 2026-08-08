@@ -199,13 +199,49 @@ private struct TranslateHost: View {
         do {
             // prepareTranslation триггерит системный лист докачки (если пары нет) — честный opt-in.
             try await session.prepareTranslation()
-            kbLog("pack: подготовлен \(cur.from)→\(cur.to)")
         } catch {
             anyFailed = true
-            kbLog("pack: не докачан \(cur.from)→\(cur.to) — \(error)")
+            kbLog("pack: \(cur.from)→\(cur.to) подготовка бросила ошибку — \(error)")
+            idx += 1; advance(); return
         }
+        // ⚠️ ВОЗВРАТ ИЗ prepareTranslation НЕ ЗНАЧИТ «УСТАНОВЛЕНО» (отзывы #102 и #108, 08.08.2026).
+        //
+        // Раньше здесь стояло «не бросило исключение → пишем в лог „подготовлен“ → закрываем окно →
+        // рапортуем успех». Но система возвращает управление и в тех случаях, когда пакета в итоге
+        // нет: человек закрыл системный лист скачивания, отказался, или загрузка ещё идёт своим
+        // чередом. Снаружи это выглядело так: нажал «Скачать», окно закрылось как при удаче, а
+        // перевод по-прежнему говорит «нужен языковой пакет». Ровно два отзыва об этом и пришли:
+        // «не могу настроить (скачать) перевод» и «после каждого обновления приходится ставить
+        // заново» — во втором случае пакет, скорее всего, не ставился НИ РАЗУ, а человек просто
+        // повторял ритуал.
+        //
+        // Поэтому спрашиваем СИСТЕМУ, а не доверяем возврату: ждём статуса `.installed`, опрашивая
+        // раз в секунду. Потолок 90 с — это не «загрузка занимает столько», а «дольше ждать в
+        // модальном окне бесчеловечно»; при истечении честно докладываем неудачу.
+        let ok = await Self.waitInstalled(from: cur.from, to: cur.to, timeout: 90)
+        if !ok { anyFailed = true }
         idx += 1
         advance()
+    }
+
+    /// Опрашивать систему, пока пара не станет установленной. Возвращает false по таймауту.
+    private static func waitInstalled(from: String, to: String, timeout: Double) async -> Bool {
+        let src = Locale.Language(identifier: from), dst = Locale.Language(identifier: to)
+        let avail = LanguageAvailability()
+        let deadline = Date().addingTimeInterval(timeout)
+        var last = ""
+        while Date() < deadline {
+            let st = await avail.status(from: src, to: dst)
+            let now = "\(st)"
+            if now != last { kbLog("pack: \(from)→\(to) статус «\(now)»"); last = now }
+            if st == .installed {
+                kbLog("pack: \(from)→\(to) УСТАНОВЛЕН ✓")
+                return true
+            }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        kbLog("pack: \(from)→\(to) НЕ установлен за \(Int(timeout))с (последний статус «\(last)»)")
+        return false
     }
 }
 

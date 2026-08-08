@@ -160,8 +160,30 @@ enum L10n {
         "tr.packTitle":   [.ru: "Языковой пакет", .en: "Language pack"],
         "tr.packName":    [.ru: "Русский ↔ английский", .en: "Russian ↔ English"],
         "tr.checking":    [.ru: "Проверяю…", .en: "Checking…"],
+        // Уровень входа микрофона (задача 93). ⚠️ Формулировки честно говорят, что настройка СИСТЕМНАЯ:
+        // мы меняем общий ползунок, который видят все программы, и не возвращаем его обратно.
+        "voice.micGain":      [.ru: "Поднимать громкость микрофона",
+                               .en: "Raise the microphone level"],
+        "voice.micGainSub":   [.ru: "Перед диктовкой выставляю системный уровень входа и оставляю его",
+                               .en: "Sets the system input level before dictation and leaves it there"],
+        "voice.micGainUnsupported": [.ru: "Этот микрофон не даёт управлять уровнем входа",
+                                     .en: "This microphone does not allow input level control"],
+        "voice.micGainHelp":  [.ru: "Некоторые программы (например браузер во время звонка) убавляют системный уровень микрофона и не возвращают его. Тогда следующая диктовка выходит тихой. Keyboop поднимает уровень перед записью. Это ОБЩАЯ системная настройка: поднятый вход увидят и другие программы, и обратно мы его не опускаем, иначе смысл теряется.",
+                               .en: "Some apps (a browser during a call, for instance) turn the system microphone level down and never restore it, and your next dictation comes out quiet. Keyboop raises it before recording. This is a SYSTEM-WIDE setting: other apps see the raised level too, and we do not lower it back, or the whole point would be lost."],
+        "voice.micGainLevel": [.ru: "До какого уровня", .en: "Up to which level"],
+        "voice.micGainLevelHelp": [.ru: "Положение системного ползунка, а не громкость в децибелах: у разных микрофонов одна и та же доля означает разное усиление. 100% у части устройств это уже перегруз, поэтому по умолчанию 90%.",
+                                   .en: "The position of the system slider, not a level in decibels: the same percentage means different gain on different microphones. On some devices 100% already clips, which is why the default is 90%."],
         "tr.installed":   [.ru: "Установлен ✓", .en: "Installed ✓"],
         "tr.notInstalled":[.ru: "Не установлен — нужен для перевода", .en: "Not installed — required for translation"],
+        // ⚠️ ОТДЕЛЬНАЯ СТРОКА НА НЕУДАЧУ (отзывы #102 и #108, 08.08.2026). Раньше после неудачной
+        // докачки метка возвращалась к обычному «не установлен», то есть выглядела так, будто
+        // человек и не нажимал ничего. Отсюда «после каждого обновления ставлю заново»: пакет,
+        // вероятно, не ставился ни разу, а мы это скрывали. Теперь говорим прямо и показываем
+        // единственный путь, где виден настоящий прогресс, — системный менеджер языков.
+        "tr.dlFailed":    [.ru: "Не установился. Загрузку видно в «Системные настройки» → «Язык и регион»",
+                           .en: "Did not install. You can watch the download in System Settings → Language & Region"],
+        "tr.unsupported": [.ru: "Система не умеет эту пару языков",
+                           .en: "The system does not support this language pair"],
         "tr.download":    [.ru: "Скачать", .en: "Download"],
         "tr.openSys":     [.ru: "Системные настройки", .en: "System Settings"],
         "tr.dlTitle":     [.ru: "Загрузка языкового пакета", .en: "Downloading language pack"],
@@ -965,7 +987,10 @@ enum L10n {
                                .en: "Also drops copy-from-menu"],
         "voice.retentionHelp": [.ru: "Через это время записи удаляются, и вместе с ними пропадает пункт «Скопировать последнюю диктовку» в меню: копировать ему становится нечего. Если диктуете подолгу и возвращаетесь к сказанному через час, ставьте срок побольше. «Не удалять» хранит последние 50 записей, пока вы сами их не сотрёте.",
                                 .en: "After this time entries are deleted, and the menu item “Copy last dictation” goes with them: there is nothing left for it to copy. If you dictate over long sessions and come back to what you said an hour later, pick a longer period. “Keep” holds the last 50 entries until you erase them yourself."],
-        "menu.copyLastDone": [.ru: "Скопировано", .en: "Copied"],
+        // ⚠️ ГОВОРИМ, ЧТО ИМЕННО СКОПИРОВАНО (автор 08.08). Голое «Скопировано» ничего не сообщало,
+        // а у того, кто настроил правый клик не на копирование, оно и вовсе подтверждало действие,
+        // которого человек не совершал.
+        "menu.copyLastDone": [.ru: "Скопирована последняя диктовка", .en: "Last dictation copied"],
         // Редкий случай: срок хранения истёк между открытием меню и кликом. В остальных ситуациях
         // пункта в меню просто нет, поэтому объяснять «история выключена» здесь уже не нужно.
         "menu.copyLastEmpty": [.ru: "Последняя диктовка уже удалена по сроку хранения",

@@ -925,14 +925,30 @@ final class DetailVC: NSViewController {
         return card([row])
     }
 
-    private func refreshTrPackStatus() {
+    /// `afterFailedDownload` — человек только что нажал «Скачать», а пакет так и не появился.
+    /// Отличать это состояние обязательно: молча вернуть прежнее «не установлен» значит сделать
+    /// вид, что ничего не произошло, и человек будет жать кнопку по кругу (ровно отзывы #102/#108).
+    private func refreshTrPackStatus(afterFailedDownload: Bool = false) {
         guard #available(macOS 15.0, *) else { return }
         Task { [weak self] in
-            let ok = await TranslationEngine.shared.isInstalled(from: "ru", to: "en")
+            let st = await TranslationEngine.shared.packStatus(from: "ru", to: "en")
             await MainActor.run {
-                self?.trPackLabel?.stringValue = ok ? L10n.t("tr.installed") : L10n.t("tr.notInstalled")
-                self?.trPackLabel?.textColor = ok ? DS.coral : .secondaryLabelColor
-                self?.trDownloadBtn?.isHidden = ok            // установлен → кнопка «Скачать» не нужна
+                guard let self else { return }
+                switch st {
+                case .installed:
+                    self.trPackLabel?.stringValue = L10n.t("tr.installed")
+                    self.trPackLabel?.textColor = DS.coral
+                    self.trDownloadBtn?.isHidden = true       // установлен → кнопка «Скачать» не нужна
+                case .unsupported:
+                    // Кнопка тут врала бы: скачивать нечего, система эту пару не умеет.
+                    self.trPackLabel?.stringValue = L10n.t("tr.unsupported")
+                    self.trPackLabel?.textColor = .secondaryLabelColor
+                    self.trDownloadBtn?.isHidden = true
+                case .notDownloaded:
+                    self.trPackLabel?.stringValue = L10n.t(afterFailedDownload ? "tr.dlFailed" : "tr.notInstalled")
+                    self.trPackLabel?.textColor = .secondaryLabelColor
+                    self.trDownloadBtn?.isHidden = false
+                }
             }
         }
     }
@@ -941,8 +957,8 @@ final class DetailVC: NSViewController {
     /// Готовим оба направления сразу. Системный лист скачивания Apple покажется поверх нашего окна.
     @objc private func downloadTrPack() {
         guard #available(macOS 15.0, *) else { return }
-        TranslationEngine.shared.presentDownload(pairs: [("ru", "en"), ("en", "ru")]) { [weak self] _ in
-            self?.refreshTrPackStatus()
+        TranslationEngine.shared.presentDownload(pairs: [("ru", "en"), ("en", "ru")]) { [weak self] ok in
+            self?.refreshTrPackStatus(afterFailedDownload: !ok)
         }
     }
 
@@ -2037,6 +2053,25 @@ final class DetailVC: NSViewController {
                 switchRow(L10n.t("voice.warm"), L10n.t("voice.warmSub"), settings.voiceWarmWindow, #selector(toggleWarmWindow),
                           help: L10n.t("voice.warmHelp")),
                 makeWarmBox(),
+                // ⚠️ ЗДЕСЬ, А НЕ В КАРТОЧКЕ ПРИГЛУШЕНИЯ (08.08). Сначала я положил эти две строки
+                // рядом с «приглушать звук на время диктовки»: обе ведь про громкость. Но выше в
+                // этом файле стоит прямое указание, что системный уровень ВХОДА живёт в карточке
+                // микрофона, а приглушение ВЫХОДА отдельно, и это разные смыслы. Соседство по слову
+                // «громкость» не повод их смешивать: рядом уже стоит кнопка в системные настройки
+                // ровно про этот же ползунок.
+                switchRow(L10n.t("voice.micGain"),
+                          MicVolume.supported() ? L10n.t("voice.micGainSub") : L10n.t("voice.micGainUnsupported"),
+                          settings.voiceMicGain, #selector(toggleMicGain),
+                          enabled: MicVolume.supported(), help: L10n.t("voice.micGainHelp")),
+            ] + (settings.voiceMicGain && MicVolume.supported()
+                 // ⚠️ СТРОКА УРОВНЯ ПОЯВЛЯЕТСЯ, А НЕ ГАСНЕТ (автор 08.08). У выключенной функции
+                 // уровень не значит ничего, и серая строка с числом только занимает место и
+                 // приглашает её потрогать. Тот же приём, что у «Сколько молчать» в быстрых
+                 // действиях: там строка тоже есть лишь тогда, когда выбрана пауза.
+                 // Раздел пересобирается по `reshow()` из `toggleMicGain`.
+                 ? [controlRow(L10n.t("voice.micGainLevel"), micGainLevelControl(),
+                               help: L10n.t("voice.micGainLevelHelp"))]
+                 : []) + [
                 buttonRow([soundSettingsLink()]),
             ]),
             group(6),
@@ -2941,6 +2976,32 @@ final class DetailVC: NSViewController {
         settings.voiceDuckLevel = v
         duckValueLabel?.stringValue = duckValueText(v)
     }
+    private weak var micGainValueLabel: NSTextField?
+    private func micGainLevelControl() -> NSView {
+        let sl = NSSlider(value: Double(settings.voiceMicGainLevel), minValue: 10, maxValue: 100,
+                          target: self, action: #selector(micGainLevelChanged(_:)))
+        sl.controlSize = .small
+        sl.widthAnchor.constraint(equalToConstant: 130).isActive = true
+        let label = NSTextField(labelWithString: "\(settings.voiceMicGainLevel)%")
+        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+        label.textColor = .secondaryLabelColor
+        label.alignment = .right
+        label.widthAnchor.constraint(equalToConstant: 58).isActive = true
+        micGainValueLabel = label
+        let row = NSStackView(views: [sl, label])
+        row.orientation = .horizontal; row.spacing = 8; row.alignment = .centerY
+        return row
+    }
+    @objc private func micGainLevelChanged(_ s: NSSlider) {
+        let v = Int(s.doubleValue.rounded())
+        settings.voiceMicGainLevel = v
+        micGainValueLabel?.stringValue = "\(v)%"
+    }
+    @objc private func toggleMicGain(_ s: NSSwitch) {
+        settings.voiceMicGain = (s.state == .on)
+        DispatchQueue.main.async { [weak self] in self?.reshow() }   // строка уровня гаснет/зажигается
+    }
+
     @objc private func toggleDuck(_ s: NSSwitch) {
         settings.voiceDuck = (s.state == .on)
         DispatchQueue.main.async { [weak self] in self?.reshow() }   // строка уровня гаснет/зажигается
