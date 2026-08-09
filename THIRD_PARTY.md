@@ -27,3 +27,17 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND...
 > На будущее: можно сгенерировать собственную триграммную модель из открытого
 > корпуса (wordfreq / FrequencyWords), чтобы не зависеть от внешних данных. Тогда
 > этот раздел можно убрать. Пока используем keyswitcher-данные (MIT это разрешает).
+
+## Ukrainian language resources
+
+Files `Sources/Keyboop/Resources/words_uk.json` and
+`Sources/Keyboop/Resources/trigrams_uk.json` were generated from linguistic
+data provided by the **dict_uk** project:
+
+<https://github.com/brown-uk/dict_uk>
+
+The source project distributes its Ukrainian Hunspell resources under the
+Mozilla Public License 1.1.
+
+The generated JSON files are used as word-validation and trigram language
+data for keyboard-layout detection.

@@ -3,6 +3,33 @@ import Carbon
 
 /// Чтение и переключение системной раскладки через Text Input Source (TIS).
 final class LayoutManager {
+    private static let cyrillicLanguageCodes: Set<String> = [
+        "ru", "uk", "be", "bg", "mk",
+        "kk", "ky", "tg", "mn", "myv"
+    ]
+
+    private static func isCyrillicLanguage(_ language: String) -> Bool {
+        let normalized = language.replacingOccurrences(of: "-", with: "_")
+        let parts = normalized.split(separator: "_").map(String.init)
+
+        if parts.contains(where: { $0.caseInsensitiveCompare("Cyrl") == .orderedSame }) {
+            return true
+        }
+
+        guard let primary = parts.first?.lowercased() else {
+            return false
+        }
+
+        return cyrillicLanguageCodes.contains(primary)
+    }
+
+    private static func isCyrillicInputSource(_ source: TISInputSource) -> Bool {
+        guard let primaryLanguage = languages(of: source).first else {
+            return false
+        }
+
+        return isCyrillicLanguage(primaryLanguage)
+    }
 
     /// НАШЕ МНЕНИЕ о текущей раскладке. Известный баг macOS (kawa PR #21, подтверждён нашим логом
     /// 24.07: «→ EN» ×6 подряд): при быстрых переключениях БЕЗ нажатий клавиш между ними
@@ -16,7 +43,7 @@ final class LayoutManager {
     /// Текущая раскладка — кириллическая? (сырое чтение TIS; может отставать, см. opinionCyr)
     func currentIsCyrillic() -> Bool {
         guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return false }
-        return Self.languages(of: src).first?.hasPrefix("ru") ?? false
+        return Self.isCyrillicInputSource(src)
     }
 
     /// Текущая раскладка с поправкой на баг стейл-чтения: если мы недавно переключали сами —
@@ -162,7 +189,7 @@ final class LayoutManager {
         let sources = enabledKeyboardSources()
         let src: TISInputSource?
         if cyrillic {
-            src = sources.first { (Self.languages(of: $0).first ?? "").hasPrefix("ru") }
+            src = sources.first { Self.isCyrillicInputSource($0) }
         } else {
             src = sources.first { (Self.languages(of: $0).first ?? "").hasPrefix("en") }
                 ?? sources.first { Self.isUsableLatinLayout($0) }
