@@ -75,6 +75,23 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
     /// (фидбэк 16.06). Поэтому активируем приложение прямо перед проверкой.
     func checkNow() {
         NSApp.activate(ignoringOtherApps: true)
+        // ⚠️ ЕСЛИ АПДЕЙТ УЖЕ У НАС НА РУКАХ, кнопка обязана показать ЕГО, а не уходить в Sparkle.
+        //
+        // Воспроизведено на реальной машине 09.08 (0.3.16): 0.3.17 скачана в 10:23, тихая установка
+        // отложена в 11:00 («открыто окно»), и с тех пор нажатие «Проверить сейчас» не делает
+        // РОВНО НИЧЕГО: ни окна, ни строки в логе. Причина та же, что у задачи 110: вернув `true`
+        // из `willInstallUpdateOnQuit`, мы забрали цикл себе, и `checkForUpdates` внутри Sparkle
+        // становится пустышкой. Человек при этом видит мёртвую кнопку и идёт качать с сайта.
+        //
+        // Кнопка, которая молчит, хуже кнопки, которой нет.
+        if pendingInstall != nil {
+            kbLog("updater: проверка вручную при готовом \(pendingVersion) — показываю плашку вместо пустого запроса")
+            silentFallback?.cancel(); silentFallback = nil
+            IdleMonitor.shared.stop()
+            armPendingSafety()
+            onUpdateReady?(pendingVersion)
+            return
+        }
         controller?.checkForUpdates(nil)
     }
 
@@ -83,6 +100,44 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
     /// (см. большой комментарий в делегате). Десять минут: плашка живёт на экране куда меньше.
     private let pendingTTL: TimeInterval = 600
     private var pendingSafety: DispatchWorkItem?
+
+    /// Сколько ждём удобного момента в ТИХОМ режиме, прежде чем перестать молчать.
+    ///
+    /// ⚠️ Час, а не десять минут: тихая установка ждёт пяти минут без ввода, и у человека, который
+    /// весь день за компьютером, такой паузы может не случиться до вечера. Ронять её раньше значит
+    /// показывать плашку тем, кто явно попросил его не трогать.
+    private let silentFallbackTTL: TimeInterval = 3600
+    private var silentFallback: DispatchWorkItem?
+
+    /// ⚠️ ГЛАВНАЯ ПОЧИНКА 09.08.2026: в тихом режиме апдейт мог зависнуть НАВСЕГДА.
+    ///
+    /// Возврат `true` из `willInstallUpdateOnQuit` означает «установку беру на себя», и Sparkle в
+    /// ответ паркует не только этот цикл, но и ВСЕ будущие проверки. В обычном режиме от этого
+    /// защищает `armPendingSafety()`, и рядом с ним прямо написано «без неё не возвращать true».
+    /// А тихая ветка возвращала `true` БЕЗ всякой страховки. Дальше достаточно, чтобы пяти минут
+    /// простоя не случилось (человек работает, окно открыто, идёт диктовка), и апдейт оставался
+    /// скачанным, но не поставленным, а проверки не возобновлялись уже никогда. Ровно это люди и
+    /// описывают словами «само не обновляется, скачал с сайта руками».
+    ///
+    /// Симптом воспроизведён на реальной машине 09.08: 0.3.17 скачана в 10:23, и после строки
+    /// «готов к установке (silent=true)» в логе НЕТ НИ ОДНОЙ строки про обновления. Не потому что
+    /// всё хорошо, а потому что состояние стало невидимым.
+    ///
+    /// Что делаем по истечении часа: перестаём молчать и показываем обычную плашку. Это честнее
+    /// тишины, и человек получает кнопку. Заодно взводим `armPendingSafety()`, то есть дальше
+    /// работает обычный десятиминутный предохранитель.
+    private func armSilentFallback() {
+        silentFallback?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.pendingInstall != nil else { return }
+            kbLog("updater: тихо поставить \(self.pendingVersion) не вышло за \(Int(self.silentFallbackTTL / 60)) мин — показываю плашку")
+            IdleMonitor.shared.stop()
+            self.armPendingSafety()
+            self.onUpdateReady?(self.pendingVersion)
+        }
+        silentFallback = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + silentFallbackTTL, execute: work)
+    }
 
     /// Страховка от «плашку закрыли, а установку никто не позвал». Без неё возврат `true` из делегата
     /// убивает ВСЕ будущие проверки обновлений — тот самый механизм, из-за которого люди сидят на
@@ -108,6 +163,7 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
     /// и мы уже отпустили установку, а человек нажал кнопку на старой плашке.
     func installPendingNow() {
         pendingSafety?.cancel(); pendingSafety = nil
+        silentFallback?.cancel(); silentFallback = nil
         IdleMonitor.shared.stop()
         guard let block = pendingInstall else {
             kbLog("updater: показываю штатное окно установки \(pendingVersion)")
@@ -296,6 +352,8 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
         }
         // Юзер выбрал «авто» → ставим тихо, когда отошёл (5 мин без ввода, не идёт диктовка/окно).
         pendingInstall = immediateInstallHandler
+        kbLog("updater: жду 5 минут простоя, чтобы поставить \(pendingVersion) тихо")
+        armSilentFallback()   // ⚠️ БЕЗ ЭТОГО апдейт и все будущие проверки паркуются навсегда
         IdleMonitor.shared.waitForIdle(threshold: idleThreshold) { [weak self] in self?.installWhenClear() }
         return true
     }
@@ -337,6 +395,7 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
     /// Тумблер тихих обновлений выключили — гасим ожидание простоя.
     func cancelSilentWait() {
         IdleMonitor.shared.stop()
+        silentFallback?.cancel(); silentFallback = nil
         lastDeferReason = nil
     }
 
@@ -352,6 +411,7 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
             return
         }
         kbLog("updater: включили тихий режим при готовом апдейте — жду простоя")
+        armSilentFallback()
         IdleMonitor.shared.waitForIdle(threshold: idleThreshold) { [weak self] in self?.installWhenClear() }
     }
 }

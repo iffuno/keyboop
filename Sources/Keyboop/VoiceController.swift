@@ -308,11 +308,17 @@ final class VoiceController {
         // человек как раз и не просил.
 
         // Слишком короткое нажатие (< 0.3 c) — просто отмена, без шума.
-        guard recorder.duration >= 0.3 else { dropPendingHistoryOnly(); kbLog("voice: слишком коротко (\(String(format: "%.2f", recorder.duration))с) — отмена"); refreshIndicator(); return }
+        guard recorder.duration >= 0.3 else {
+            dropPendingHistoryOnly()
+            kbLog("voice: слишком коротко (\(String(format: "%.2f", recorder.duration))с) — отмена")
+            recorder.releaseNow()   // отзыв #114: отброшенный подход не должен держать микрофон тёплым
+            refreshIndicator(); return
+        }
         // Тишина (нет сигнала) — не зовём whisper (иначе галлюцинации «Продолжение следует»).
         guard rms > 0.001 else {
             dropPendingHistoryOnly()
             kbLog("voice: тишина (RMS \(String(format: "%.4f", rms))) — пропуск (микрофон молчал — мог быть занят другим приложением)")
+            recorder.releaseNow()   // то же, что и у слишком короткой: держать микрофон не за чем
             refreshIndicator(); playCue(failSound)
             return
         }
@@ -345,9 +351,13 @@ final class VoiceController {
                 // комментарий в ParakeetEngine.transcribe.
                 let text = ok ? await ParakeetEngine.shared.transcribe(samples: samples, language: lang) : ""
                 kbLog("voice: parakeet(готов=\(ok), язык=\(lang)) → \(text.count) симв.")
+                // Кодируем и шифруем ЗДЕСЬ, в фоне, а не в deliver: тот работает на главном потоке,
+                // где живёт runloop нашего event-tap, и подмораживать его ради AAC нельзя (цену этого
+                // мы уже платили на startRunning, см. AudioRecorder).
+                let clip = VoiceClips.save(samples: samples)
                 await MainActor.run {
-                    guard self.endTranscription(gen) else { return }   // сторож уже бросил — поздний результат в топку
-                    self.deliver(text, historyOnly: self.historyOnlyGens.remove(gen) != nil)
+                    guard self.endTranscription(gen) else { clip.map { VoiceClips.delete($0.id) }; return }   // сторож уже бросил — поздний результат в топку
+                    self.deliver(text, historyOnly: self.historyOnlyGens.remove(gen) != nil, audio: clip?.id, wave: clip?.wave)
                     self.refreshIndicator()
                 }
             }
@@ -359,9 +369,10 @@ final class VoiceController {
             let modelReady = self.whisper != nil
             let text = self.whisper?.transcribe(samples: samples, language: lang) ?? ""
             kbLog("voice: whisper(модель=\(modelReady ? "ок" : "НЕТ"), \(lang)) → \(text.count) симв.")
+            let clip = VoiceClips.save(samples: samples)   // фон, не главный поток (см. ветку parakeet)
             DispatchQueue.main.async {
-                guard self.endTranscription(gen) else { return }   // сторож уже бросил — поздний результат в топку
-                self.deliver(text, historyOnly: self.historyOnlyGens.remove(gen) != nil)
+                guard self.endTranscription(gen) else { clip.map { VoiceClips.delete($0.id) }; return }   // сторож уже бросил — поздний результат в топку
+                self.deliver(text, historyOnly: self.historyOnlyGens.remove(gen) != nil, audio: clip?.id, wave: clip?.wave)
                 self.refreshIndicator()
                 self.scheduleModelRelease()   // простаиваем → вернём ~1.5 ГБ системе
             }
@@ -517,7 +528,7 @@ final class VoiceController {
     private func streamEnd() {
         recorder.setChunkHook(nil)
         eouChunks?.finish(); eouChunks = nil
-        _ = recorder.stop()
+        let samples = recorder.stop()   // в стриминге текст уже напечатан по чанкам, но исходник нужен для клипа
         VoiceGate.set(false)
         playCue(stopSound)
         let gen = beginTranscription(duration: recorder.duration, streaming: true)
@@ -527,6 +538,7 @@ final class VoiceController {
             guard let self else { return }
             await task?.value                                 // дождаться, пока скормятся все чанки
             let final = await StreamingEouEngine.shared.finishSession()
+            let clip = VoiceClips.save(samples: samples)      // фон, до возврата на главный поток
             await MainActor.run {
                 self.streamStep(final, commit: true)           // ЕДИНСТВЕННОЕ место, где стрим печатает
                 let clean = self.typedTail.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -541,10 +553,11 @@ final class VoiceController {
                             NotificationCenter.default.post(name: .keyboopVoiceInserted, object: nil)
                         }
                     }
-                    VoiceHistory.shared.add(clean)             // в историю — ОДИН раз, на финале
+                    VoiceHistory.shared.add(clean, audio: clip?.id, wave: clip?.wave)  // в историю — ОДИН раз, на финале
                     kbLog("voice: стриминг завершён, \(clean.count) симв.")
                     self.noteVoiceStats(clean)                 // статистика — тоже один раз, на финале
                 } else {
+                    clip.map { VoiceClips.delete($0.id) }                // финал пустой — клип осиротел
                     playCue(failSound)
                 }
                 self.streamingActive = false; self.typedTail = ""
@@ -622,7 +635,7 @@ final class VoiceController {
         return out
     }
 
-    private func deliver(_ text: String, historyOnly: Bool = false) {
+    private func deliver(_ text: String, historyOnly: Bool = false, audio: String? = nil, wave: [UInt8]? = nil) {
         // Фразы-призраки Whisper («Субтитры создавал…», «Продолжение следует») — отсекаем ДО всего
         // остального, чтобы они не попали ни в поле, ни в историю, ни в статистику. См. WhisperGhosts.
         let clean = WhisperGhosts.clean(text).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -630,14 +643,18 @@ final class VoiceController {
         // пишем ничего: Escape означает «не вставляй». Кладём в историю и говорим об этом тостом,
         // иначе сохранение выглядело бы как то, что программа проигнорировала отмену.
         if historyOnly {
-            guard !clean.isEmpty else { kbLog("voice: отменённая диктовка пустая — в историю нечего класть"); return }
-            VoiceHistory.shared.add(clean)
+            guard !clean.isEmpty else {
+                audio.map(VoiceClips.delete)   // текста нет — клипу не к чему прикрепляться
+                kbLog("voice: отменённая диктовка пустая — в историю нечего класть"); return
+            }
+            VoiceHistory.shared.add(clean, audio: audio, wave: wave)
             noteVoiceStats(clean)
             kbLog("voice: отменённая диктовка сохранена в историю, \(clean.count) симв.")
             VoiceIndicator.shared.showToast(L10n.t("voice.escSaved"))
             return
         }
         guard !clean.isEmpty else {
+            audio.map(VoiceClips.delete)   // осиротевший клип: текста, к которому его прикрепить, нет
             kbLog("voice: пустой результат — ничего не вставляю")
             playCue(failSound)   // мягкий нисходящий сигнал «не вышло», чтобы не было тихо
             return
@@ -646,7 +663,7 @@ final class VoiceController {
         // но распознанное НЕ теряем — история + честный тост вместо молчаливой пропажи.
         if TextReplacer.secureInputActive {
             kbLog("voice: активен secure input — не печатаю \(clean.count) симв., текст в истории")
-            VoiceHistory.shared.add(clean)
+            VoiceHistory.shared.add(clean, audio: audio, wave: wave)
             noteVoiceStats(clean)
             VoiceIndicator.shared.showToast(L10n.t("voice.securePwd"))
             return
@@ -671,7 +688,7 @@ final class VoiceController {
                             returnMods: CGEventFlags(rawValue: settings.voiceAutoEnterMods)) {
             NotificationCenter.default.post(name: .keyboopVoiceInserted, object: nil)
         }
-        VoiceHistory.shared.add(clean)
+        VoiceHistory.shared.add(clean, audio: audio, wave: wave)
     }
 
     /// Копим статистику «надиктовано» для счётчика в «О программе». Считаем ТОЛЬКО длину и число слов —

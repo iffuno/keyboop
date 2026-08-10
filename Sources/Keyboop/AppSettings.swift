@@ -326,6 +326,38 @@ final class AppSettings {
     var dedupeChatter: Bool { get { d.bool(forKey: "dedupeChatter") } set { d.set(newValue, forKey: "dedupeChatter") } }
     /// Исправлять «КОгда» → «Когда» (T28). ВЫКЛЮЧЕНО по умолчанию: это правка текста, а не раскладки.
     var twoCapsFix: Bool { get { d.bool(forKey: "twoCapsFix") } set { d.set(newValue, forKey: "twoCapsFix") } }
+    /// Исправление опечаток по словарю (задача 114). ⚠️ По умолчанию ВЫКЛЮЧЕНО и должно таким
+    /// остаться: это правка ТЕКСТА, а не раскладки, и на незнакомом слове она может ошибиться.
+    /// Подробности и замеры — в `TypoFix`.
+    var typoFix: Bool { get { d.bool(forKey: "typoFix") } set { d.set(newValue, forKey: "typoFix") } }
+
+    /// Вставка без форматирования (задача 102). Выключено по умолчанию: во многих программах
+    /// ⇧⌘V уже означает «вставить и согласовать стиль», и перехватывать чужое работающее
+    /// поведение без спроса нельзя. Подробности — в `PlainPaste`.
+    var plainPaste: Bool { get { d.bool(forKey: "plainPaste") } set { d.set(newValue, forKey: "plainPaste") } }
+    var plainPasteKeyCode: Int {
+        get { d.object(forKey: "plainPasteKeyCode") == nil ? 9 : d.integer(forKey: "plainPasteKeyCode") }   // 9 = «v»
+        set { d.set(newValue, forKey: "plainPasteKeyCode") }
+    }
+    var plainPasteModifiers: UInt64 {
+        get {
+            let v = d.object(forKey: "plainPasteMods") as? Int
+            return UInt64(bitPattern: Int64(v ?? Int(CGEventFlags.maskCommand.rawValue | CGEventFlags.maskShift.rawValue)))
+        }
+        set { d.set(Int(bitPattern: UInt(newValue)), forKey: "plainPasteMods") }
+    }
+    var plainPasteKeyLabel: String {
+        get { d.string(forKey: "plainPasteKeyLabel") ?? "⇧⌘V" }
+        set { d.set(newValue, forKey: "plainPasteKeyLabel") }
+    }
+
+    /// Скорость воспроизведения клипа диктовки. Запоминается между запусками: человек, слушающий
+    /// свои заметки на 2×, не должен возвращать её каждый раз (просьба автора 10.08).
+    /// 0 в хранилище означает «никогда не трогали» → отдаём обычную скорость.
+    var voiceClipRate: Double {
+        get { let v = d.double(forKey: "voiceClipRate"); return v > 0 ? v : 1.0 }
+        set { d.set(newValue, forKey: "voiceClipRate") }
+    }
 
     /// Приглушать системную громкость на время диктовки. Выключено по умолчанию: трогать громкость
     /// чужого Mac без спроса нельзя, человек должен включить это сам.
@@ -334,6 +366,10 @@ final class AppSettings {
     /// Поднимать уровень ВХОДА микрофона перед диктовкой (задача 93). Выключено по умолчанию:
     /// функция меняет СИСТЕМНУЮ настройку, видимую всем программам, и включать такое молча нельзя.
     var voiceMicGain: Bool { get { d.bool(forKey: "voiceMicGain") } set { d.set(newValue, forKey: "voiceMicGain") } }
+    /// Сохранять исходную запись диктовки рядом с текстом (задача 101).
+    /// ⚠️ ПО УМОЛЧАНИЮ ВЫКЛЮЧЕНО и таким должно остаться: это единственная наша функция, которая
+    /// заводит на диске часы человеческого голоса. Подробности — в `VoiceClips`.
+    var voiceSaveAudio: Bool { get { d.bool(forKey: "voiceSaveAudio") } set { d.set(newValue, forKey: "voiceSaveAudio") } }
 
     /// До какого уровня поднимать, в процентах. 90 по умолчанию, а не 100: у части устройств верх
     /// шкалы это уже перегруз, и «на максимум» из коробки было бы плохим советом.

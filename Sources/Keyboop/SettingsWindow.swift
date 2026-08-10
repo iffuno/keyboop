@@ -836,6 +836,8 @@ final class DetailVC: NSViewController {
                           help: L10n.t("switch.arrowsHelp")),
                 switchRow(L10n.t("switch.twoCaps"), L10n.t("switch.twoCapsSub"), settings.twoCapsFix,
                           #selector(toggleTwoCaps), help: L10n.t("switch.twoCapsHelp")),
+                switchRow(L10n.t("switch.typoFix"), L10n.t("switch.typoFixSub"), settings.typoFix,
+                          #selector(toggleTypoFix), help: L10n.t("switch.typoFixHelp")),
                 switchRow(L10n.t("switch.chatter"), L10n.t("switch.chatterSub"), settings.dedupeChatter,
                           #selector(toggleChatter), help: L10n.t("switch.chatterHelp"))
             ]),
@@ -1260,8 +1262,11 @@ final class DetailVC: NSViewController {
 
         // ВТОРОЙ СПИСОК — сниппеты для вставки. Тот же редактор, другое хранилище и другие подписи
         // колонок: там «что заменять → на что», здесь «название → текст».
+        // Порядок важен ТОЛЬКО здесь: из этого списка человек выбирает цифрой в плашке, и что
+        // окажется под единицей, решает он. В автозамене порядок ни на что не влияет.
         let textsEditor = SnippetsEditor(frame: .zero, store: TextSnippetStore.shared,
-                                         phLeft: "snip.phName", phRight: "snip.phText")
+                                         phLeft: "snip.phName", phRight: "snip.phText",
+                                         allowsReorder: true)
         textsEditor.translatesAutoresizingMaskIntoConstraints = false
 
         // Приглашение вместо пустоты: список стартует пустым (вариант А), и человеку надо показать,
@@ -1290,6 +1295,31 @@ final class DetailVC: NSViewController {
         ]
         if settings.snippetPickEnabled { pickRows.append(controlRow(L10n.t("snip.pickCombo"), pickPop)) }
 
+        // ВСТАВКА БЕЗ ФОРМАТИРОВАНИЯ (задача 102). Живёт рядом со сниппетами: обе про то, что
+        // попадает в текст из буфера, а не про раскладку.
+        //
+        // ⚠️ Готовые сочетания списком, БЕЗ записи своего. Конечный автомат записи уже существует в
+        // трёх экземплярах (голос, перевод, сниппеты), и рядом с ним прямым текстом написано, что
+        // четвёртый был бы худшим решением. Трёх вариантов тут хватает: осмысленны только сочетания
+        // с ⌘V, других всё равно нет.
+        let plainPop = NSPopUpButton()
+        plainPop.addItems(withTitles: Self.plainPastePresets.map { $0.0 })
+        plainPop.selectItem(at: Self.plainPastePresets.firstIndex {
+            $0.1 == settings.plainPasteKeyCode && $0.2 == settings.plainPasteModifiers
+        } ?? 0)
+        plainPop.target = self; plainPop.action = #selector(plainPasteComboChanged(_:))
+
+        // ⚠️ СВОЙ БЛОК, А НЕ СТРОКА ВНУТРИ СНИППЕТОВ (автор 10.08). Сначала я положил её в карточку
+        // вставки по сочетанию, потому что обе про буфер. Это неверно: сниппеты вставляют НАШ
+        // заготовленный текст, а эта настройка меняет способ вставки ЧУЖОГО, скопированного человеком.
+        // Соседство по механике не делает функции одной темой, и в списке настроек это читалось как
+        // «одна из настроек сниппетов».
+        var plainRows: [NSView] = [
+            switchRow(L10n.t("paste.plain"), L10n.t("paste.plainSub"), settings.plainPaste,
+                      #selector(togglePlainPaste(_:)), help: L10n.t("paste.plainHelp"))
+        ]
+        if settings.plainPaste { plainRows.append(controlRow(L10n.t("paste.plainCombo"), plainPop)) }
+
         return vstack([
             title(L10n.t("snip.title")),
             sub(L10n.t("snip.sub")),
@@ -1300,6 +1330,10 @@ final class DetailVC: NSViewController {
             keys,                        // [Пробел] [Enter] [Tab]
             disabled,                    // «Автозамена отключена…» — видна, когда все галочки сняты
             hint(L10n.t("snip.hint")),   // раскладка/регистр не учитываются + пример
+            group(DS.itemGap),
+            // Между автозаменой и сниппетами: это отдельная функция, а не настройка соседей.
+            sectionTitle(L10n.t("paste.section")),
+            card(plainRows),
             group(DS.itemGap),
             sectionTitle(L10n.t("snip.textsTitle")),
             sub(L10n.t("snip.textsSub")),
@@ -1570,6 +1604,27 @@ final class DetailVC: NSViewController {
     @objc private func copyFromAutoreplace() {
         TextSnippetStore.shared.copyFromAutoreplace()
         reshow()
+    }
+
+    /// Сочетания для вставки без форматирования. ⇧⌘V первым: в программах, которые это умеют
+    /// сами, оно означает ровно то же самое, и человеку не придётся переучиваться.
+    static let plainPastePresets: [(String, Int, UInt64)] = [
+        ("⇧⌘V", 9, CGEventFlags([.maskShift, .maskCommand]).rawValue),
+        ("⌥⌘V", 9, CGEventFlags([.maskAlternate, .maskCommand]).rawValue),
+        ("⌃⌘V", 9, CGEventFlags([.maskControl, .maskCommand]).rawValue),
+    ]
+
+    @objc private func togglePlainPaste(_ s: NSSwitch) {
+        settings.plainPaste = (s.state == .on)
+        reshow()
+    }
+    @objc private func plainPasteComboChanged(_ p: NSPopUpButton) {
+        let i = p.indexOfSelectedItem
+        guard i >= 0, i < Self.plainPastePresets.count else { return }
+        let preset = Self.plainPastePresets[i]
+        settings.plainPasteKeyCode = preset.1
+        settings.plainPasteModifiers = preset.2
+        settings.plainPasteKeyLabel = preset.0
     }
 
     @objc private func snipPickToggled(_ sw: NSSwitch) {
@@ -2159,6 +2214,12 @@ final class DetailVC: NSViewController {
                 // Связка неочевидная, поэтому названа вслух.
                 controlRow(L10n.t("voice.retention"), historyRetentionControl(),
                            subtitle: L10n.t("voice.retentionSub"), help: L10n.t("voice.retentionHelp")),
+                // ⚠️ Сохранение аудио стоит ИМЕННО ЗДЕСЬ, под сроком хранения, а не в «Микрофоне»:
+                // клип живёт ровно столько же, сколько запись истории, и человек должен увидеть срок
+                // прямо над тумблером. В «Микрофоне» настройки того, КАК мы пишем, а это про то, что
+                // остаётся ПОСЛЕ.
+                switchRow(L10n.t("voice.saveAudio"), L10n.t("voice.saveAudioSub"), settings.voiceSaveAudio,
+                          #selector(toggleSaveAudio), help: L10n.t("voice.saveAudioHelp")),
                 buttonRow([histShow, histClear])
             ]),
             group(2),
@@ -2515,6 +2576,21 @@ final class DetailVC: NSViewController {
         return seg
     }
 
+    /// Отпустили ли ползунок ПРЯМО СЕЙЧАС.
+    ///
+    /// ⚠️ `NSSlider` непрерывный, то есть действие прилетает на КАЖДЫЙ пиксель перетаскивания. Пока
+    /// в действии стояло проигрывание превью, звук старта диктовки трещал очередью всё время, пока
+    /// человек вёл ползунок (жалоба пользователя). Само значение обновлять непрерывно правильно, а вот
+    /// звук уместен ровно один раз, когда движение закончилось. Отличаем по типу текущего события:
+    /// на отпускании это `.leftMouseUp`. Клавиатурная стрелка (`.keyDown`) тоже считается концом,
+    /// иначе с клавиатуры превью не звучало бы вовсе.
+    private var sliderDragEnded: Bool {
+        switch NSApp.currentEvent?.type {
+        case .leftMouseUp, .keyDown: return true
+        default: return false
+        }
+    }
+
     private func soundVolumeSlider() -> NSView {
         let s = NSSlider(value: settings.soundVolume, minValue: 0, maxValue: 1,
                          target: self, action: #selector(soundVolChanged(_:)))
@@ -2525,7 +2601,8 @@ final class DetailVC: NSViewController {
     @objc private func soundVolChanged(_ s: NSSlider) {
         noteVolumeTouchedWhileMuted("switch")
         settings.soundVolume = s.doubleValue
-        if settings.soundEnabled, !settings.soundName.isEmpty {   // короткое превью на новой громкости
+        // Превью — только когда ползунок отпустили (см. sliderDragEnded).
+        if sliderDragEnded, settings.soundEnabled, !settings.soundName.isEmpty {
             Sounds.play(NSSound(named: settings.soundName), volume: settings.soundVolume)
         }
     }
@@ -2593,7 +2670,8 @@ final class DetailVC: NSViewController {
     @objc private func translateVolChanged(_ s: NSSlider) {
         noteVolumeTouchedWhileMuted("translate")
         settings.translateSoundVolume = s.doubleValue
-        guard settings.translateSoundEnabled else { return }   // превью на новой громкости
+        // Тот же случай, что у двух ползунков выше: превью один раз, на отпускании.
+        guard sliderDragEnded, settings.translateSoundEnabled else { return }
         let vol = Float(settings.translateSoundVolume)
         let name = settings.translateSoundName
         if name == "keyboop" {
@@ -2638,7 +2716,7 @@ final class DetailVC: NSViewController {
     @objc private func voiceVolChanged(_ s: NSSlider) {
         noteVolumeTouchedWhileMuted("voice")
         settings.voiceSoundVolume = s.doubleValue
-        if settings.voiceSoundEnabled {   // превью звука старта на новой громкости
+        if sliderDragEnded, settings.voiceSoundEnabled {   // превью звука старта — один раз, на отпускании
             cuePreview?.stop()
             cuePreview = Sounds.play(NSSound(data: CueSynth.startData), volume: settings.voiceSoundVolume)
         }
@@ -2945,6 +3023,7 @@ final class DetailVC: NSViewController {
     @objc private func toggleTTab(_ s: NSButton) { settings.triggerTab = (s.state == .on) }
     @objc private func toggleArrows(_ s: NSSwitch) { settings.arrowsCancel = (s.state == .on) }
     @objc private func toggleTwoCaps(_ s: NSSwitch) { settings.twoCapsFix = (s.state == .on) }
+    @objc private func toggleTypoFix(_ s: NSSwitch) { settings.typoFix = (s.state == .on) }
     @objc private func toggleEscSave(_ s: NSSwitch) { settings.escSaveToHistory = (s.state == .on) }
     @objc private func toggleChatter(_ s: NSSwitch) { settings.dedupeChatter = (s.state == .on) }
 
@@ -3034,6 +3113,18 @@ final class DetailVC: NSViewController {
     @objc private func toggleVoice(_ s: NSSwitch) { settings.voiceEnabled = (s.state == .on) }
     @objc private func voiceModeChanged(_ s: NSSegmentedControl) { settings.voiceHoldMode = s.selectedSegment == 1 ? "toggle" : "hold" }
     @objc private func toggleVoiceHistory(_ s: NSSwitch) { settings.voiceHistoryEnabled = (s.state == .on) }
+    /// ⚠️ ВЫКЛЮЧЕНИЕ УНОСИТ УЖЕ ЗАПИСАННОЕ. Оставить клипы лежать после того, как человек снял
+    /// галочку «сохранять запись голоса», значит соврать ему тумблером: он думает, что записей больше
+    /// нет, а на диске остаются часы его речи. Сами тексты истории при этом не трогаем.
+    @objc private func toggleSaveAudio(_ s: NSSwitch) {
+        settings.voiceSaveAudio = (s.state == .on)
+        guard s.state == .off else { return }
+        let freed = VoiceClips.totalBytes()
+        VoiceClipPlayerView.stopAll()
+        VoiceClips.deleteAll()
+        VoiceHistory.shared.forgetAudio()
+        if freed > 0 { kbLog("аудио диктовки: выключено, удалено \(VoiceClips.humanSize(freed))") }
+    }
     /// Пароль на историю: включение — задать пароль, выключение — подтвердить текущим.
     /// Тумблер откатывается, если пользователь передумал в диалоге.
     @objc private func toggleHistoryLock(_ s: NSSwitch) {

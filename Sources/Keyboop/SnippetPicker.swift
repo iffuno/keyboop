@@ -66,6 +66,7 @@ final class SnippetPicker {
     }
 
     func hide() {
+        cancelTip()
         idleTimer?.invalidate(); idleTimer = nil
         panel?.orderOut(nil)
         panel = nil
@@ -202,6 +203,11 @@ final class SnippetPicker {
     /// что и то и другое требует `NSTrackingArea` и `mouseDown`, а на голом NSView их не повесить.
     final class Row: NSView {
         var onClick: (() -> Void)?
+        /// Полный текст сниппета и колбэки наведения — для подсказки (автор 10.08: «непонятно, какой
+        /// текст вставится, ширины не хватает»).
+        var fullText: String = ""
+        var onHover: ((Row) -> Void)?
+        var onHoverEnd: (() -> Void)?
         private let base: NSColor
         private var tracking: NSTrackingArea?
 
@@ -235,9 +241,91 @@ final class SnippetPicker {
             // как «эта строка активна сама по себе», то есть как выделение в списке. Углубление
             // читается как «сюда сейчас нажмут», и это ровно то, что происходит.
             layer?.backgroundColor = NSColor.black.withAlphaComponent(0.28).cgColor
+            onHover?(self)
         }
-        override func mouseExited(with event: NSEvent) { layer?.backgroundColor = base.cgColor }
+        override func mouseExited(with event: NSEvent) {
+            layer?.backgroundColor = base.cgColor
+            onHoverEnd?()
+        }
         override func mouseDown(with event: NSEvent) { onClick?() }
+    }
+
+    // MARK: - Подсказка с полным текстом
+
+    private var tipPanel: NSPanel?
+    private var tipWork: DispatchWorkItem?
+
+    /// ⚠️ СВОЯ ПОДСКАЗКА, А НЕ `toolTip`. Плашка выбора это `nonactivatingPanel`, который намеренно
+    /// не забирает фокус, и штатный механизм подсказок AppKit на таком окне не показывается вовсе.
+    /// Плюс нам нужен МНОГОСТРОЧНЫЙ текст: сниппет бывает в десять строк, а системная подсказка
+    /// рисует одну.
+    private func scheduleTip(for row: Row) {
+        cancelTip()
+        let text = row.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Показывать подсказку, повторяющую видимую строку, значит мигать без пользы.
+        guard !text.isEmpty, text.count > 40 || text.contains("\n") else { return }
+        let work = DispatchWorkItem { [weak self, weak row] in
+            guard let self, let row, let host = row.window else { return }
+            self.showTip(text: text, near: row, in: host)
+        }
+        tipWork = work
+        // Полсекунды: быстрее — мигает при простом проезде мышью по списку, дольше — человек
+        // успевает решить, что подсказки нет.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
+    }
+
+    private func cancelTip() {
+        tipWork?.cancel(); tipWork = nil
+        tipPanel?.orderOut(nil); tipPanel = nil
+    }
+
+    private func showTip(text: String, near row: Row, in host: NSWindow) {
+        let maxW: CGFloat = 380
+        let font = NSFont.systemFont(ofSize: 12)
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = font
+        label.textColor = .labelColor
+        label.isSelectable = false
+        label.preferredMaxLayoutWidth = maxW - 24
+        let size = label.sizeThatFits(NSSize(width: maxW - 24, height: 400))
+        let w = min(maxW, size.width + 24), h = min(300, size.height + 18)
+
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
+                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        p.appearance = NSAppearance(named: .darkAqua)
+        p.level = .statusBar
+        p.isFloatingPanel = true
+        p.hidesOnDeactivate = false
+        p.backgroundColor = .clear
+        p.isOpaque = false
+        p.hasShadow = true
+        p.ignoresMouseEvents = true          // подсказка не должна перехватывать клик по строке
+        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+
+        let bg = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+        bg.material = .hudWindow
+        bg.blendingMode = .behindWindow
+        bg.state = .active
+        bg.wantsLayer = true
+        bg.layer?.cornerRadius = 8
+        bg.layer?.cornerCurve = .continuous
+        label.frame = NSRect(x: 12, y: 9, width: w - 24, height: h - 18)
+        bg.addSubview(label)
+        p.contentView = bg
+
+        // Ставим СПРАВА от плашки, а если справа не помещается — слева. По вертикали держимся строки.
+        let rowRect = host.convertToScreen(row.convert(row.bounds, to: nil))
+        let hostFrame = host.frame
+        let visible = (NSScreen.screens.first { $0.frame.intersects(hostFrame) } ?? NSScreen.main)?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        var x = hostFrame.maxX + 8
+        if x + w > visible.maxX { x = hostFrame.minX - w - 8 }
+        x = max(visible.minX + 4, min(x, visible.maxX - w - 4))
+        var y = rowRect.midY - h / 2
+        y = max(visible.minY + 4, min(y, visible.maxY - h - 4))
+        p.setFrameOrigin(NSPoint(x: x, y: y))
+        p.orderFront(nil)
+        tipPanel = p
     }
 
     /// Шрифт колонки названий. Вынесен, потому что им же и МЕРЯЕМ ширину: считать одним шрифтом,
@@ -294,6 +382,9 @@ final class SnippetPicker {
         exp.frame = NSRect(x: expX, y: 5, width: frame.width - expX - 14, height: 16)
         exp.lineBreakMode = .byTruncatingTail
         v.addSubview(exp)
+        v.fullText = expansion
+        v.onHover = { [weak self] r in self?.scheduleTip(for: r) }
+        v.onHoverEnd = { [weak self] in self?.cancelTip() }
         return v
     }
 }

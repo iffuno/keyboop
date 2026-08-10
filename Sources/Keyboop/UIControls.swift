@@ -358,6 +358,11 @@ final class HotkeyControl: NSView {
         ("Right ⌘", "modkey", 54, CGEventFlags.maskCommand.rawValue),
         ("Left ⌃",   "modkey", 59, CGEventFlags.maskControl.rawValue),
         ("2× ⇧  (DoubleShift)",        "doubletap", 56, CGEventFlags.maskShift.rawValue),
+        // 2× ⌥ — просьба из отзыва #113 (08.08.2026): у человека двойной ⇧ конфликтует с Karamba на
+        // удалённом рабочем столе. Движок doubletap ничего про конкретный модификатор не знает
+        // (работает по маске из настроек), а `keyCodeMatchesMask` уже принимает ОБА альта, 58 и 61,
+        // так что вся правка это строчка списка.
+        ("2× ⌥  (DoubleOption)",       "doubletap", 58, CGEventFlags.maskAlternate.rawValue),
         // 🌐/Fn как хоткей КОНВЕРСИИ (просьба автора 24.07 — «мало ли кому так удобно»). Событие
         // глотаем в EventTap, поэтому системное действие клавиши не сработает параллельно.
         ("🌐  Globe / Fn",             "modkey",    63, CGEventFlags.maskSecondaryFn.rawValue)

@@ -162,10 +162,14 @@ enum L10n {
         "tr.checking":    [.ru: "Проверяю…", .en: "Checking…"],
         // Уровень входа микрофона (задача 93). ⚠️ Формулировки честно говорят, что настройка СИСТЕМНАЯ:
         // мы меняем общий ползунок, который видят все программы, и не возвращаем его обратно.
-        "voice.micGain":      [.ru: "Поднимать громкость микрофона",
-                               .en: "Raise the microphone level"],
+        // «Уровень», а не «громкость» (автор, 09.08): громкость у нас означает то, что СЛЫШНО, а это
+        // настройка чувствительности входа. Слово разводит две вещи ещё до того, как человек полез
+        // в подсказку.
+        "voice.micGain":      [.ru: "Поднимать уровень микрофона",
+                               .en: "Raise the microphone input level"],
         "voice.micGainSub":   [.ru: "Перед диктовкой выставляю системный уровень входа и оставляю его",
                                .en: "Sets the system input level before dictation and leaves it there"],
+        "voice.micGainUnsupportedShort": [.ru: "Этот микрофон уровнем не управляет", .en: "This microphone has no input level"],
         "voice.micGainUnsupported": [.ru: "Этот микрофон не даёт управлять уровнем входа",
                                      .en: "This microphone does not allow input level control"],
         "voice.micGainHelp":  [.ru: "Некоторые программы (например браузер во время звонка) убавляют системный уровень микрофона и не возвращают его. Тогда следующая диктовка выходит тихой. Keyboop поднимает уровень перед записью. Это ОБЩАЯ системная настройка: поднятый вход увидят и другие программы, и обратно мы его не опускаем, иначе смысл теряется.",
@@ -173,6 +177,33 @@ enum L10n {
         "voice.micGainLevel": [.ru: "До какого уровня", .en: "Up to which level"],
         "voice.micGainLevelHelp": [.ru: "Положение системного ползунка, а не громкость в децибелах: у разных микрофонов одна и та же доля означает разное усиление. 100% у части устройств это уже перегруз, поэтому по умолчанию 90%.",
                                    .en: "The position of the system slider, not a level in decibels: the same percentage means different gain on different microphones. On some devices 100% already clips, which is why the default is 90%."],
+        // Сохранение аудио диктовки (задача 101, отзыв #110). ⚠️ Текст обязан честно называть цену:
+        // это единственная наша функция, после которой на диске лежит голос человека.
+        "voice.saveAudio":    [.ru: "Сохранять запись голоса",
+                               .en: "Keep the voice recording"],
+        "voice.saveAudioSub": [.ru: "К каждой диктовке в истории прикрепляется исходное аудио",
+                               .en: "Each dictation in the history keeps its original audio"],
+        "voice.saveAudioHelp":[.ru: "Иногда распознанного текста мало и хочется переслушать, как было сказано. Запись шифруется тем же ключом, что и текст истории, никуда не отправляется и живёт ровно столько же, сколько сама запись в истории: удалили запись или вышел срок хранения — исчезает и звук. Минута речи занимает около 240 КБ.",
+                               .en: "Sometimes the transcript is not enough and you want to hear how it was actually said. The recording is encrypted with the same key as the history text, never leaves the Mac, and lives exactly as long as its history entry: delete the entry or let the retention expire and the audio goes with it. A minute of speech takes about 240 KB."],
+        "voice.audioSize":    [.ru: "Записи занимают %@", .en: "Recordings take %@"],
+        "voice.audioClear":   [.ru: "Удалить все записи", .en: "Delete all recordings"],
+        // Плеер клипа в карточке истории.
+        "clip.play":  [.ru: "Прослушать", .en: "Play"],
+        "clip.pause": [.ru: "Пауза", .en: "Pause"],
+        "clip.gone":  [.ru: "Запись не открывается", .en: "The recording cannot be opened"],
+        "clip.rate":  [.ru: "Скорость воспроизведения", .en: "Playback speed"],
+        "paste.section":  [.ru: "ВСТАВКА ИЗ БУФЕРА", .en: "PASTING FROM THE CLIPBOARD"],
+        "paste.plain":    [.ru: "Вставлять без форматирования", .en: "Paste without formatting"],
+        "paste.plainSub": [.ru: "Текст ляжет шрифтом того места, куда вставляете",
+                           .en: "The text takes on the style of where you paste it"],
+        "paste.plainCombo":[.ru: "Сочетание", .en: "Shortcut"],
+        "paste.plainHelp":[.ru: "Скопированный текст вставится голым: без чужого шрифта, цвета и размера. Мы подменяем содержимое буфера на время вставки и сразу возвращаем его обратно, а если за это время вы скопировали что-то новое, не трогаем его вовсе. ⚠️ Многие программы (Заметки, Pages, браузеры) умеют это сами по ⇧⌘V. Там включённая настройка заменит их поведение нашим, поэтому она выключена по умолчанию, а сочетание можно сменить.",
+                           .en: "The copied text is pasted bare: no foreign font, colour or size. We swap the clipboard contents for the moment of pasting and put them straight back, and if you copied something new meanwhile we leave it alone. ⚠️ Many apps (Notes, Pages, browsers) already do this on ⇧⌘V. There, turning this on replaces their behaviour with ours, which is why it is off by default and the shortcut can be changed."],
+        "hist.clearConfirm":    [.ru: "Удалить все записи?", .en: "Delete all entries?"],
+        "hist.clearConfirmBody":[.ru: "Вместе с текстом исчезнут и сохранённые аудиозаписи. Вернуть их будет нельзя.",
+                                 .en: "Saved audio recordings go with the text. This cannot be undone."],
+        "hist.clearConfirmYes": [.ru: "Удалить", .en: "Delete"],
+        "hist.clearConfirmNo":  [.ru: "Отмена", .en: "Cancel"],
         "tr.installed":   [.ru: "Установлен ✓", .en: "Installed ✓"],
         "tr.notInstalled":[.ru: "Не установлен — нужен для перевода", .en: "Not installed — required for translation"],
         // ⚠️ ОТДЕЛЬНАЯ СТРОКА НА НЕУДАЧУ (отзывы #102 и #108, 08.08.2026). Раньше после неудачной
@@ -747,7 +778,10 @@ enum L10n {
         "voice.sound":    [.ru: "Звук записи", .en: "Recording sound"],
         "voice.soundSub": [.ru: "Короткий сигнал в начале и в конце записи",
                           .en: "A short cue when recording starts and stops"],
-        "voice.soundVol": [.ru: "Громкость звука", .en: "Sound volume"],
+        // ⚠️ У нас ЧЕТЫРЕ разные громкости в соседних разделах: звук старта диктовки, звук
+        // переключения, приглушение музыки и уровень входа микрофона. Голое «Громкость звука» не
+        // отвечало, какая из них (автор, 09.08). Каждое название теперь называет источник.
+        "voice.soundVol": [.ru: "Громкость звука начала диктовки", .en: "Volume of the dictation start sound"],
         "voice.streaming":   [.ru: "Потоковый набор — очень экспериментально",
                               .en: "Streaming dictation — very experimental"],
         "voice.streamingSub": [.ru: "Показывает речь на плашке, пока вы говорите",
@@ -857,6 +891,10 @@ enum L10n {
         "switch.chatterSub": [.ru: "Одно нажатие, одна буква", .en: "One press, one letter"],
         "switch.chatterHelp": [.ru: "У изношенных клавиатур контакт иногда срабатывает дважды с одного нажатия, и в тексте появляется лишняя буква. Мы отбрасываем повтор той же клавиши, если он пришёл быстрее чем через 30 миллисекунд. Настоящие двойные буквы это не задевает: даже у быстрых машинисток на «сс» в «ссоре» уходит вдвое больше. Зажатую клавишу тоже не трогаем, автоповтор работает как обычно. Сочетания с ⌘, ⌃ и ⌥ проходят мимо фильтра целиком: пропущенная команда заметна сильнее, чем лишняя. Выключено по умолчанию, потому что это перехват ввода, а не исправление текста.",
                                .en: "On worn keyboards a contact sometimes fires twice from a single press, and an extra letter shows up. We drop a repeat of the same key if it arrives sooner than 30 milliseconds. Genuine double letters are untouched: even fast typists need twice that for the pair in “class”. Holding a key is unaffected too, autorepeat works as usual. Shortcuts with ⌘, ⌃ or ⌥ bypass the filter entirely: a command that never fired hurts more than one that fired twice. Off by default, because this intercepts your typing rather than correcting text."],
+        "switch.typoFix":    [.ru: "Исправлять опечатки", .en: "Fix typos"],
+        "switch.typoFixSub": [.ru: "«тедефон» превращается в «телефон»", .en: "“tlephone” becomes “telephone”"],
+        "switch.typoFixHelp":[.ru: "Слово, которого нет в словаре, заменяется на словарное, если оно отличается ровно на одну букву И такое слово ровно одно. Если подходящих слов несколько, мы не гадаем и не трогаем ничего. Выключено по умолчанию, потому что это правка самого текста, а не раскладки. ⚠️ Профессиональные слова, которых нет в словаре, программа может исправить один раз, но слово, набранное дважды, она запоминает как ваше и больше не трогает никогда. Ваши исключения и выученные слова не трогаются вовсе.",
+                              .en: "A word that is not in the dictionary is replaced by a dictionary word if it differs by exactly one letter AND there is exactly one such word. When several fit, we do not guess and change nothing. Off by default, because this edits the text itself rather than the layout. ⚠️ Professional words missing from the dictionary may be corrected once, but a word you type twice is remembered as yours and never touched again. Your exceptions and learned words are never touched."],
         "switch.twoCaps":    [.ru: "Две заглавные подряд", .en: "Two leading capitals"],
         "switch.twoCapsSub": [.ru: "«КОгда» превращается в «Когда»", .en: "“WHen” becomes “When”"],
         "switch.twoCapsHelp": [.ru: "Так выходит, когда Shift отпущен на миг позже, чем нажата вторая буква. Keyboop чинит только этот случай: ровно две первые буквы заглавные, третья строчная, и в слове одни буквы. Слова целиком заглавными, вроде ГОСТ или USB, а также короткие «ДА» и «ОК» не трогаются. Выключено по умолчанию, потому что это правка самого текста, а не раскладки.",
@@ -975,10 +1013,16 @@ enum L10n {
         "menu.copyLast":  [.ru: "Скопировать последнюю диктовку", .en: "Copy last dictation"],
         "voice.grpDuck":  [.ru: "Пока вы диктуете", .en: "While you dictate"],
         "voice.duck":     [.ru: "Приглушать звук на время диктовки", .en: "Turn the volume down while dictating"],
-        "voice.duckSub":  [.ru: "Музыка и видео не будут перекрикивать", .en: "Music and video stop talking over you"],
+        "voice.duckSub":  [.ru: "Музыка и видео не будут вас перекрикивать", .en: "Music and video stop talking over you"],
         "voice.duckHelp": [.ru: "Пока идёт запись, громкость системы плавно убавляется, а после неё так же плавно возвращается на прежнее место. Если вы покрутите её сами во время диктовки, мы не станем спорить и оставим ваше значение. Паузу медиа мы намеренно не жмём: клавиша паузы уходит в то приложение, которое система считает главным, а когда открыты вкладка с видео, музыка и созвон, угадать это нельзя.",
                            .en: "While recording, the system volume fades down, and afterwards it fades back to where it was. If you change it yourself mid-dictation, we won't argue and will leave your value. We deliberately don't press pause: the pause key goes to whichever app the system considers primary, and with a video tab, music and a call all open, that is a coin toss."],
-        "voice.duckLevel":[.ru: "Громкость во время диктовки", .en: "Volume while dictating"],
+        // ⚠️ В НАЗВАНИИ ОБЯЗАНО БЫТЬ СЛОВО «ВОСПРОИЗВЕДЕНИЯ» (автор, 09.08.2026). Прежнее «Громкость
+        // во время диктовки» не отвечало на главный вопрос: это про звук, который мы приглушаем, или
+        // про чувствительность микрофона? С появлением в соседнем разделе настройки «Поднимать
+        // громкость микрофона» двусмысленность стала прямой ловушкой: два ползунка про громкость,
+        // и по названию не отличить, какой из них про вход, а какой про выход.
+        "voice.duckLevel":[.ru: "Громкость музыки и видео во время диктовки",
+                           .en: "Music and video volume while dictating"],
         "voice.duckMute": [.ru: "тишина", .en: "silent"],
         // Коротко: сначала что делает, потом потолок, потом шутка. Не расписывать (автор 30.07).
         "voice.duckLevelHelp": [.ru: "Во время диктовки громкость опустится до этого уровня, потом вернётся. Выше 77% не поднимается. Просто потому что.",

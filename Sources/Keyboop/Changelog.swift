@@ -51,6 +51,47 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        // 0.3.18 — СРАЗУ СТАБИЛЬНАЯ, без беты (решение автора 10.08). Обычно новое уходит бетой, но
+        // здесь чинится САМО ОБНОВЛЕНИЕ: в тихом режиме скачанный апдейт мог ждать вечно, а кнопка
+        // «Проверить сейчас» молчала. Через бета-канал такая починка дошла бы до горстки людей, то
+        // есть не дошла бы до тех, кому она и нужна. Риск при этом небольшой: все три новые функции
+        // выключены по умолчанию, а починки точечные.
+        Release(version: "0.3.18",
+            ru: [
+                "Диктовка умеет сохранять запись голоса. К каждой записи в истории прикрепляется исходное аудио: видно волну, можно послушать и перемотать, скорость переключается на 1,5× и 2× и запоминается. Запись шифруется тем же ключом, что и текст, никуда не отправляется и исчезает вместе со своей записью. Включается в «Голосовой набор» → «История».",
+                "Появилось исправление опечаток. «Извените» становится «извините», «тедефон» — «телефоном». Работает по проверенной таблице и по промахам на соседнюю клавишу, а слово, которое вы набрали дважды, программа запоминает как ваше и больше не трогает. Выключено по умолчанию.",
+                "Вставка без форматирования по сочетанию. Скопированный текст ложится шрифтом того места, куда вставляете. Буфер при этом возвращается ровно таким, каким был, а если вы успели скопировать что-то новое, мы его не трогаем вовсе.",
+                "Автообновление больше не застревает. В тихом режиме скачанное обновление могло ждать удобного момента вечно, а кнопка «Проверить сейчас» при этом молчала. Теперь и кнопка отвечает всегда, и обновление само напоминает о себе, если тихо поставить не вышло.",
+                "Порядок сниппетов можно менять перетаскиванием, а при наведении видно полный текст. Раньше в узкой строке было не разобрать, что именно вставится.",
+                "Микрофон освобождается сразу, если запись отбросили как слишком короткую. Раньше он ещё полминуты оставался занятым, и у других программ портился звук.",
+                "«,fu» наконец превращается в «баг». В словаре не было лексики разработки, поэтому короткие слова вроде «баг», «фича» и «коммит» не распознавались.",
+            ],
+            en: [
+                "Dictation can keep the voice recording. Every entry in the history carries its original audio: you see the waveform, can play and seek it, and switch the speed to 1.5× or 2×, which is remembered. The recording is encrypted with the same key as the text, never leaves the Mac and disappears together with its entry. Turn it on in «Dictation» → «History».",
+                "Typo correction has arrived. «Teh» becomes «the», «adress» becomes «address». It works from a verified table and from mistyped neighbouring keys, and a word you type twice is remembered as yours and never touched again. Off by default.",
+                "Paste without formatting, on a shortcut. The copied text takes on the style of where you paste it. The clipboard comes back exactly as it was, and if you copied something new in the meantime we leave it alone.",
+                "Automatic updates no longer get stuck. In silent mode a downloaded update could wait for a convenient moment forever, while «Check now» stayed silent. Now the button always answers, and the update reminds you about itself if installing quietly did not work out.",
+                "Snippets can be reordered by dragging, and hovering shows the full text. A narrow row never told you what would actually be pasted.",
+                "The microphone is released at once when a take is discarded as too short. It used to stay busy for another half minute, spoiling sound for other apps.",
+                "Development jargon made it into the dictionary, so short words like «баг», «фича» and «коммит» are recognised at last.",
+            ],
+            announce: """
+                Сидел полночи, разбирая отзывы и доделывая то, что давно хотел сам. Релиз вышел \
+                большой: три новые функции и починка обновлений, из-за которой люди застревали на \
+                старых версиях.
+                """,
+            announceEnd: """
+                Три новые функции выключены по умолчанию. Они правят текст и буфер, а не раскладку, \
+                и включать такое за спиной я не буду. Исправление опечаток тоже: хозяин-Барин, \
+                захотите, включите.
+
+                Обновление придёт само в ближайшие часы. Если ждать не хочется, в настройках есть \
+                «Проверить обновления».
+
+                Спасибо всем, кто поддержал на keyboop.com/tips и boosty.to/iffun. И тем, кто \
+                присылает логи с поломками: без них часть этого я искал бы неделями.
+                """),
+
         // 0.3.15 — БЕТА. Две новые функции (сниппеты по сочетанию и быстрое действие правым
         // кликом) плюс проверка занятости сочетаний, выросшая из вопроса «а не занято ли ⌃⌥V».
         Release(version: "0.3.17",

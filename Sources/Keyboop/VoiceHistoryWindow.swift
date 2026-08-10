@@ -92,6 +92,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     func windowWillClose(_ notification: Notification) {
+        VoiceClipPlayerView.stopAll()   // окно ушло — голос из него звучать не должен
         refreshTimer?.invalidate()
         NotificationCenter.default.removeObserver(self, name: .keyboopVoiceHistoryChanged, object: nil)
     }
@@ -164,9 +165,16 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         translBtn.target = self; translBtn.action = #selector(toggleTranslucency)
         translBtn.onSecondaryClick = { [weak self] in self?.showOpacitySlider() }
 
+        rateBtn.bezelStyle = .regularSquare; rateBtn.isBordered = false
+        rateBtn.attributedTitle = rateTitle()
+        rateBtn.toolTip = L10n.t("clip.rate")
+        rateBtn.target = self; rateBtn.action = #selector(cycleRate)
+
         // «Поверх всех окон» — в ПРАВЫЙ ВЕРХНИЙ угол титлбара (напротив «светофора» слева).
-        let pinHost = NSView(frame: NSRect(x: 0, y: 0, width: 70, height: 28))
-        let titleBar = NSStackView(views: [translBtn, pinBtn])
+        // Скорость воспроизведения — левее прозрачности: она про содержимое окна, а две правые
+        // кнопки про само окно, и смешивать эти две группы не стоит.
+        let pinHost = NSView(frame: NSRect(x: 0, y: 0, width: 104, height: 28))
+        let titleBar = NSStackView(views: [rateBtn, translBtn, pinBtn])
         titleBar.orientation = .horizontal; titleBar.spacing = 8; titleBar.alignment = .centerY
         titleBar.translatesAutoresizingMaskIntoConstraints = false
         pinHost.addSubview(titleBar)
@@ -176,7 +184,9 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
             pinBtn.widthAnchor.constraint(equalToConstant: 20),
             pinBtn.heightAnchor.constraint(equalToConstant: 20),
             translBtn.widthAnchor.constraint(equalToConstant: 20),
-            translBtn.heightAnchor.constraint(equalToConstant: 20)
+            translBtn.heightAnchor.constraint(equalToConstant: 20),
+            rateBtn.widthAnchor.constraint(equalToConstant: 30),
+            rateBtn.heightAnchor.constraint(equalToConstant: 20)
         ])
         let pinAcc = NSTitlebarAccessoryViewController()
         pinAcc.layoutAttribute = .trailing
@@ -186,15 +196,21 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         let setBtn = secondaryIcon("gearshape", L10n.t("hist.settings"), #selector(openSettings))
         let clearBtn = secondaryIcon("trash", L10n.t("voice.histClear"), #selector(clearAll))
 
-        let secSpacer = NSView()
-        let secondaryBar = NSStackView(views: [secSpacer, setBtn, clearBtn])  // pin переехал в титлбар
-        secondaryBar.orientation = .horizontal; secondaryBar.spacing = 6; secondaryBar.alignment = .centerY
-        secondaryBar.translatesAutoresizingMaskIntoConstraints = false
-        bg.addSubview(secondaryBar)
-
+        // ⚠️ НИЖНЯЯ ПОЛОСА ОДНА, А НЕ ДВЕ (автор 10.08). Раньше «Записать» занимала всю ширину, а
+        // мелкие кнопки жались отдельной строкой над ней: две полосы съедали высоту у списка и
+        // читались как два разных этажа управления. Теперь один ряд: слева кнопка записи в половину
+        // ширины, справа настройки и очистка.
         recordBtn.target = self; recordBtn.action = #selector(toggleRecord)
         recordBtn.translatesAutoresizingMaskIntoConstraints = false
         updateRecordButton()
+
+        // «Записать» стоит РОВНО ПО ЦЕНТРУ окна, а мелкие кнопки прижаты к правому краю. Через
+        // NSStackView этого не добиться: он центрирует содержимое целиком, и главная кнопка уезжает
+        // влево ровно на ширину соседей. Поэтому три отдельных якоря.
+        let secondaryBar = NSStackView(views: [setBtn, clearBtn])
+        secondaryBar.orientation = .horizontal; secondaryBar.spacing = 6; secondaryBar.alignment = .centerY
+        secondaryBar.translatesAutoresizingMaskIntoConstraints = false
+        bg.addSubview(secondaryBar)
         bg.addSubview(recordBtn)
 
         NSLayoutConstraint.activate([
@@ -210,7 +226,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
             scroll.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 10),
             scroll.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 10),
             scroll.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -10),
-            scroll.bottomAnchor.constraint(equalTo: secondaryBar.topAnchor, constant: -8),
+            scroll.bottomAnchor.constraint(equalTo: secondaryBar.topAnchor, constant: -10),
 
             doc.widthAnchor.constraint(equalTo: scroll.contentView.widthAnchor),
             listStack.topAnchor.constraint(equalTo: doc.topAnchor, constant: 4),
@@ -221,13 +237,15 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
             emptyView.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
             emptyView.topAnchor.constraint(equalTo: scroll.topAnchor, constant: 60),
 
-            secondaryBar.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 16),
-            secondaryBar.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -16),
-            secondaryBar.bottomAnchor.constraint(equalTo: recordBtn.topAnchor, constant: -8),
+            secondaryBar.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -14),
+            secondaryBar.centerYAnchor.constraint(equalTo: recordBtn.centerYAnchor),
 
-            recordBtn.leadingAnchor.constraint(equalTo: bg.leadingAnchor, constant: 14),
-            recordBtn.trailingAnchor.constraint(equalTo: bg.trailingAnchor, constant: -14),
+            recordBtn.centerXAnchor.constraint(equalTo: bg.centerXAnchor),
             recordBtn.bottomAnchor.constraint(equalTo: bg.bottomAnchor, constant: -14),
+            // Половина ширины, но не уже 150 точек: на узком окне «Записать» иначе схлопнулась бы
+            // до кружка с обрезанной подписью.
+            recordBtn.widthAnchor.constraint(equalTo: bg.widthAnchor, multiplier: 0.5),
+            recordBtn.widthAnchor.constraint(greaterThanOrEqualToConstant: 150),
             recordBtn.heightAnchor.constraint(equalToConstant: 42)
         ])
 
@@ -238,6 +256,32 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     /// Мелкая вторичная иконка (приглушённая, без рамки) — поверх окон / настройки / очистить.
+    /// Скорость воспроизведения — ОДНА НА ВСЕ ЗАПИСИ (решение автора 10.08). Стоит в заголовке окна
+    /// слева от прозрачности, а не на карточке: человек выбирает, как ему слушать вообще, а не
+    /// настраивает темп каждой заметке отдельно.
+    private let rateBtn = NSButton()
+
+    private func rateTitle() -> NSAttributedString {
+        let r = AppSettings.shared.voiceClipRate
+        // «1,5×» с запятой: это русский интерфейс, а не консоль.
+        let text = r == rint(r) ? String(format: "%.0f×", r)
+                                : String(format: "%.1f×", r).replacingOccurrences(of: ".", with: ",")
+        return NSAttributedString(string: text, attributes: [
+            .foregroundColor: r > 1.0 ? DS.coral : NSColor.secondaryLabelColor,
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        ])
+    }
+
+    /// Следующая ступень по кругу. Играющая запись подхватывает темп на лету.
+    @objc private func cycleRate() {
+        let rates = VoiceClipPlayerView.rates
+        let cur = AppSettings.shared.voiceClipRate
+        let i = rates.firstIndex(where: { abs($0 - cur) < 0.01 }) ?? 0
+        AppSettings.shared.voiceClipRate = rates[(i + 1) % rates.count]
+        rateBtn.attributedTitle = rateTitle()
+        VoiceClipPlayerView.applyRateToCurrent()
+    }
+
     private func secondaryIcon(_ symbol: String, _ tip: String, _ action: Selector) -> NSButton {
         let b = NSButton(title: "", target: self, action: action)
         b.bezelStyle = .regularSquare; b.isBordered = false
@@ -293,7 +337,21 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         text.maximumNumberOfLines = 0                  // перенос по словам, весь текст видно (не усекаем)
         text.lineBreakMode = .byWordWrapping
 
-        return HoverCard(date: date, body: text, actions: [copy, del])
+        // Аудио есть только если человек включил сохранение И файл ещё жив. Проверяем именно файл, а
+        // не только поле записи: клип мог не пережить перевыпуск ключа, и плеер на пустоту предлагал
+        // бы нажать кнопку, которая ничего не делает.
+        guard let clip = e.audio, VoiceClips.exists(clip) else {
+            return HoverCard(date: date, body: text, actions: [copy, del])
+        }
+        let body = NSStackView(views: [text, VoiceClipPlayerView(clipID: clip, wave: e.wave)])
+        body.orientation = .vertical
+        body.alignment = .leading
+        body.spacing = 8
+        body.translatesAutoresizingMaskIntoConstraints = false
+        // Плеер тянем во всю ширину карточки: иначе NSStackView сжимает его по содержимому и дорожка
+        // превращается в огрызок рядом с длинным текстом.
+        body.arrangedSubviews.last?.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
+        return HoverCard(date: date, body: body, actions: [copy, del])
     }
 
     /// Иконка-действие на карточке (проявляется по наведению).
@@ -387,7 +445,27 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         translBtn.contentTintColor = DS.coral
     }
     @objc private func openSettings() { onOpenVoiceSettings?() }
+    /// ⚠️ ОЧИСТКА СПРАШИВАЕТ ПОДТВЕРЖДЕНИЕ (автор 10.08). Кнопка стоит рядом с настройками, промах
+    /// пальцем стоил бы человеку всей истории вместе с аудиозаписями, а отмены у этого действия нет.
     @objc private func clearAll() {
+        let a = NSAlert()
+        a.messageText = L10n.t("hist.clearConfirm")
+        a.informativeText = L10n.t("hist.clearConfirmBody")
+        a.alertStyle = .warning
+        let del = a.addButton(withTitle: L10n.t("hist.clearConfirmYes"))
+        del.hasDestructiveAction = true
+        a.addButton(withTitle: L10n.t("hist.clearConfirmNo"))
+        if let w = window {
+            a.beginSheetModal(for: w) { [weak self] r in
+                guard r == .alertFirstButtonReturn else { return }
+                self?.reallyClearAll()
+            }
+        } else if a.runModal() == .alertFirstButtonReturn {
+            reallyClearAll()
+        }
+    }
+
+    private func reallyClearAll() {
         VoiceHistory.shared.clear()
         reload()
     }
@@ -403,18 +481,44 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
             try? png.write(to: URL(fileURLWithPath: path))
         }
     }
+    /// Dev: подставить демо-записи и ПОКАЗАТЬ окно живьём (для снимка снаружи, см. KEYBOOP_HISTLIVE).
+    func fillWithSamples() {
+        dumpWithSamples(to: "/tmp/kb_history_live.png")
+    }
+
     /// Dev: подставить демо-записи (НЕ трогая реальную историю) + показать действия + снять.
     func dumpWithSamples(to path: String) {
         window?.appearance = NSAppearance(named: .darkAqua)   // окно тёмное — рендерим как видит юзер
+        // Демо-клип для плеера. Настройку трогаем только на время создания и возвращаем: правило про
+        // чужие настройки действует и в dev-хуках, а `voiceSaveAudio` живёт в UserDefaults dev-сборки
+        // (ru.keyboop.app.dev), то есть до боевых настроек всё равно не дотягивается.
+        let savePrev = AppSettings.shared.voiceSaveAudio
+        AppSettings.shared.voiceSaveAudio = true
+        // ⚠️ Демо-сигнал должен быть РЕЧЕПОДОБНЫМ, а не ровным тоном. Первый вариант был чистой
+        // синусоидой, и волна на снимке получилась одинаковой гребёнкой: картинка выглядела
+        // сломанной, хотя код был верен. Снимок, который врёт про внешний вид, хуже отсутствующего.
+        let demoLen = 16_000 * 7
+        var demo = [Float](repeating: 0, count: demoLen)
+        for i in 0..<demoLen {
+            let t = Float(i) / 16_000
+            // Слоги примерно по трети секунды и паузы между фразами: огибающая получается живой.
+            let syllable = 0.55 + 0.45 * sinf(2 * .pi * 3.1 * t)
+            let phrase: Float = (t.truncatingRemainder(dividingBy: 2.4) > 1.9) ? 0.05 : 1.0
+            let voice = sinf(2 * .pi * 190 * t) + 0.4 * sinf(2 * .pi * 780 * t) + 0.2 * sinf(2 * .pi * 2400 * t)
+            demo[i] = 0.22 * syllable * phrase * voice
+        }
+        let demoClip = VoiceClips.save(samples: demo)
+        AppSettings.shared.voiceSaveAudio = savePrev
         let now = Date()
         all = [
-            .init(date: now.addingTimeInterval(-50),   text: "Можно проверить, как работает голосовой ввод прямо в этом окне."),
+            .init(date: now.addingTimeInterval(-50),   text: "Можно проверить, как работает голосовой ввод прямо в этом окне.", audio: demoClip?.id, wave: demoClip?.wave),
             .init(date: now.addingTimeInterval(-240),  text: "Так, ну, смотрим."),
             .init(date: now.addingTimeInterval(-900),  text: "Вот прямо сейчас пользуюсь этим голосовым вводом — и знаки препинания расставляются сами, без интернета."),
             .init(date: now.addingTimeInterval(-3600), text: "It's time to test and ship it to the market."),
             .init(date: now.addingTimeInterval(-7200), text: "Короткая заметка на память.")
         ]
         filtered = all; lastCount = all.count
+        defer { demoClip.map { VoiceClips.delete($0.id) } }   // демо-файл не переживает снимок
         rebuildCards()
         window?.contentView?.layoutSubtreeIfNeeded()
         listStack.arrangedSubviews.compactMap { $0 as? HoverCard }.forEach { $0.revealForDump() }
@@ -450,7 +554,9 @@ final class PillButton: NSButton {
         isBordered = false
         wantsLayer = true
         bezelStyle = .regularSquare
-        layer?.cornerRadius = 11
+        // ⚠️ РАДИУС СЧИТАЕМ ОТ ВЫСОТЫ (автор 10.08: «искругли, чтобы была овальная»). Фиксированные
+        // 11 точек на кнопке высотой 42 давали скруглённый прямоугольник, а не таблетку. Живой
+        // расчёт в layout() держит форму при любой высоте.
         layer?.cornerCurve = .continuous
         imagePosition = .imageLeading
         imageHugsTitle = true
@@ -481,6 +587,11 @@ final class PillButton: NSButton {
         layer?.shadowRadius = hovering ? 10 : 7
         layer?.shadowOffset = CGSize(width: 0, height: -2)
     }
+    override func layout() {
+        super.layout()
+        layer?.cornerRadius = bounds.height / 2   // настоящая таблетка при любой высоте
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)

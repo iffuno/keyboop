@@ -1383,6 +1383,7 @@ final class Engine: EventTapHandler {
                 // («RJulf»), и там шаблон «две заглавные + строчная» тоже совпадает, но исправлять
                 // его нельзя — мы испортили бы то, что через миг переключит конверсия.
                 fixTwoLeadingCaps(word: word, item: item)
+                fixTypo(word: word, item: item)
                 return
             }
             autoProp = prop
@@ -1481,6 +1482,25 @@ final class Engine: EventTapHandler {
         }
         muted = true
         kbLog("две заглавные: \(item.deleteCount) симв. исправлено")   // без контента (принцип №2)
+        TextReplacer.replace(deleteCount: item.deleteCount, with: fixed + item.tail) { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
+        }
+        buffer.applyCompletedConversion(converted: fixed)
+    }
+
+    /// ОПЕЧАТКА В СЛОВЕ: «тедефон» → «телефон» (задача 114). Стоит ровно там же, где правка двух
+    /// заглавных, и по той же причине: это правка ТЕКСТА, и делать её можно только тогда, когда
+    /// раскладку трогать не надо. Иначе мы бы «чинили» слово, которое через миг переключит конверсия.
+    ///
+    /// ⚠️ Личный словарь пополняем ВСЕГДА, даже когда сама функция выключена. Иначе человек,
+    /// включивший её через месяц работы, получил бы пустую защиту и правку своих же привычных слов.
+    private func fixTypo(word: String, item: (word: String, tail: String, deleteCount: Int)) {
+        TypoFix.shared.noteTyped(word)
+        guard let fixed = TypoFix.shared.suggest(word) else { return }
+        muted = true
+        kbLog("опечатка: \(item.deleteCount) симв. исправлено")   // без контента (принцип №2)
+        UndoLearner.shared.noteConversion(original: word, converted: fixed)   // откат научит нас навсегда
         TextReplacer.replace(deleteCount: item.deleteCount, with: fixed + item.tail) { [weak self] in
             guard let self else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }

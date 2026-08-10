@@ -11,7 +11,18 @@ final class VoiceHistory {
     private let fileURL: URL
     private var cache: [Entry] = []
 
-    struct Entry: Codable { let date: Date; let text: String }
+    /// ⚠️ `audio` появился 08.08.2026 и ОБЯЗАН оставаться Optional: старые записи в `history.enc`
+    /// этого поля не содержат, и `JSONDecoder` их читает только потому, что отсутствующий ключ у
+    /// Optional это nil, а не ошибка. Сделать его не-опциональным значит обнулить историю всем,
+    /// кто обновится.
+    struct Entry: Codable {
+        let date: Date
+        let text: String
+        var audio: String? = nil
+        /// Огибающая для волны, 64 значения 0…15. Optional по той же причине, что и `audio`:
+        /// записи, сделанные до 10.08.2026, этого поля не содержат.
+        var wave: [UInt8]? = nil
+    }
 
     private init() {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -20,13 +31,33 @@ final class VoiceHistory {
         fileURL = dir.appendingPathComponent("history.enc")
         cache = load()
         if prune() { save() }   // на старте подчистить записи старше срока хранения
+        // Сироты: клипы, чьи записи исчезли путём, который про файлы не знал (перевыпуск ключа
+        // обнуляет историю целиком). Один проход по каталогу на старте, это дешевле, чем накопить
+        // гигабайт нечитаемых файлов.
+        VoiceClips.keepOnly(Set(cache.compactMap { $0.audio }))
     }
 
-    func add(_ text: String) {
-        guard settings.voiceHistoryEnabled else { return }
-        cache.append(Entry(date: Date(), text: text))
+    /// Ключ шифрования истории. Им же шифруются аудиоклипы (`VoiceClips`): держать голос открытым
+    /// рядом с зашифрованным текстом было бы самообманом, речь восстанавливает содержание не хуже.
+    static var storageKey: SymmetricKey? { key() }
+
+    /// `audio` — идентификатор клипа из `VoiceClips` (nil, если сохранение аудио выключено).
+    ///
+    /// ⚠️ Клип живёт ровно столько же, сколько запись, поэтому КАЖДЫЙ путь, которым запись отсюда
+    /// исчезает, обязан унести и файл: срок хранения (`prune`), потолок в 50 записей (здесь),
+    /// удаление одной (`remove`), «очистить всё» (`clear`).
+    func add(_ text: String, audio: String? = nil, wave: [UInt8]? = nil) {
+        guard settings.voiceHistoryEnabled else {
+            if let a = audio { VoiceClips.delete(a) }   // история выключена — клипу тем более не место
+            return
+        }
+        cache.append(Entry(date: Date(), text: text, audio: audio, wave: wave))
         _ = prune()
-        if cache.count > maxEntries { cache.removeFirst(cache.count - maxEntries) }
+        if cache.count > maxEntries {
+            let dropped = cache.prefix(cache.count - maxEntries)
+            dropped.compactMap { $0.audio }.forEach(VoiceClips.delete)
+            cache.removeFirst(cache.count - maxEntries)
+        }
         save()
         notifyChanged()
     }
@@ -38,8 +69,18 @@ final class VoiceHistory {
         guard mins > 0 else { return false }
         let cutoff = Date().addingTimeInterval(-Double(mins) * 60)
         let before = cache.count
+        cache.filter { $0.date < cutoff }.compactMap { $0.audio }.forEach(VoiceClips.delete)
         cache.removeAll { $0.date < cutoff }
         return cache.count != before
+    }
+
+    /// Снять ссылки на аудио со ВСЕХ записей (человек выключил сохранение записи голоса).
+    /// Сами тексты остаются: он выключил звук, а не историю.
+    func forgetAudio() {
+        guard cache.contains(where: { $0.audio != nil }) else { return }
+        cache = cache.map { Entry(date: $0.date, text: $0.text, audio: nil, wave: nil) }
+        save()
+        notifyChanged()
     }
 
     /// Применить новый срок хранения (зовётся из настроек) — подчистить + обновить окно.
@@ -74,12 +115,14 @@ final class VoiceHistory {
         return e.date >= Date().addingTimeInterval(-Double(mins) * 60) ? e : nil
     }
     func remove(date: Date, text: String) {
+        cache.filter { $0.date == date && $0.text == text }.compactMap { $0.audio }.forEach(VoiceClips.delete)
         cache.removeAll { $0.date == date && $0.text == text }
         save()
         notifyChanged()
     }
     func clear() {
         cache.removeAll()
+        VoiceClips.deleteAll()
         try? FileManager.default.removeItem(at: fileURL)
         notifyChanged()
     }

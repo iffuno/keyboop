@@ -464,6 +464,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        // Dev-хук: открыть окно истории с демо-записями и ЖИТЬ, чтобы его можно было снять снаружи
+        // через `screencapture -l <windowID>`. Нужен потому, что `KEYBOOP_HISTDUMP` рисует только
+        // contentView, а кнопки в ЗАГОЛОВКЕ окна (скорость, прозрачность, «поверх всех») живут в
+        // titlebar accessory и в такой снимок не попадают вовсе (поймано 10.08 на кнопке скорости).
+        if ProcessInfo.processInfo.environment["KEYBOOP_HISTLIVE"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                guard let self else { return }
+                let wc = VoiceHistoryWindowController()
+                self.historyWC = wc
+                wc.show()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    wc.fillWithSamples()
+                    NSApp.activate(ignoringOtherApps: true)
+                    if let id = wc.window?.windowNumber { kbLog("histlive: windowID \(id)") }
+                }
+            }
+        }
         // Dev-хук: снимок окна истории голосового набора (демо-записи) и выход.
         if ProcessInfo.processInfo.environment["KEYBOOP_HISTDUMP"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in

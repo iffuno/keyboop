@@ -574,6 +574,15 @@ final class EventTap {
                     return swallowDown(keyCode)
                 }
             }
+            // Вставка без форматирования. Стоит ДО перевода и до общего хоткея: сочетание с ⌘V
+            // ни с чем из них не пересекается, а порядок делает поведение предсказуемым.
+            if s.plainPaste, keyMatches(keyCode, s.plainPasteKeyCode) {
+                let want = relevantMods(CGEventFlags(rawValue: s.plainPasteModifiers))
+                if !want.isEmpty, relevantMods(event.flags) == want {
+                    onMain { PlainPaste.paste() }
+                    return swallowDown(keyCode)
+                }
+            }
             if #available(macOS 15.0, *), s.translateEnabled, keyMatches(keyCode, s.translateHotkeyKeyCode) {
                 let want = relevantMods(CGEventFlags(rawValue: s.translateHotkeyModifiers))
                 if !want.isEmpty, relevantMods(event.flags) == want {
