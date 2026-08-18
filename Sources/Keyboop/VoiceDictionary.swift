@@ -1,0 +1,297 @@
+import Foundation
+
+/// СЛОВАРЬ ДИКТОВКИ: «как слышится → как пишется» (задачи 13/T35 и 126, опора 0.4).
+///
+/// Зачем. Модель распознавания не знает наших имён и раз за разом ломает одни и те же слова:
+/// «кейбуп» вместо Keyboop, «клауд код» вместо Claude Code, «вайп» вместо «вайб». Поправить это
+/// внутри модели нельзя, дообучать её на каждое имя тем более, а руками одно и то же слово человек
+/// правит каждый день. Маленький список замен закрывает весь класс жалоб и, в отличие от всего
+/// остального в диктовке, работает совершенно предсказуемо.
+///
+/// ⚠️ ЗАМЕНА ИДЁТ ОТ НАЧАЛА СЛОВА, А НЕ ПО ТОЧНОМУ СОВПАДЕНИЮ, и это прямое требование задачи 126:
+/// «вайп» обязано превращаться в «вайб» и внутри «вайпкодинга». Правило одно и его легко объяснить:
+/// **совпадение ищется с начала слова, хвост слова остаётся как был.** Цена известна и принята:
+/// короткая запись цепляет однокоренные слова («вайп» превратит и «вайпер»), поэтому список
+/// пользовательский и видимый, а не зашитый внутрь.
+///
+/// Чего словарь НЕ делает намеренно: не склоняет («кейбупом» станет «Keyboopом», а не «Keyboop'ом»),
+/// не угадывает похожие слова и не работает по звучанию. Всё это требует морфологии русского языка,
+/// то есть отдельного движка, а не списка из пяти строк. Человеку проще дописать вторую строку, чем
+/// разбираться, почему «умная» замена сработала там, где он её не просил.
+final class VoiceDictionary {
+    static let shared = VoiceDictionary()
+    private let d = UserDefaults.standard
+    private let key = "voiceDictOrdered"        // [[слышится, пишется]] — порядок как у сниппетов
+    private let seedKey = "voiceDictSeeded"
+
+    private(set) var orderedPairs: [(String, String)] = []
+
+    /// Готовые к матчу иглы: нормализованный образец → замена. Отсортированы по длине убыванием,
+    /// чтобы «клауд код» побеждало «клауд», а не наоборот.
+    private var needles: [(pattern: [Character], replacement: String)] = []
+    /// Первые слова замен, в которых есть заглавная. Их не трогает «не начинать с заглавной»:
+    /// человек написал «Keyboop» с большой буквы осознанно, и настройка про обычные предложения
+    /// не должна отменять его выбор.
+    private(set) var caseKeepers: Set<String> = []
+
+    private init() {
+        if let arr = d.array(forKey: key) as? [[String]] {
+            orderedPairs = arr.compactMap { $0.count >= 2 ? ($0[0], $0[1]) : nil }
+        } else if !d.bool(forKey: seedKey) {
+            // ⚠️ ЗАСЕВАЕМ ОДИН РАЗ И ТОЛЬКО ТЕМ, ЧТО ЛОМАЕТСЯ У ВСЕХ. Смысл словаря в том, что он
+            // работает без настройки: пустой список у человека, который не знает о его
+            // существовании, не чинит ничего. Записи обычные, их видно в редакторе и любую можно
+            // удалить — засев это стартовое состояние, а не зашитое правило.
+            orderedPairs = Self.seedPairs
+            persist()
+        }
+        d.set(true, forKey: seedKey)
+        mergeSeed2()
+        rebuildIndex()
+    }
+
+    /// ЗАСЕВ. Правило одно: слева то, что РЕАЛЬНО слышит распознавание, справа то, как это пишется.
+    ///
+    /// ⚠️ «Claude Code» разрослось в целый куст, и это не перестраховка (проверка автора 13.08:
+    /// «Claude Code пока не очень получилось»). Имя иностранное, на слух ложится на десяток русских
+    /// написаний, и подсказка распознаванию (`initial_prompt`) помогает не всегда: она смещает
+    /// вероятности, но не диктует. Поэтому вторая линия — вот эти строки.
+    ///
+    /// ⚠️ «Cloud» ЛОВИМ ТОЛЬКО В ПАРЕ С «Code» (прямое требование автора). Само по себе cloud это
+    /// обычное английское слово, и переписывать его в «Claude» значило бы ломать нормальную речь про
+    /// облака. Пара «cloud code» такого смысла не имеет и почти наверняка означает нашего Клода.
+    ///
+    /// Дефис и пробел для нас одно и то же (см. `match`), поэтому «клауд-код» отдельной строкой не
+    /// нужен — его накрывает «клауд код».
+    static let seedPairs: [(String, String)] = [
+        ("кейбуп", "Keyboop"),
+        ("к-буп", "Keyboop"),
+        ("вайп", "вайб"),
+    ] + claudeHeardAs.map { ($0, "Claude Code") }
+      + chatGPTHeardAs.map { ($0, "ChatGPT") }
+
+    /// Как распознавание слышит «Claude Code». Собрано как произведение слышимых «Клодов» на слышимые
+    /// «коды»: перечислять руками все пары значит однажды забыть половину.
+    static let claudeHeardAs: [String] = {
+        let claude = ["клауд", "клод", "клоуд", "клауде", "клаус", "клауд", "cloud", "claud", "clode"]
+        let code = ["код", "коуд", "кот", "code"]
+        var out: [String] = []
+        var seen = Set<String>()
+        for c in claude {
+            for k in code {
+                let s = "\(c) \(k)"
+                if seen.insert(s).inserted { out.append(s) }
+            }
+            // ⚠️ СЛИТНОЕ НАПИСАНИЕ НУЖНО ДЛЯ КАЖДОГО «кода», А НЕ ТОЛЬКО ДЛЯ РУССКОГО (жалоба пользователя
+            // 17.08: диктовка снова написала «CloudCode»). Здесь склеивалось только с «код», то есть
+            // из латинского «cloud» получалось «cloudкод» — сочетание, которого распознавание не
+            // выдаёт никогда. А ровно тот случай, что приходит на практике, «cloudcode» одним
+            // словом, в списке отсутствовал.
+            for k in code {
+                let glued = c + k
+                if seen.insert(glued).inserted { out.append(glued) }
+            }
+        }
+        return out
+    }()
+
+    /// Как распознавание слышит «ChatGPT» (автор 13.08: «чат GBT, чат-джепити, chat GPT, ChatGBT…»).
+    ///
+    /// Та же беда, что с Claude Code, и та же причина: иностранное имя из двух частей, каждая из
+    /// которых ложится на слух десятком способов. «GPT» модель особенно любит превращать в «GBT» —
+    /// глухая согласная на конце слышится звонкой.
+    ///
+    /// ⚠️ «чат» САМ ПО СЕБЕ НЕ ТРОГАЕМ. Это обычное русское слово, и переписывать его в «ChatGPT»
+    /// значило бы ломать нормальную речь про чаты. Ловим только пару, ровно как с «cloud code».
+    static let chatGPTHeardAs: [String] = {
+        let chat = ["чат", "чад", "чет", "chat"]
+        let gpt  = ["гпт", "жпт", "гбт", "жбт", "джипити", "джепити", "джи пи ти", "gpt", "gbt"]
+        var out: [String] = []
+        var seen = Set<String>()
+        for c in chat {
+            for g in gpt {
+                for s in ["\(c) \(g)", c + g] where seen.insert(s).inserted { out.append(s) }
+            }
+        }
+        return out
+    }()
+
+    /// РАЗОВОЕ ДОБАВЛЕНИЕ НОВЫХ ЗАСЕВНЫХ СТРОК ТЕМ, У КОГО СЛОВАРЬ УЖЕ ЗАВЁЛСЯ.
+    ///
+    /// Первый засев случился 12.08, и у всех, кто успел им обзавестись, «Claude Code» лечился одной
+    /// строкой из трёх нужных. Новые строки надо донести и им, иначе починка достанется только тем,
+    /// кто поставит приложение впервые.
+    ///
+    /// ⚠️ Чужие записи не трогаем: добавляем только те образцы, которых в списке нет. Признаём
+    /// честно — строку, которую человек удалил сам, мы вернём один раз. Разбирать «удалено» и
+    /// «никогда не было» нам нечем, а цена ошибки здесь это одна лишняя видимая строка в редакторе.
+    ///
+    /// ⚠️ Номер версии засева поднимается КАЖДЫЙ раз, когда добавляем заготовки: иначе новые строки
+    /// достанутся только тем, кто поставит приложение впервые. Сегодня это уже второй такой заход
+    /// (Claude Code 12.08, ChatGPT 13.08), значит будет и третий.
+    private func mergeSeed2() {
+        let mark = "voiceDictSeed4"
+        guard !d.bool(forKey: mark) else { return }
+        d.set(true, forKey: mark)
+        guard !orderedPairs.isEmpty else { return }   // пустой список человек очистил намеренно
+        let have = Set(orderedPairs.map { Self.fold($0.0) })
+        let add = Self.seedPairs.filter { !have.contains(Self.fold($0.0)) }
+        guard !add.isEmpty else { return }
+        orderedPairs.append(contentsOf: add)
+        persist()
+        kbLog("словарь диктовки: добавлено \(add.count) новых заготовок (Claude Code и прочее)")
+    }
+
+    // MARK: - Хранение (протокол общего редактора пар)
+
+    func pairs() -> [(String, String)] { orderedPairs }
+
+    func setAll(_ pairs: [(String, String)]) {
+        var out: [(String, String)] = []
+        for (h, w) in pairs {
+            let heard = h.trimmingCharacters(in: .whitespaces)
+            let written = w.trimmingCharacters(in: .whitespaces)
+            if heard.isEmpty { continue }
+            let c = Self.fold(heard)
+            if let idx = out.firstIndex(where: { Self.fold($0.0) == c }) {
+                out[idx].1 = written        // тот же образец → обновляем замену, позицию сохраняем
+            } else {
+                out.append((heard, written))
+            }
+        }
+        orderedPairs = out
+        persist()
+        rebuildIndex()
+    }
+
+    private func persist() { d.set(orderedPairs.map { [$0.0, $0.1] }, forKey: key) }
+
+    /// Нормализация для сравнения: без регистра и без разницы «ё»/«е». Модель ставит «ё» как
+    /// придётся, и заставлять человека заводить две записи на одно слово было бы издевательством.
+    static func fold(_ s: String) -> String {
+        s.lowercased().replacingOccurrences(of: "ё", with: "е")
+    }
+
+    private func rebuildIndex() {
+        needles = orderedPairs.compactMap { (h, w) in
+            let f = Self.fold(h.trimmingCharacters(in: .whitespaces))
+            guard !f.isEmpty, !w.isEmpty else { return nil }
+            return (Array(f), w)
+        }
+        .sorted { $0.pattern.count > $1.pattern.count }
+        caseKeepers = Set(orderedPairs.compactMap { (_, w) in
+            guard let first = w.split(separator: " ").first, first.contains(where: { $0.isUppercase })
+            else { return nil }
+            return String(first)
+        })
+    }
+
+    /// Слово написано в словаре с заглавной и должно её сохранить.
+    func keepsCase(_ word: String) -> Bool { caseKeepers.contains(word) }
+
+    // MARK: - Подсказка распознаванию
+
+    /// СЛОВА ДЛЯ `initial_prompt`: смещаем не результат, а само распознавание (задача 143).
+    ///
+    /// Словарь выше правит текст ПОСЛЕ распознавания — надёжно, но лечит следствие: модель всё равно
+    /// слышит «кейбуп», просто мы переписываем вывод. У whisper.cpp есть второй рычаг: слова из
+    /// `initial_prompt` становятся вероятнее при декодировании. Значит те же самые записи можно
+    /// подложить модели ЗАРАНЕЕ, и часть слов она угадает сама.
+    ///
+    /// Отдаём ПРАВУЮ колонку, «как пишется»: смещать надо к правильному написанию, а не к тому, что
+    /// нам послышалось.
+    ///
+    /// ⚠️ БЮДЖЕТ ОБЯЗАТЕЛЕН. Окно промпта у whisper ограничено (~224 токена), и там уже лежит фраза
+    /// для пунктуации, которая нам дороже: без неё модель в трети случаев уходит в режим без знаков
+    /// препинания (замер 11.07). Поэтому словарь добирает ОСТАТОК, а не занимает окно целиком.
+    ///
+    /// ⚠️ ИМЕНА ВПЕРЁД. При нехватке места первыми идут записи с заглавной буквы: это имена
+    /// собственные, которых модель не знает в принципе. Обычные слова вроде «вайб» она слышит верно
+    /// или почти верно, и им достаточно правки на выходе.
+    func recognitionHint(maxChars: Int = 180) -> String? {
+        guard !orderedPairs.isEmpty else { return nil }
+        var seen = Set<String>()
+        let words = orderedPairs.map { $0.1 }
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+        guard !words.isEmpty else { return nil }
+        let named = words.filter { $0.contains(where: { $0.isUppercase }) }
+        let plain = words.filter { !$0.contains(where: { $0.isUppercase }) }
+        var out: [String] = []
+        var used = 0
+        for w in named + plain {
+            let cost = w.count + 2                     // само слово плюс «, »
+            if used + cost > maxChars { continue }     // не влезло — пробуем следующее, оно короче
+            out.append(w); used += cost
+        }
+        return out.isEmpty ? nil : out.joined(separator: ", ")
+    }
+
+    // MARK: - Применение
+
+    /// Пройти по распознанному тексту и заменить всё, что нашлось. Возвращает исходную строку, если
+    /// словарь пуст: это самый частый случай, и платить за него разбором текста незачем.
+    func apply(_ text: String) -> String {
+        guard !needles.isEmpty, !text.isEmpty else { return text }
+        let src = Array(text)
+        var out = String(); out.reserveCapacity(text.count + 16)
+        var i = 0
+        var hits = 0
+        while i < src.count {
+            // Замена начинается ТОЛЬКО с начала слова: иначе «код» внутри «кодировки» жил бы своей
+            // жизнью, а человек не смог бы предсказать ни одной замены.
+            let atWordStart = (i == 0) || !isWordChar(src[i - 1])
+            if atWordStart, let (end, needle) = match(src, from: i) {
+                out += cased(needle.replacement, likeSourceAt: src, i)
+                i = end
+                hits += 1
+                continue
+            }
+            out.append(src[i])
+            i += 1
+        }
+        if hits > 0 { kbLog("словарь диктовки: заменено \(hits)") }
+        return out
+    }
+
+    private func isWordChar(_ c: Character) -> Bool { c.isLetter || c.isNumber }
+
+    /// Первое (самое длинное) совпадение образца в позиции `i`. Возвращает конец совпадения.
+    private func match(_ src: [Character], from i: Int) -> (Int, (pattern: [Character], replacement: String))? {
+        for needle in needles {
+            var pi = 0, si = i
+            var ok = true
+            while pi < needle.pattern.count {
+                let pc = needle.pattern[pi]
+                if pc == " " {
+                    // Пробел в образце значит «здесь разрыв слов», а каким знаком его изобразила
+                    // модель, нас не касается.
+                    //
+                    // ⚠️ ДЕФИС СЧИТАЕТСЯ ТАКИМ ЖЕ РАЗРЫВОМ (автор 13.08). Распознавание пишет составные
+                    // вещи как придётся: «клауд код», «клауд-код», «вайб кодинг», «вайб-кодинг». Без
+                    // этого на каждый вариант написания заводилась бы отдельная строка словаря, то
+                    // есть человек вручную перечислял бы то, что мы и так можем считать одинаковым.
+                    func isBreak(_ c: Character) -> Bool { c.isWhitespace || c == "-" || c == "–" }
+                    guard si < src.count, isBreak(src[si]) else { ok = false; break }
+                    while si < src.count, isBreak(src[si]) { si += 1 }
+                    pi += 1
+                    continue
+                }
+                guard si < src.count, Self.fold(String(src[si])) == String(pc) else { ok = false; break }
+                si += 1; pi += 1
+            }
+            if ok { return (si, needle) }
+        }
+        return nil
+    }
+
+    /// Регистр замены. Если человек написал замену с заглавной («Keyboop»), она такая всегда: это
+    /// имя, а не слово предложения. Если замена целиком строчная («вайб»), она перенимает регистр
+    /// того, что заменяет, иначе фраза, начинавшаяся с «Вайпкодинг», продолжилась бы со строчной.
+    private func cased(_ replacement: String, likeSourceAt src: [Character], _ i: Int) -> String {
+        guard replacement.allSatisfy({ !$0.isUppercase }), src[i].isUppercase,
+              let first = replacement.first else { return replacement }
+        return String(first).uppercased() + replacement.dropFirst()
+    }
+}
+
+extension VoiceDictionary: PairListStore {}

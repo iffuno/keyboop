@@ -87,25 +87,85 @@ enum GlobeKey {
         return dir.appendingPathComponent("globe-fn-receipt")
     }
 
+    /// ⚠️ В РАСПИСКЕ ДВЕ СТРОКИ: прежнее значение и КТО ЕГО ДЕРЖИТ (pid). Вторая появилась
+    /// 12.08.2026, когда выяснилось, что расписка, общая для всех сборок, работает и против нас.
+    ///
+    /// Сценарий, пойманный вживую: одна копия Keyboop держит 🌐, рядом запускается вторая, у которой
+    /// мгновенное переключение ВЫКЛЮЧЕНО. Вторая видит забранную клавишу и расписку, честно считает
+    /// это следом чужой аварии и возвращает клавишу системе — у работающей копии функция молча
+    /// умирает. Достаточно двух установок рядом (стабильная и бета), чтобы это случилось.
+    ///
+    /// Лечится тем, что расписка теперь говорит не только «что было», но и «кто держит». Живой
+    /// держатель, который не мы, значит клавиша занята по делу и трогать её нельзя. Мёртвый (авария)
+    /// или отсутствующий держатель значит всё как раньше — возвращаем.
+    ///
+    /// Старые однострочные расписки читаются как «держателя не знаю», то есть по-старому.
     private static func writeReceipt(_ prev: Int) {
-        try? String(prev).write(to: receiptURL, atomically: true, encoding: .utf8)
+        let me = ProcessInfo.processInfo.processIdentifier
+        try? "\(prev)\n\(me)".write(to: receiptURL, atomically: true, encoding: .utf8)
     }
     private static func readReceipt() -> Int? {
         guard let s = try? String(contentsOf: receiptURL, encoding: .utf8) else { return nil }
-        return Int(s.trimmingCharacters(in: .whitespacesAndNewlines))
+        return Int(s.split(separator: "\n").first?.trimmingCharacters(in: .whitespaces) ?? "")
+    }
+    /// Живой ли держатель клавиши и не мы ли это.
+    private static func heldByAnotherLiveProcess() -> Bool {
+        guard let s = try? String(contentsOf: receiptURL, encoding: .utf8) else { return false }
+        let lines = s.split(separator: "\n")
+        guard lines.count >= 2, let pid = pid_t(lines[1].trimmingCharacters(in: .whitespaces)) else { return false }
+        guard pid != ProcessInfo.processInfo.processIdentifier else { return false }
+        // ⚠️ Сторож не считается «другим»: он и есть тот, кто обязан вернуть клавишу за упавшего
+        // родителя, а pid в расписке принадлежит как раз родителю. Отличаем по флагу запуска.
+        if CommandLine.arguments.contains(GlobeGuard.flag) { return false }
+        return kill(pid, 0) == 0
     }
     private static func clearReceipt() { try? FileManager.default.removeItem(at: receiptURL) }
+
+    /// ⚠️ КЛАВИША ЗАБРАНА, НО НЕ НАМИ — то есть осиротела (задача 96).
+    ///
+    /// Так выглядит след аварии, которую сторож не застал: он появился только в 0.4, а до него
+    /// каждое падение и каждое `kill -9` оставляли `AppleFnUsageType = 0` навсегда. Сюда же попадает
+    /// человек, у которого Keyboop когда-то стоял, забрал клавишу и был удалён.
+    static var looksOrphaned: Bool {
+        let s = AppSettings.shared
+        let ours = s.instantSwitchEnabled && s.instantSwitchMode == "globe"
+        return current == .nothing && !ours
+    }
+
+    /// Вернуть 🌐 системное действие по кнопке в настройках.
+    ///
+    /// Обычный `release()` умеет это, только пока есть память о том, что было ДО нас. Если не осталось
+    /// ни записи, ни расписки (настройки сброшены, приложение переставлено, клавишу забрала сборка
+    /// годовой давности), он честно ничего не делает — и человек остаётся с мёртвой клавишей и
+    /// кнопкой, которая молчит. В этом случае снимаем ключ целиком: это возвращает системное
+    /// умолчание, а оно у маков с 🌐 и есть «сменить источник ввода».
+    static func restoreSystemAction() {
+        let s = AppSettings.shared
+        let known = s.globePrevFnUsage != -1 || readReceipt() != nil
+        if known { release(); return }
+        guard current == .nothing else { return }   // на клавише чужая настройка — не наше дело
+        CFPreferencesSetValue(key, nil, domain, user, host)
+        CFPreferencesSynchronize(domain, user, host)
+        applyLive(Action.inputSource.rawValue)
+        kbLog("globe: памяти о прежнем действии нет — вернул системное умолчание")
+    }
 
     /// Привести систему к нашим настройкам. Звать: на старте, при смене тумблера/комбинации.
     /// При выключении фичи (или смене комбинации с 🌐 на другую) честно возвращаем «как было».
     static func reconcile() {
         let s = AppSettings.shared
         if s.instantSwitchEnabled && s.instantSwitchMode == "globe" {
-            guard current != .nothing else { return }   // уже свободна — забирать нечего
-            let prev = s.globePrevFnUsage == -1 ? (rawValue() ?? -2) : s.globePrevFnUsage
-            s.globePrevFnUsage = prev
-            writeReceipt(prev)          // расписка ДО захвата: падение между строками не осиротит клавишу
-            take()
+            if current != .nothing {    // уже свободна — забирать нечего
+                let prev = s.globePrevFnUsage == -1 ? (rawValue() ?? -2) : s.globePrevFnUsage
+                s.globePrevFnUsage = prev
+                writeReceipt(prev)      // расписка ДО захвата: падение между строками не осиротит клавишу
+                take()
+            }
+            // ⚠️ СТОРОЖ ВЗВОДИТСЯ ЗДЕСЬ, А НЕ ВНУТРИ `take()`. После аварии клавиша уже забрана и
+            // возвращать её было некому, значит `take()` на следующем запуске не зовётся — а сторож
+            // нужен именно в этом случае. Привязка к захвату оставила бы нас без него ровно там,
+            // ради чего он и существует.
+            GlobeGuard.ensure()
         } else {
             release()
         }
@@ -132,6 +192,19 @@ enum GlobeKey {
     /// Симптом: 🌐 не делает ничего, ни системного действия, ни нашего, и лечится только включением
     /// нашей же фичи обратно. Именно так это поймал автор 28.07.
     static func release() {
+        // Сторож гасим ПЕРВЫМ делом: дальше клавиша вернётся сама, и его пробуждение уже ни к чему.
+        // Порядок важен и в обратную сторону — если возврат почему-то не удастся, сторож останется
+        // жив и попробует ещё раз, когда нас не станет.
+        GlobeGuard.stop()
+        // ⚠️ КЛАВИША ЗАНЯТА ДРУГОЙ ЖИВОЙ КОПИЕЙ — НЕ ТРОГАЕМ (12.08.2026, поймано вживую).
+        // Расписка общая для всех сборок намеренно, и до сегодня это работало против нас: пока одна
+        // копия держала 🌐, вторая с выключенной функцией видела забранную клавишу, честно считала
+        // это следом чужой аварии и возвращала её системе — у работающей копии функция молча
+        // умирала. Достаточно стабильной и беты рядом, чтобы наступить.
+        if heldByAnotherLiveProcess() {
+            kbLog("globe: клавишу держит другая живая копия Keyboop — не трогаю")
+            return
+        }
         let s = AppSettings.shared
         let prev = s.globePrevFnUsage != -1 ? s.globePrevFnUsage : (readReceipt() ?? -1)
         guard prev != -1 else { return }   // ни записи, ни расписки — мы действительно не забирали

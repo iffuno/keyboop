@@ -251,6 +251,7 @@ final class VoiceController {
                 if abortStart {        // отпустили ровно в момент старта — стоп немедленно
                     _ = recorder.stop(); VoiceGate.set(false); setState(.idle); return
                 }
+                startLiveDraft()      // черновик на плашке: только показ, в поле ничего не идёт
                 if useStreaming {
                     await streamBegin()   // потоковый путь: текст пойдёт по мере речи
                     // РЕ-ЧЕК после await (ревью 21.07, №4): за время streamBegin (loadIfNeeded /
@@ -279,7 +280,9 @@ final class VoiceController {
             return
         }
         guard recorder.isRecording else { VoiceGate.set(false); dropPendingHistoryOnly(); return }
+        stopLiveDraft()
         if streamingActive { streamEnd(); return }   // потоковый путь: финализируем стрим
+        noteSendGesture()         // правый ⌘ в момент отпускания = «отправить» (задача 124)
         let samples = recorder.stop()
         VoiceGate.set(false)      // ЗАПИСЬ окончена → можно сразу начинать НОВУЮ (транскрипция идёт в фоне)
         playCue(stopSound)    // нисходящее «тук-тук» — запись остановлена (до транскрипции)
@@ -453,6 +456,7 @@ final class VoiceController {
             return
         }
         guard recorder.isRecording else { VoiceGate.set(false); return }
+        stopLiveDraft()
         if streamingActive { streamCancel(); return }   // потоковый путь: стереть напечатанное
         // ОТМЕНА С СОХРАНЕНИЕМ В ИСТОРИЮ (R37, выключено по умолчанию). Человек просил: «нажал
         // Escape — пусть всё равно распознает и положит куда-нибудь». Идём ТЕМ ЖЕ путём, что и
@@ -471,6 +475,33 @@ final class VoiceController {
         refreshIndicator()
         playCue(failSound)   // мягкий нисходящий «отменено»
         kbLog("voice: диктовка отменена (Escape)")
+    }
+
+    // MARK: - Живой черновик на плашке (Parakeet, скользящее окно)
+
+    /// Показ того, что мы слышим, ПРЯМО НА ПЛАШКЕ. В поле отсюда не уходит ничего: чистовик делает
+    /// обычный батчевый путь через `deliver()`, со словарём, опциями вставки и авто-Enter.
+    ///
+    /// ⚠️ ИМЕННО ПОЭТОМУ ЗДЕСЬ НЕТ ВТОРОГО КОНВЕЙЕРА ВЫВОДА. Потоковая ветка `streamEnd` в своё
+    /// время начала печатать сама и разошлась с `deliver` по десятку правил. Черновик такой ошибки
+    /// повторить не может: он физически не умеет писать в поле.
+    @MainActor private func startLiveDraft() {
+        guard AppSettings.shared.voiceLiveDraft else { return }
+        if #available(macOS 14.0, *) {
+            guard LiveDraftEngine.available else { return }
+            recorder.setDraftHook { samples in LiveDraftEngine.shared.feed(samples) }
+            Task { await LiveDraftEngine.shared.start { text in VoiceIndicator.shared.showLive(text) } }
+        }
+    }
+
+    /// Не `@MainActor`: зовут её из `end()` и `cancel()`, а те синхронные и живут вне актора.
+    /// Внутри всё, что трогает главный поток, и так уходит на него.
+    private func stopLiveDraft() {
+        if #available(macOS 14.0, *) {
+            guard LiveDraftEngine.shared.running else { return }
+            recorder.setDraftHook(nil)
+            LiveDraftEngine.shared.stop()
+        }
     }
 
     // MARK: - Потоковая диктовка (EOU, экспериментально)
@@ -591,9 +622,34 @@ final class VoiceController {
         else { kbLog("voice: toggle → СТАРТ"); begin() }
     }
 
+    /// ФАЙЛ-МАРКЕР «ИДЁТ ДИКТОВКА» — для того, кто снаружи собирается нас прибить.
+    ///
+    /// ⚠️ Заведено по просьбе автора 17.08: агент разработки перезапускает dev-сборку десятки раз за
+    /// сессию и не раз обрывал длинную диктовку на полуслове. Спрашивать состояние по IPC негде и
+    /// незачем: наружу нужен один бит, и файл на диске это самый дешёвый способ его отдать любому
+    /// скрипту. В маркере лежит время ПОСЛЕДНЕЙ активности — по нему `Tools/safe-quit.sh` выдерживает
+    /// паузу после вставки текста, иначе перезапуск придётся ровно на момент, когда человек
+    /// дочитывает вставленное и может докиктовать следом.
+    static let busyMarker = URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent("Library/Application Support/Keyboop/voice-busy")
+
+    private func markBusy(_ busy: Bool) {
+        let url = Self.busyMarker
+        if busy {
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                     withIntermediateDirectories: true)
+            try? "\(Date().timeIntervalSince1970)".write(to: url, atomically: true, encoding: .utf8)
+        } else {
+            // Не удаляем, а перезаписываем временем окончания: пауза «несколько секунд после
+            // вставки» считается именно от него.
+            try? "\(Date().timeIntervalSince1970)".write(to: url, atomically: true, encoding: .utf8)
+        }
+    }
+
     /// Единая точка смены состояния: статус-бар (onStateChange) + плашка у курсора.
     private func setState(_ s: State) {
         onStateChange?(s)
+        markBusy(s != .idle)
         // ГРОМКОСТЬ ПРИГЛУШАЕМ ЗДЕСЬ, а не рядом с recorder.start()/stop() (30.07). Выходов из
         // записи много: обычный конец, Escape, слишком короткое нажатие, тишина, смерть устройства,
         // прерванный старт. Развесить restore() по каждому — гарантированно забыть один и оставить
@@ -611,6 +667,37 @@ final class VoiceController {
         }
     }
 
+    /// СКРЫТЫЙ ЖЕСТ «СКАЗАЛ И ОТПРАВИЛ» (задача 124, «для себя и друзей»).
+    ///
+    /// Держишь клавишу диктовки, договорил и, не отпуская её, дожимаешь ПРАВЫЙ ⌘ — распознанный
+    /// текст встанет в поле и следом уйдёт Enter. В мессенджере это значит «сообщение отправлено».
+    ///
+    /// ⚠️ ПО УМОЛЧАНИЮ ВЫКЛЮЧЕН, И ЭТО ГЛАВНОЕ В ЗАДАЧЕ. Случайное совпадение у постороннего
+    /// человека выглядело бы как «программа сама отправила недописанное сообщение» — худший класс
+    /// сюрпризов, какой может выдать программа, живущая в чужой клавиатуре. Поэтому включение
+    /// живёт только в настройках по имени ключа и в интерфейсе не показывается:
+    ///
+    ///     defaults write ru.keyboop.app voiceSendGesture -bool true
+    ///
+    /// Второе условие — диктовка должна висеть на УДЕРЖАНИИ модификатора. При «нажал-сказал-нажал»
+    /// момента «отпускания с дожатым ⌘» просто не существует, и жест был бы случайным.
+    private var sendGestureArmed = false
+
+    private func noteSendGesture() {
+        sendGestureArmed = false
+        guard UserDefaults.standard.bool(forKey: "voiceSendGesture") else { return }
+        guard settings.voiceHotkeyMode == "modkey" else { return }
+        // ⚠️ Спрашиваем СОСТОЯНИЕ КЛАВИШ, а не флаги последнего события: событие отпускания придёт
+        // позже и уже без ⌘. И именно правый: `maskCommand` горит от любого из двух, а бит
+        // 0x000010 — device-dependent признак правой клавиши (тот же приём, что у сторон
+        // модификаторов в EventTap).
+        let flags = CGEventSource.flagsState(.combinedSessionState)
+        let rightCommand: UInt64 = 0x000010
+        guard flags.rawValue & rightCommand != 0 else { return }
+        sendGestureArmed = true
+        kbLog("voice: жест отправки (правый ⌘) — после вставки нажму Enter")
+    }
+
     /// Опции вывода (#41). Порядок важен: сначала убираем точку, потом регистр — иначе строка из
     /// одной буквы с точкой («А.») после снятия точки осталась бы заглавной.
     ///
@@ -626,19 +713,84 @@ final class VoiceController {
             out.removeLast()
             out = String(out.reversed().drop { $0 == " " }.reversed())
         }
-        if s.voiceNoCapital, let first = out.first, first.isUppercase {
-            let second = out.dropFirst().first
-            if second == nil || !(second!.isUppercase) {
-                out = first.lowercased() + out.dropFirst()
-            }
+        if s.voiceNoCapital { out = lowercasedSentenceStarts(out) }
+        // Длинные тире → обычный дефис. Меняем и «—», и «–»: на слух они не различаются вовсе, а
+        // модель ставит то одно, то другое.
+        if s.voiceNoEmDash {
+            out = out.replacingOccurrences(of: "—", with: "-").replacingOccurrences(of: "–", with: "-")
         }
         return out
+    }
+
+    /// Снять заглавную у первой буквы КАЖДОГО предложения.
+    ///
+    /// До 10.08.2026 правило доставало ровно одну букву, самую первую во всей диктовке (отзыв
+    /// автора): «привет. Как дела» вместо «привет. как дела». Диктуют обычно не одно предложение, так
+    /// что настройка работала на первой фразе и молча переставала на второй.
+    ///
+    /// Две оговорки, обе из-за того, что точка в тексте значит не только конец предложения:
+    ///
+    /// • **Аббревиатуры.** Если следом за первой буквой идёт ещё одна заглавная, слово не трогаем,
+    ///   иначе «МФЦ» стало бы «мФЦ». Это правило было и раньше, оно просто применялось один раз.
+    /// • **Сокращения с точкой.** «г. Москва», «ул. Ленина», «т. д.» это НЕ конец предложения, и
+    ///   опускать там регистр значит портить текст заметнее, чем недоработать. Список закрытый и
+    ///   намеренно короткий: расширять его до каталога всех сокращений языка бессмысленно, а вот
+    ///   держать в нём десяток самых частых дёшево и полезно.
+    private static let notSentenceEnd: Set<String> = [
+        "г", "гг", "д", "др", "е", "им", "каб", "корп", "кв", "млн", "млрд", "обл", "оф", "п", "пр",
+        "проф", "рис", "руб", "с", "см", "стр", "т", "тел", "тыс", "ул", "эт",
+        "mr", "mrs", "ms", "dr", "prof", "vs", "fig", "no", "etc", "e", "g", "i"
+    ]
+
+    static func lowercasedSentenceStarts(_ text: String) -> String {
+        var ch = Array(text)
+        var atStart = true          // ждём первую букву предложения
+        var word = ""               // слово, которое сейчас набирается (нужно только перед точкой)
+        for i in 0..<ch.count {
+            let c = ch[i]
+            if c.isLetter || c.isNumber {
+                if atStart, c.isUppercase {
+                    let next = i + 1 < ch.count ? ch[i + 1] : nil
+                    // ⚠️ ТРЕТЬЯ ОГОВОРКА: слова из словаря диктовки. Человек написал «Keyboop» с
+                    // большой буквы осознанно, и «не начинать с заглавной» про обычные предложения,
+                    // а не про имена. Без этого словарь чинил бы слово ровно до тех пор, пока оно не
+                    // окажется первым в предложении.
+                    var j = i, w = ""
+                    while j < ch.count, ch[j].isLetter || ch[j].isNumber { w.append(ch[j]); j += 1 }
+                    if !(next?.isUppercase ?? false), !VoiceDictionary.shared.keepsCase(w) {
+                        ch[i] = Character(c.lowercased())
+                    }
+                }
+                atStart = false
+                word.append(c)
+                continue
+            }
+            switch c {
+            case ".":
+                // Точка после сокращения предложение не закрывает.
+                atStart = !Self.notSentenceEnd.contains(word.lowercased())
+            case "!", "?", "…", "\n", "\r":
+                atStart = true
+            case " ", "\t", "«", "\"", "“", "(", "[", "-", "—", ":", ";", ",":
+                break               // не сбивают признак начала и сами его не ставят
+            default:
+                atStart = false
+            }
+            word = ""
+        }
+        return String(ch)
     }
 
     private func deliver(_ text: String, historyOnly: Bool = false, audio: String? = nil, wave: [UInt8]? = nil) {
         // Фразы-призраки Whisper («Субтитры создавал…», «Продолжение следует») — отсекаем ДО всего
         // остального, чтобы они не попали ни в поле, ни в историю, ни в статистику. См. WhisperGhosts.
-        let clean = WhisperGhosts.clean(text).trimmingCharacters(in: .whitespacesAndNewlines)
+        //
+        // ⚠️ СЛОВАРЬ ДИКТОВКИ ПРИМЕНЯЕТСЯ ЗДЕСЬ, ДО ВСЕХ ВЕТОК, А НЕ ПЕРЕД САМОЙ ВСТАВКОЙ. Иначе
+        // «кейбуп» уходил бы в историю, в статистику и в «скопировать последнюю диктовку» в сыром
+        // виде, и человек, который взял текст из истории, всё равно правил бы его руками — то есть
+        // ровно то, ради чего словарь и заведён (задача 126).
+        let clean = VoiceDictionary.shared.apply(
+            WhisperGhosts.clean(text).trimmingCharacters(in: .whitespacesAndNewlines))
         // Диктовку отменили по Escape, но человек попросил её всё-таки сохранять (R37). В поле не
         // пишем ничего: Escape означает «не вставляй». Кладём в историю и говорим об этом тостом,
         // иначе сохранение выглядело бы как то, что программа проигнорировала отмену.
@@ -682,7 +834,10 @@ final class VoiceController {
         // конце, и это видно получателю. Настройку пробела при этом НЕ трогаем — человек включит
         // авто-Enter, потом выключит, и его выбор про пробел должен вернуться (тот же принцип, что
         // с громкостями при «Звуки выкл»).
-        let autoEnter = settings.voiceAutoEnter
+        // Скрытый жест «сказал и отправил» (задача 124): к обычной настройке добавляется разовое
+        // намерение, заявленное правым ⌘ в момент окончания диктовки.
+        let autoEnter = settings.voiceAutoEnter || sendGestureArmed
+        sendGestureArmed = false
         let out = Self.applyOutputOptions(clean) + ((settings.voiceTrailingSpace && !autoEnter) ? " " : "")
         TextReplacer.insert(out, thenReturn: autoEnter,
                             returnMods: CGEventFlags(rawValue: settings.voiceAutoEnterMods)) {

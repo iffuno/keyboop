@@ -44,6 +44,37 @@ enum AXScreenCheck {
         return s
     }
 
+    /// Есть ли ПРЯМО СЕЙЧАС выделение в фокусном поле. `true` — есть, `false` — каретка без
+    /// выделения, `nil` — экран не читается (нет фокуса, AX молчит или врёт).
+    ///
+    /// ⚠️ ЭТО ТА САМАЯ «ДЕШЁВАЯ ПРИМЕТА», КОТОРОЙ НЕ ХВАТАЛО РАЗБОРУ 14.08.2026. Вариант «найти
+    /// признак, что справа выделение, а не текст» был тогда закрыт словами «других дешёвых сигналов
+    /// пока не найдено», и выбор стоял между двумя классами порчи: чинить адресную строку и
+    /// рисковать съесть чужой символ посреди поля, или не чинить.
+    /// Разбор показал, что сигнал уже написан и уже работает в этом же файле: `textBeforeCaret`
+    /// спрашивает `kAXSelectedTextRangeAttribute` и сам отказывается работать при выделении.
+    /// Осталось вернуть наружу то, что он и так узнаёт.
+    ///
+    /// Цена та же, что у соседей: один синхронный AX-запрос с жёстким таймаутом 50 мс, только чтение,
+    /// ничего в лог. Зовётся РАЗ НА ЖЕСТ, а не на каждое нажатие: горячий путь этого не касается
+    /// (запрет из инцидента 31.07 про заморозку ввода остаётся в силе).
+    static func hasSelection() -> Bool? {
+        let sys = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(sys, 0.05)
+        var focusedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(sys, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
+              let focusedAny = focusedRef, CFGetTypeID(focusedAny) == AXUIElementGetTypeID() else { return nil }
+        let el = unsafeDowncast(focusedAny as AnyObject, to: AXUIElement.self)
+        AXUIElementSetMessagingTimeout(el, 0.05)
+        var rangeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
+              let rangeAny = rangeRef, CFGetTypeID(rangeAny) == AXValueGetTypeID() else { return nil }
+        let rangeVal = unsafeDowncast(rangeAny as AnyObject, to: AXValue.self)
+        var sel = CFRange()
+        guard AXValueGetValue(rangeVal, .cfRange, &sel) else { return nil }
+        return sel.length > 0
+    }
+
     /// Текст до каретки уже заканчивается этим суффиксом? nil = не знаем (AX молчит) — тогда
     /// вызывающий действует как раньше. Пробельный хвост сравниваем без придирок к \u{00A0}.
     static func caretEndsWith(_ suffix: String) -> Bool? {

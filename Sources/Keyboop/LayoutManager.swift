@@ -17,9 +17,63 @@ final class LayoutManager {
     func currentIsCyrillic() -> Bool { Self.systemIsCyrillic() }
 
     /// То же без экземпляра — для индикатора на лампочке Caps Lock (CapsLED живёт статикой).
+    ///
+    /// ⚠️ СНАЧАЛА HIToolbox, И ТОЛЬКО ПОТОМ СЫРОЙ TIS (ревью 17.08). Первая версия читала голый
+    /// `TISCopyCurrentKeyboardInputSource`, а про него в этом же файле записан замер 25.07: в
+    /// фоновом агенте оно НЕ следует за внешними переключениями. Лампочка на этом чтении не
+    /// догоняла ⌃Space/🌐 и врала — при том что весь смысл фичи это правдивая лампочка. Настройки
+    /// HIToolbox отстают на ~11 мс, но ОТСТАЮТ, а не замирают.
     static func systemIsCyrillic() -> Bool {
+        if let code = languageFromSystemPrefs() { return code.lowercased().hasPrefix("ru") }
         guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return false }
         return languages(of: src).first?.hasPrefix("ru") ?? false
+    }
+
+    /// ПИСЬМЕННОСТЬ ТЕКУЩЕЙ РАСКЛАДКИ (задачи 105/106).
+    ///
+    /// ⚠️ ДО 0.4 МИР БЫЛ ДВОИЧНЫМ: всё, что не кириллица, считалось латиницей. У человека с
+    /// армянской раскладкой (отзыв @Tigran1963) это значит, что мы принимали армянский за латиницу
+    /// и рассуждали о нём словарями, которые про него ничего не знают. Замер по отзывам: из 37 форм
+    /// с полем раскладок у 34 ровно две, у двух три — то есть третья письменность редка, но это не
+    /// повод считать её вторым английским.
+    ///
+    /// `.other` значит «мы про эту письменность ничего не знаем». Автоматика в этом состоянии
+    /// молчит: любое наше решение там было бы гаданием, а класс жалоб «программа ломает систему»
+    /// дороже любой несделанной конверсии.
+    enum Script { case cyrillic, latin, other }
+
+    /// Код языка → письменность. Набор раскладок у человека меняется раз в жизни, а звать эту
+    /// функцию приходится на каждой границе слова, поэтому редкие коды считаем один раз.
+    private static var scriptByCode: [String: Script] = [:]
+
+    /// ⚠️ СПРАШИВАЕМ HIToolbox, А НЕ TIS. `TISCopyCurrentKeyboardInputSource` в фоновом агенте не
+    /// следует за внешними переключениями (замер 25.07: система щёлкала RU→EN→RU→EN, чтение всё
+    /// время отвечало «RU»), а нам нужно знать реальность именно тогда, когда человек ушёл в третью
+    /// раскладку сам. Сырое чтение остаётся запасным вариантом на случай, если настройки молчат.
+    ///
+    /// Неизвестное трактуем как латиницу, то есть как вело себя приложение до 0.4. Замолчать по
+    /// ошибке хуже, чем не заметить экзотическую раскладку: первое ломает главную функцию у всех,
+    /// второе оставляет как было у единиц.
+    func currentScript() -> Script {
+        if let code = Self.languageFromSystemPrefs() {
+            if code == "RU" { return .cyrillic }
+            if code == "EN" { return .latin }
+            if let cached = Self.scriptByCode[code] { return cached }
+            let want = code.lowercased()
+            let s = enabledKeyboardSources()
+                .first { (Self.languages(of: $0).first ?? "").hasPrefix(want) }
+                .map { Self.script(of: $0) } ?? .latin
+            Self.scriptByCode[code] = s
+            return s
+        }
+        guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return .latin }
+        return Self.script(of: src)
+    }
+    private static func script(of src: TISInputSource) -> Script {
+        if languages(of: src).first?.hasPrefix("ru") ?? false { return .cyrillic }
+        // Латиницей считаем то же, что и `selectLayout`: ASCII-способность, а не язык «en».
+        // Кириллические, армянские, греческие, ивритские и грузинские раскладки её не имеют.
+        return isUsableLatinLayout(src) ? .latin : .other
     }
 
     /// Текущая раскладка с поправкой на баг стейл-чтения: если мы недавно переключали сами —
@@ -167,11 +221,85 @@ final class LayoutManager {
     /// испанская → es, чешская → cs, польская → pl. Флаг `IsASCIICapable` описывает ровно то, что нам
     /// нужно («на этой раскладке можно набрать латиницу»), и кириллические раскладки его не имеют.
     /// Настоящий английский всё равно предпочитаем первым — у большинства он и есть.
+    /// Последняя раскладка, на которой человек РЕАЛЬНО был с каждой стороны (ID источника).
+    ///
+    /// ⚠️ Заведено по задачам 105/106: раньше «латиница» означала «первая попавшаяся ASCII-способная
+    /// из включённых», и у человека с несколькими латинскими раскладками мы возвращали его не туда,
+    /// куда он уходил. Теперь помним сторону поимённо и возвращаем именно её.
+    /// ⚠️ ЧИТАЕТСЯ И ПИШЕТСЯ В НАСТРОЙКИ, а не живёт в процессе (отзыв #143). Раскладку человек
+    /// выбирает один раз и надолго, а мы забывали её при каждом перезапуске.
+    private var lastUsedID: [Bool: String] = {
+        var m: [Bool: String] = [:]
+        let s = AppSettings.shared
+        if !s.lastLayoutCyr.isEmpty { m[true] = s.lastLayoutCyr }
+        if !s.lastLayoutLat.isEmpty { m[false] = s.lastLayoutLat }
+        return m
+    }()
+
+    /// Запомнить сторону и в настройках. Пишем только на смену: внешние переключения приходят
+    /// пачками, а `UserDefaults` на каждое из них дёргать незачем.
+    private func remember(_ id: String, cyrillic: Bool) {
+        guard lastUsedID[cyrillic] != id else { return }
+        lastUsedID[cyrillic] = id
+        if cyrillic { AppSettings.shared.lastLayoutCyr = id } else { AppSettings.shared.lastLayoutLat = id }
+        kbLog("layout: запомнил \(cyrillic ? "кириллическую" : "латинскую") раскладку \(id)")
+    }
+
+    /// Живой ВЫБРАННЫЙ источник: имя из настроек HIToolbox (они не страдают стейл-кэшем TIS в
+    /// фоновом агенте), сам объект — из списка включённых по этому имени. Тот же принцип, что у
+    /// `languageFromSystemPrefs`, но с объектом на выходе: памяти раскладки нужен ID, а не язык.
+    private static func liveSelectedSource() -> TISInputSource? {
+        CFPreferencesAppSynchronize("com.apple.HIToolbox" as CFString)
+        guard let raw = CFPreferencesCopyAppValue("AppleSelectedInputSources" as CFString,
+                                                 "com.apple.HIToolbox" as CFString) as? [[String: Any]]
+        else { return nil }
+        let filter = [kTISPropertyInputSourceCategory as String: kTISCategoryKeyboardInputSource as String] as CFDictionary
+        guard let list = TISCreateInputSourceList(filter, false)?.takeRetainedValue() as? [TISInputSource]
+        else { return nil }
+        for entry in raw {
+            let name = (entry["KeyboardLayout Name"] as? String) ?? (entry["Input Mode"] as? String) ?? ""
+            guard !name.isEmpty else { continue }
+            let key = nameKey(name)
+            for src in list {
+                if let id = stringProp(src, kTISPropertyInputSourceID),
+                   nameKey(String(id.split(separator: ".").last ?? "")) == key { return src }
+                if let p = TISGetInputSourceProperty(src, kTISPropertyLocalizedName) {
+                    let n = Unmanaged<CFString>.fromOpaque(p).takeUnretainedValue() as String
+                    if nameKey(n) == key { return src }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Запомнить, на чём человек оказался сам (внешняя смена раскладки).
+    ///
+    /// ⚠️ НЕ СЫРЫМ TIS-ЧТЕНИЕМ (ревью 17.08). В момент уведомления оно возвращает раскладку,
+    /// которую человек только что ПОКИНУЛ (kawa PR#21), и «выбором» записывалась бы прежняя —
+    /// теперь ещё и на диск, то есть ошибка #143 не чинилась бы, а консервировалась. Для сценария
+    /// «Русская → Русская ПК» это единственный честный путь: обе стороны кириллические, и никакой
+    /// сверкой письменности стейл тут не ловится.
+    func noteCurrentAsUserChoice() {
+        guard let src = Self.liveSelectedSource() ?? TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+              let id = Self.stringProp(src, kTISPropertyInputSourceID) else { return }
+        switch Self.script(of: src) {
+        case .cyrillic: remember(id, cyrillic: true)
+        case .latin:    remember(id, cyrillic: false)
+        case .other:    break   // третью письменность не запоминаем: мы её и не выбираем
+        }
+    }
+
     @discardableResult
     func selectLayout(cyrillic: Bool) -> Bool {
         let sources = enabledKeyboardSources()
         let src: TISInputSource?
-        if cyrillic {
+        // Сначала — та самая раскладка, на которой человек был с этой стороны в прошлый раз.
+        let remembered = lastUsedID[cyrillic].flatMap { id in
+            sources.first { Self.stringProp($0, kTISPropertyInputSourceID) == id }
+        }
+        if let remembered, Self.script(of: remembered) == (cyrillic ? .cyrillic : .latin) {
+            src = remembered
+        } else if cyrillic {
             src = sources.first { (Self.languages(of: $0).first ?? "").hasPrefix("ru") }
         } else {
             src = sources.first { (Self.languages(of: $0).first ?? "").hasPrefix("en") }
@@ -197,6 +325,30 @@ final class LayoutManager {
                 kbLog("layout: EN-раскладки нет, беру ASCII-способную \(id)")
             }
         }
+        // ⚠️ НЕ ЗОВЁМ TIS, ЕСЛИ МЫ И ТАК НА НУЖНОМ ИСТОЧНИКЕ (задачи 105/106). Каждый вызов
+        // `TISSelectInputSource` переписывает системный порядок недавно использованных источников,
+        // а от него зависят системные же «предыдущий источник» и «следующий в меню». У человека с
+        // тремя раскладками это и выглядит как «после установки keyboop клавиатура сама уходит в
+        // третью»: мы толкали очередь сотни раз в день, в том числе там, где переключать было
+        // нечего. Пропуск бесполезного вызова ничего не меняет для нас и убирает целый класс
+        // побочных эффектов у системы.
+        // ⛔️ ЗДЕСЬ БЫЛ ПРОПУСК ВЫЗОВА «мы и так на нужной стороне» — ОТКАЧЕНО 12.08.2026 В ДЕНЬ
+        // ВЫПУСКА ПРАВКИ, по живой жалобе автора: «переключаю, а индикатор показывает другое».
+        //
+        // Замысел был правильный: каждый `TISSelectInputSource` переписывает системный порядок
+        // недавних источников, и лишние вызовы могли быть причиной жалобы про три раскладки (105).
+        // Сторону я спрашивал у HIToolbox, потому что сырое чтение TIS в фоновом агенте врёт.
+        //
+        // Чего я не учёл: настройкам HIToolbox нужно около 11 мс, чтобы догнать переключение (это
+        // измерено и записано прямо ниже, в `verifySelect`). А 🌐 нажимают очередью, по три раза в
+        // секунду — и тогда чтение отдаёт ПРЕЖНЮЮ сторону. Мы решали «мы и так там», пропускали
+        // настоящее переключение, но память и индикатор двигали. Раскладка оставалась одна, значок
+        // показывал другую, и следующее нажатие считало направление уже от испорченной памяти.
+        // Ровно то, что человек называет «инверсия».
+        //
+        // Мораль на будущее: оптимизация, которая ЧИТАЕТ состояние, чтобы не делать работу, стоит
+        // ровно столько, сколько стоит свежесть этого чтения. Здесь свежести нет, а цена ошибки —
+        // главная функция приложения. Экономия вызова того не стоила.
         let ok = TISSelectInputSource(src) == noErr
         if !ok {
             kbLog("layout: TISSelectInputSource отказал (\(Self.stringProp(src, kTISPropertyInputSourceID) ?? "?"))")

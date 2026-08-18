@@ -9,6 +9,8 @@ import FluidAudio
 final class ParakeetEngine {
     static let shared = ParakeetEngine()
     private var manager: AsrManager?
+    /// Уже загруженные модели v3 — их переиспользует живой черновик (`LiveDraftEngine`).
+    private(set) var loadedModels: AsrModels?
     private var decoderLayers = 0
     private(set) var ready = false
 
@@ -25,6 +27,11 @@ final class ParakeetEngine {
             let t0 = ProcessInfo.processInfo.systemUptime
             DownloadUtils.enforceOffline = true               // в рантайме — ноль сети (принцип №2)
             let models = try await AsrModels.load(from: Self.modelDir, version: .v3)
+            // ⚠️ ДЕРЖИМ ССЫЛКУ НА ЗАГРУЖЕННОЕ. Живой черновик работает на ТОЙ ЖЕ v3, и если он
+            // загрузит свою копию, мы заплатим дважды: и памятью, и первой компиляцией CoreML под
+            // ANE, которая на чистой машине занимает почти минуту (замер стенда 15.08: 49,7с против
+            // 0,26с на прогретой).
+            loadedModels = models
             let mgr = AsrManager()
             try await mgr.loadModels(models)
             decoderLayers = await mgr.decoderLayerCount

@@ -181,6 +181,15 @@ final class AppSettings {
     /// тем, кто диктует по кусочкам в мессенджер или в поле поиска.
     var voiceNoCapital: Bool { get { d.bool(forKey: "voiceNoCapital") } set { d.set(newValue, forKey: "voiceNoCapital") } }
     var voiceNoFinalPeriod: Bool { get { d.bool(forKey: "voiceNoFinalPeriod") } set { d.set(newValue, forKey: "voiceNoFinalPeriod") } }
+
+    /// НЕ СТАВИТЬ ДЛИННЫЕ ТИРЕ в надиктованном тексте (автор 13.08). По умолчанию ВЫКЛ: длинное тире
+    /// это нормальный знак русской пунктуации, и молча переписывать его всем нельзя.
+    ///
+    /// Зачем вообще: Whisper щедро расставляет «—» там, где человек его сам бы не поставил, а на
+    /// клавиатуре этого знака нет. Для тех, кто пишет в мессенджеры и в соцсети, длинное тире ещё и
+    /// выдаёт машинный текст. Заменяем на обычный дефис, а не выбрасываем: знак несёт паузу, и без
+    /// него фраза слипается.
+    var voiceNoEmDash: Bool { get { d.bool(forKey: "voiceNoEmDash") } set { d.set(newValue, forKey: "voiceNoEmDash") } }
     /// Пробел после вставленного текста. Обычно нужен (следующая фраза не слипнется), но в поле
     /// поиска и в паре с авто-Enter он лишний.
     /// Отправлять надиктованное сразу: после вставки уходит Enter (задача #36, просили несколько раз).
@@ -249,12 +258,36 @@ final class AppSettings {
     /// Отменённую по Escape диктовку всё равно распознать и положить В ИСТОРИЮ (просьба R37).
     /// ВЫКЛЮЧЕНО по умолчанию: Escape означает «не надо», и молча сохранять сказанное вопреки этому
     /// жесту нельзя. Кто хочет подстраховку от случайной отмены — включает сам.
-    var escSaveToHistory: Bool { get { d.bool(forKey: "escSaveToHistory") } set { d.set(newValue, forKey: "escSaveToHistory") } }
+    /// ⚠️ ПО УМОЛЧАНИЮ ВКЛЮЧЕНО с 11.08.2026 (аудит умолчаний, решение автора). Escape означает
+    /// «не вставляй сюда», а не «выброси то, что я сказал»: человек чаще ошибается полем, чем
+    /// содержанием, и потерянная фраза злит сильнее, чем лишняя строка в истории. Сама история
+    /// шифруется и живёт на этом Mac, так что цена сохранения ровно нулевая.
+    /// Разово ли мы уже включали автозапуск тем, у кого он был выключен (аудит умолчаний 11.08.2026).
+    /// Маркер нужен именно потому, что человек вправе выключить автозапуск сам: без маркера мы
+    /// возвращали бы его при каждом запуске и спорили с хозяином машины.
+    var didLoginSeed: Bool { get { d.bool(forKey: "didLoginSeed") } set { d.set(newValue, forKey: "didLoginSeed") } }
+
+    var escSaveToHistory: Bool {
+        get { d.object(forKey: "escSaveToHistory") == nil ? true : d.bool(forKey: "escSaveToHistory") }
+        set { d.set(newValue, forKey: "escSaveToHistory") }
+    }
     // Тёплое окно: держать микрофон активным ~30с после диктовки для мгновенного повтора.
     // По умолчанию ВЫКЛ (приватность: иначе оранжевый индикатор горит в простое). Реестр default не нужен — bool=false.
     var voiceWarmWindow: Bool { get { d.bool(forKey: "voiceWarmWindow") } set { d.set(newValue, forKey: "voiceWarmWindow") } }
     // Сколько секунд держать микрофон тёплым после диктовки (если voiceWarmWindow вкл).
     var voiceWarmSeconds: Int { get { let v = d.integer(forKey: "voiceWarmSeconds"); return v > 0 ? v : 30 } set { d.set(newValue, forKey: "voiceWarmSeconds") } }
+    /// ЖИВОЙ ЧЕРНОВИК НА ПЛАШКЕ: показывать распознанное по мере речи.
+    ///
+    /// Только показ, в поле отсюда не идёт ничего. Работает ТОЛЬКО на Parakeet: у Whisper потокового
+    /// режима нет, а держать вторую резидентную модель ради показа слишком дорого. По умолчанию ВЫКЛ:
+    /// скользящее окно гоняет энкодер раз в секунду, и цену этого человек должен включить осознанно.
+    /// ⚠️ ОТКАЗАЛИСЬ ОТ ФУНКЦИИ ПЕРЕД 0.4 (решение автора 17.08): «достаточно бесполезная штука, и
+    /// для красоты работает не очень». Геттер жёстко `false` — тем же приёмом, что и `voiceStreaming`
+    /// выше: интерфейса у черновика не было ни дня, но настройка в defaults достижима, а
+    /// полусделанная функция, до которой можно случайно добраться, хуже отсутствующей.
+    /// Код `LiveDraftEngine` НЕ удалён: живой показ вернётся с облачным плагином (задача 150),
+    /// где у него будет и смысл, и модель, которая тянет поток.
+    var voiceLiveDraft: Bool { get { false } set { d.set(newValue, forKey: "voiceLiveDraft") } }
     // ЭКСПЕРИМЕНТАЛЬНО: потоковая диктовка — текст печатается по мере речи (EOU-движок, отдельная модель).
     // По умолчанию ВЫКЛ — включается осознанно. Реестр default не нужен — bool=false.
     /// Потоковый набор — УБРАН ИЗ ИНТЕРФЕЙСА ДО 0.4 (решение автора, 01.08.2026).
@@ -272,6 +305,24 @@ final class AppSettings {
         get { false }
         set { d.set(newValue, forKey: "voiceStreaming") }
     }
+
+    /// ГДЕ ПОКАЗЫВАТЬ ПЛАШКУ ДИКТОВКИ (задача 125, 0.4). `false` — у каретки, как было всегда;
+    /// `true` — вверху по центру, под чёлкой MacBook.
+    ///
+    /// Умолчание НЕ меняем: плашка у каретки стоит там, куда человек смотрит, и переносить её вверх
+    /// всем без спроса значит забрать это у тех, кому и так хорошо.
+    ///
+    /// ⚠️ Верх работает ТОЛЬКО на встроенном экране (`VoiceIndicator.isBuiltIn`). У внешнего монитора
+    /// выреза нет, и плашка под несуществующей чёлкой выглядит чужеродно, поэтому там она молча
+    /// падает к каретке. Решение автора 11.08.2026.
+    var voiceHudTop: Bool { get { d.bool(forKey: "voiceHudTop") } set { d.set(newValue, forKey: "voiceHudTop") } }
+
+    /// ОСТРОВ В ВЫРЕЗЕ (задача 144). Третий вариант места плашки: она вырастает из чёлки MacBook.
+    ///
+    /// Отдельным флагом, а не третьим значением у `voiceHudTop`: у выреза он есть не у всех, и когда
+    /// вырез недоступен, поведение обязано откатиться к тому, что человек выбрал ДО острова, а не к
+    /// умолчанию. Два независимых флага это и дают.
+    var voiceHudIsland: Bool { get { d.bool(forKey: "voiceHudIsland") } set { d.set(newValue, forKey: "voiceHudIsland") } }
 
     /// Перевод выделенного текста по хоткею (Apple Translation, macOS 15+). По умолчанию вкл.
     var translateEnabled: Bool { get { d.object(forKey: "translateEnabled") == nil ? true : d.bool(forKey: "translateEnabled") } set { d.set(newValue, forKey: "translateEnabled") } }
@@ -351,6 +402,35 @@ final class AppSettings {
         set { d.set(newValue, forKey: "plainPasteKeyLabel") }
     }
 
+    /// ПОСЛЕДНЯЯ РАСКЛАДКА С КАЖДОЙ СТОРОНЫ, ПЕРЕЖИВАЮЩАЯ ПЕРЕЗАПУСК (отзыв #143 от 17.08:
+    /// «выбирает то русскую, то русскую ПК»). Сама память в `LayoutManager` была и раньше, но
+    /// жила в процессе: после каждого перезапуска первое переключение уходило в ПЕРВУЮ попавшуюся
+    /// раскладку своей письменности, то есть в «Русскую» у того, кто живёт на «Русской ПК».
+    /// Человек видит это как случайный выбор, потому что перезапуски он не считает.
+    var lastLayoutCyr: String { get { d.string(forKey: "lastLayoutCyr") ?? "" } set { d.set(newValue, forKey: "lastLayoutCyr") } }
+    var lastLayoutLat: String { get { d.string(forKey: "lastLayoutLat") ?? "" } set { d.set(newValue, forKey: "lastLayoutLat") } }
+
+    /// СМЕНА РЕГИСТРА ВЫДЕЛЕННОГО (задача 122, просьба пользователя 10.08 + решение автора).
+    ///
+    /// Комбинация НЕ фиксирована и по умолчанию НЕ назначена (`-1`): человек выбирает сам, а мы
+    /// не отбираем ни одного сочетания у тех, кому функция не нужна. Включение ставит первое
+    /// свободное из готовых, см. `HotkeyGuard` и настройки.
+    var caseChangeKeyCode: Int {
+        get { d.object(forKey: "caseChangeKeyCode") == nil ? -1 : d.integer(forKey: "caseChangeKeyCode") }
+        set { d.set(newValue, forKey: "caseChangeKeyCode") }
+    }
+    var caseChangeModifiers: UInt64 {
+        get { UInt64(bitPattern: Int64(d.integer(forKey: "caseChangeMods"))) }
+        set { d.set(Int(bitPattern: UInt(newValue)), forKey: "caseChangeMods") }
+    }
+    var caseChangeKeyLabel: String {
+        get { d.string(forKey: "caseChangeKeyLabel") ?? "" }
+        set { d.set(newValue, forKey: "caseChangeKeyLabel") }
+    }
+    /// Функция живёт ровно тогда, когда назначено сочетание. Отдельного тумблера-состояния нет:
+    /// два источника правды («включено» и «есть комбинация») разъезжаются, это уже проходили.
+    var caseChangeEnabled: Bool { caseChangeKeyCode >= 0 }
+
     /// Скорость воспроизведения клипа диктовки. Запоминается между запусками: человек, слушающий
     /// свои заметки на 2×, не должен возвращать её каждый раз (просьба автора 10.08).
     /// 0 в хранилище означает «никогда не трогали» → отдаём обычную скорость.
@@ -365,7 +445,17 @@ final class AppSettings {
 
     /// Поднимать уровень ВХОДА микрофона перед диктовкой (задача 93). Выключено по умолчанию:
     /// функция меняет СИСТЕМНУЮ настройку, видимую всем программам, и включать такое молча нельзя.
-    var voiceMicGain: Bool { get { d.bool(forKey: "voiceMicGain") } set { d.set(newValue, forKey: "voiceMicGain") } }
+    /// ⚠️ ПО УМОЛЧАНИЮ ВКЛЮЧЕНО с 11.08.2026 (аудит умолчаний, решение автора): тихая запись это
+    /// главный источник плохого распознавания, а уровень входа на маке уползает вниз сам по себе,
+    /// стоит какой-нибудь программе его убавить и не вернуть.
+    ///
+    /// Требование автора «главное, чтобы не понижал» выполнено в самой механике, а не только здесь:
+    /// `MicVolume.raiseIfEnabled` трогает уровень ТОЛЬКО когда он ниже цели (`now < target - 0.03`),
+    /// то есть громкий микрофон остаётся громким.
+    var voiceMicGain: Bool {
+        get { d.object(forKey: "voiceMicGain") == nil ? true : d.bool(forKey: "voiceMicGain") }
+        set { d.set(newValue, forKey: "voiceMicGain") }
+    }
     /// Сохранять исходную запись диктовки рядом с текстом (задача 101).
     /// ⚠️ ПО УМОЛЧАНИЮ ВЫКЛЮЧЕНО и таким должно остаться: это единственная наша функция, которая
     /// заводит на диске часы человеческого голоса. Подробности — в `VoiceClips`.
@@ -417,6 +507,17 @@ final class AppSettings {
     /// Один раз при самом первом запуске включаем автозапуск при входе (дефолт-вкл).
     /// Дальше пользователь волен выключить — мы больше не навязываем.
     var didInitialSetup: Bool { get { d.bool(forKey: "didInitialSetup") } set { d.set(newValue, forKey: "didInitialSetup") } }
+    /// Простой режим окна настроек: показываем только то, что нужно обычному человеку (список —
+    /// `SimpleMode.rows` в SettingsWindow). Режим ТОЛЬКО ПРЯЧЕТ строки: спрятанная настройка
+    /// продолжает работать ровно так, как её оставили, ничего не сбрасывается и не выключается.
+    ///
+    /// Дефолт FALSE намеренно. ВКЛ ставим ЯВНО на первом запуске (AppDelegate, didInitialSetup) —
+    /// то есть только новым. Тому, кто уже пользуется программой, режим включать нельзя: он
+    /// откроет настройки и увидит, что половина его настроек исчезла.
+    /// Высота окна подробных настроек, как её оставил человек. 0 — ещё не трогал, тогда высота
+    /// считается по первому разделу. Ширина не хранится: она фиксирована.
+    var proWindowHeight: Double { get { d.double(forKey: "proWindowHeight") } set { d.set(newValue, forKey: "proWindowHeight") } }
+    var simpleMode: Bool { get { d.bool(forKey: "simpleMode") } set { d.set(newValue, forKey: "simpleMode") } }
     /// Показывали ли окно-приветствие (онбординг) — один раз при первом запуске.
     var didShowWelcome: Bool { get { d.bool(forKey: "didShowWelcome") } set { d.set(newValue, forKey: "didShowWelcome") } }
     /// Версия прошлого запуска — для подсказки про Accessibility после обновления (смена подписи →
@@ -431,7 +532,7 @@ final class AppSettings {
     var betaChannel: Bool { get { d.bool(forKey: "betaChannel") } set { d.set(newValue, forKey: "betaChannel") } }
 
     /// Вид ЗНАЧКА в строке меню (автор 23.07, ред. — значок и язык независимы): brand — фирменный
-    /// знак Keyboop; keyboard — глиф клавиатуры (историч. дефолт); hidden — значка нет.
+    /// знак Keyboop и с 11.08 дефолт; keyboard — глиф клавиатуры (был дефолтом); hidden — значка нет.
     /// Показывать язык (RU/EN) РЯДОМ — отдельная галка menuBarShowLanguage, работает со всеми тремя.
     /// «Только язык» = hidden + показывать язык. Если hidden И язык выключен — пункта в строке меню
     /// нет совсем (настройки открываются повторным запуском из «Программ»).
@@ -489,7 +590,10 @@ final class AppSettings {
             case "brand", "keyboard", "flag", "hidden": return d.string(forKey: "menuBarStyle")!
             case "letter": return "brand"
             case "layout": return "hidden"
-            default: return "keyboard"
+            // ⚠️ Дефолт сменён на «Логотип» (аудит умолчаний, автор 11.08): в строке меню нас узнают
+            // по своему знаку, а системный глиф клавиатуры там ничей. Тех, кто выбирал значок сам,
+            // это не трогает — у них в defaults лежит своя строка и до сюда не доходит.
+            default: return "brand"
             }
         }
         set { d.set(newValue, forKey: "menuBarStyle") }

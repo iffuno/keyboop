@@ -12,6 +12,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var engineRunning = false
     /// Уже написали в лог, что ждём Accessibility (иначе строка повторялась бы дважды в секунду).
     private var loggedWaitingForAX = false
+    /// Системный запрос «Мониторинга ввода» показываем один раз за запуск: он всплывает поверх всего,
+    /// а движок пробует стартовать по таймеру и без этого флага дёргал бы промпт по кругу.
+    private var askedInputMonitoring = false
+    private var imWatchTimer: Timer?
+
+    /// Ждём, пока человек ответит системному окну про «Мониторинг ввода», и снимаем предупреждение.
+    ///
+    /// Опрос, а не уведомление: событие о выдаче этого доступа система не рассылает, а
+    /// `IOHIDCheckAccess` стоит доли миллисекунды. Минута с шагом в секунду покрывает и «разрешил
+    /// сразу», и «пошёл искать в настройках»; дальше правду всё равно пересчитает открытие меню
+    /// (`MenuBarController.recheckPermissions`), поэтому вечный таймер тут не нужен.
+    private func watchInputMonitoringGrant() {
+        imWatchTimer?.invalidate()
+        var left = 60
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] timer in
+            guard let self else { timer.invalidate(); return }
+            left -= 1
+            if Permissions.inputMonitoringGranted() {
+                timer.invalidate(); self.imWatchTimer = nil
+                self.menuBar.needsPermission = false
+                self.menuBar.refresh()
+                kbLog("доступ «Мониторинг ввода» выдан — предупреждение снято, ввод виден")
+            } else if left <= 0 {
+                timer.invalidate(); self.imWatchTimer = nil
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        imWatchTimer = t
+    }
     private var alertShown = false
     private var moveAlertShown = false    // алерт «перенеси в /Applications» (translocation) — показан
     private var relaunchOffered = false   // предложили перезапуск (TCC-залипание) — один раз
@@ -58,25 +87,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // нативный AX prompt + наш NSAlert + микрофон + кнопка Allow в Welcome = хаос.
     private var welcomePending = false
     private var singleInstanceFD: Int32 = -1   // держим fd открытым → flock жив до выхода процесса
-    // РУЧНОЙ ли это запуск (двойной клик в Finder / Spotlight / Dock), а НЕ старт из автозагрузки при
-    // логине. Ловим в applicationWillFinishLaunching, где `currentAppleEvent` ещё достоверен.
-    private var launchedManually = false
-
     /// Кросс-процессный сигнал «открой Настройки»: вторая копия (двойной клик по уже запущенному
     /// Keyboop, если Launch Services всё же породил процесс) шлёт его работающему экземпляру и выходит.
     static let openSettingsNotification = Notification.Name("ru.keyboop.app.openSettings")
-
-    /// РУЧНОЙ запуск ⇔ система прислала Apple-event `kAEOpenApplication` БЕЗ маркера login-item.
-    /// Запуск из автозагрузки (`SMAppService.mainApp`, launchd) либо не шлёт Apple-event вовсе
-    /// (`currentAppleEvent == nil`), либо помечает его `keyAELaunchedAsLogInItem`. Дефолт безопасный:
-    /// нет события → НЕ ручной → на логине настройки НЕ всплывают (главное требование). Проверять надо
-    /// РАНО (willFinishLaunching) — позже `currentAppleEvent` уже не тот. Источник: hisaac.net + Apple AE.
-    func applicationWillFinishLaunching(_ notification: Notification) {
-        guard let event = NSAppleEventManager.shared().currentAppleEvent,
-              event.eventID == kAEOpenApplication else { launchedManually = false; return }
-        let isLoginItem = event.paramDescriptor(forKeyword: keyAEPropData)?.enumCodeValue == keyAELaunchedAsLogInItem
-        launchedManually = !isLoginItem
-    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // SINGLE-INSTANCE: две копии Keyboop = два CGEventTap'а = каждое нажатие чинится ДВАЖДЫ
@@ -88,6 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // жалоба пользователя) и не дублируем ввод: просто просим РАБОТАЮЩИЙ экземпляр открыть
             // Настройки (человек запустил Keyboop именно чтобы туда попасть) и тихо выходим.
             kbLog("single-instance: Keyboop уже запущен — прошу его открыть Настройки и выхожу")
+            isSecondaryInstance = true
             DistributedNotificationCenter.default().postNotificationName(
                 Self.openSettingsNotification, object: nil, userInfo: nil, deliverImmediately: true)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { NSApp.terminate(nil) }
@@ -108,6 +122,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menuBar.onOpenSettings = { [weak self] in self?.openSettings() }
         menuBar.onShowVoiceHistory = { [weak self] in self?.openVoiceHistory() }
         menuBar.onQuickDictate = { [weak self] in self?.engine.toggleVoiceFromMenu() }
+        // Правду о доступах меню берёт в момент открытия, а не помнит с запуска (см.
+        // MenuBarController.recheckPermissions). «Всё в порядке» здесь значит буквально то, ради
+        // чего доступы и нужны: движок поднят И система отдаёт нам нажатия.
+        menuBar.recheckPermissions = { [weak self] in
+            guard let self else { return }
+            self.menuBar.needsPermission = !(self.engineRunning && Permissions.inputMonitoringGranted())
+        }
         // Меню показывает паузу, значит обязано перерисоваться, когда она началась или кончилась.
         Pause.onChange = { [weak self] in self?.menuBar.refreshAfterPauseChange() }
         menuBar.onCheckUpdates = { UpdaterController.shared.checkNow() }
@@ -121,9 +142,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.menuBar.refresh() }
         }
         // Вторая копия (двойной клик по уже запущенному Keyboop) просит нас открыть Настройки.
+        //
+        // ⚠️ НО НЕ ПРИ ВХОДЕ В СИСТЕМУ (жалоба пользователя, повторил автор 13.08.2026: «при загрузке
+        // наше окно настроек открывается»). При входе Keyboop стартует дважды: его запускает пункт
+        // автозапуска И система, восстанавливающая работавшие приложения. Копии стартуют наперегонки,
+        // проигравшая видит занятый замок, честно просит нас открыть Настройки и выходит. Снаружи это
+        // выглядит так, будто приложение лезет в глаза при каждом включении мака.
+        //
+        // Отличаем по СВОЕМУ возрасту, а не по способу запуска второй копии: способ ей самой узнать
+        // нечем (XPC_SERVICE_NAME у запуска из Finder и у автозапуска одинаково непустой, проверено
+        // на живых процессах), а гонка при входе укладывается в секунды. Человек, которому нужны
+        // настройки, кликает по значку заметно позже старта системы. Порог сознательно большой:
+        // ложно проигнорировать клик хуже некуда, но пятнадцать секунд после собственного запуска
+        // это ещё вход в систему, а не работа.
         DistributedNotificationCenter.default().addObserver(
             forName: Self.openSettingsNotification, object: nil, queue: .main
         ) { [weak self] _ in
+            let age = ProcessInfo.processInfo.systemUptime - AppHealth.launchedAt
+            guard age > 15 else {
+                kbLog("вторая копия просит Настройки через \(Int(age))с после старта — это гонка при входе в систему, не открываю")
+                return
+            }
             NSApp.activate(ignoringOtherApps: true)
             self?.openSettings()
         }
@@ -172,9 +211,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // (прецедент 21.07: анализировали баг по логу процесса, стартовавшего раньше пересборки).
         let stamp = Bundle.main.infoDictionary?["KeyboopBuildStamp"] as? String ?? "?"
         let isDev = (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
-        kbLog("launched; v\(curVer)\(isDev ? "-dev" : "") [build \(stamp)] (prev \(prevVer.isEmpty ? "—" : prevVer)); manual=\(launchedManually) AX=\(Permissions.isTrusted()) InputMon=\(Permissions.inputMonitoringGranted())")
+        kbLog("launched; v\(curVer)\(isDev ? "-dev" : "") [build \(stamp)] (prev \(prevVer.isEmpty ? "—" : prevVer)); AX=\(Permissions.isTrusted()) InputMon=\(Permissions.inputMonitoringGranted())")
+        // СРАЗУ ПОСЛЕ строчки о запуске: не падали ли мы в прошлый раз (задача 135). Стоит именно
+        // здесь, чтобы в логе отчёт о падении читался сразу под запуском, которому он предшествовал,
+        // а не был разбросан между строками прогрева.
+        CrashNote.scanAtLaunch()
 
         // Самый первый запуск: включаем автозапуск при входе в систему (дефолт-вкл).
+        //
+        // ⚠️ 11.08.2026, аудит умолчаний: этого оказалось мало. Автозапуск включался ТОЛЬКО на первом
+        // запуске, а у тех, кто ставил Keyboop до появления этой строки, он так и остался выключенным:
+        // человек перезагружает мак, переключателя раскладки нет, и понять почему невозможно.
+        // Поэтому разово включаем его и им тоже, ровно один раз (`didLoginSeed`). Тем, кто ВЫКЛЮЧИЛ
+        // автозапуск осознанно, мы его не вернём: галка в системе снята, но наш маркер уже стоит.
+        if !AppSettings.shared.didLoginSeed {
+            AppSettings.shared.didLoginSeed = true
+            if !AppSettings.shared.launchAtLogin {
+                AppSettings.shared.launchAtLogin = true
+                kbLog("умолчания: автозапуск при входе включён разово (он был выключен)")
+            }
+        }
         if !AppSettings.shared.didInitialSetup {
             AppSettings.shared.didInitialSetup = true
             AppSettings.shared.launchAtLogin = true
@@ -182,7 +238,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // выставляем ЯВНО только на первом запуске. Существующих юзеров не трогаем: read-дефолт
             // voiceHoldMode остаётся "hold", так что у тех, кто его не менял, поведение не меняется.
             AppSettings.shared.voiceHoldMode = "toggle"
-            kbLog("first run: launchAtLogin=\(AppSettings.shared.launchAtLogin), voice=toggle")
+            // Простой режим настроек — тоже дефолт для НОВЫХ и только для них. Существующему
+            // пользователю его включить нельзя: настройки, которые он уже нашёл и настроил, не
+            // должны однажды пропасть с экрана (правило простого режима: прячем, но не сбрасываем).
+            AppSettings.shared.simpleMode = true
+            kbLog("first run: launchAtLogin=\(AppSettings.shared.launchAtLogin), voice=toggle, simpleMode=on")
         }
 
         // ⚠️ МИГРАЦИЯ 29.07: снимаем мгновенное переключение с Shift, если оно там уже стоит.
@@ -211,27 +271,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.showWelcome() }
         }
 
-        // Открываем Настройки при запуске + иконку в Доке (значок у часов легко потерять в тесной
-        // строке меню), но ТОЛЬКО если запуск РУЧНОЙ (человек сам открыл Keyboop из Finder/Spotlight/
-        // Dock). Старт из автозагрузки при логине (главное требование автора 05.07) — тихо садимся в
-        // строку меню, окно НЕ показываем. Различаем по Apple-event запуска (launchedManually,
-        // см. applicationWillFinishLaunching): ручной = kAEOpenApplication без login-item-маркера;
-        // логин = нет события / есть маркер. Это надёжнее прежнего прокси `launchAtLogin` (тот скрывал
-        // настройки на РУЧНОМ запуске, если автозапуск включён — а именно там юзер, потерявший значок,
-        // и открывает приложение). Повторный «запуск» уже работающего Keyboop всё равно откроет
-        // Настройки через applicationShouldHandleReopen / single-instance-сигнал. Закрытие окна → снова
-        // чистый агент (windowWillClose → .accessory). Не лезем поверх онбординга, авто-обновления
-        // (Sparkle перезапускает сам), скриншот-режимов и dev-флага --settings.
-        let screenshotMode = ["KEYBOOP_DUMP", "KEYBOOP_WINSHOT", "KEYBOOP_WELCOMESHOT", "KEYBOOP_MENUSHOT"]
-            .contains { ProcessInfo.processInfo.environment[$0] == "1" }
-        let settingsArg = CommandLine.arguments.contains { $0.hasPrefix("--settings") }
-        if launchedManually, !welcomePending, updatedFrom == nil, !screenshotMode, !settingsArg {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                NSApp.activate(ignoringOtherApps: true)
-                self?.openSettings()
-            }
-        }
-
+        // ХОЛОДНЫЙ СТАРТ НИКОГДА НЕ ОТКРЫВАЕТ ОКНО (правило автора 11.08.2026, оно же починка
+        // отзыва #118 «после каждого входа в macOS само открывается главное окно»).
+        //
+        // Раньше мы пытались отличить ручной запуск от логина по Apple-event: ручной = событие
+        // открытия БЕЗ маркера login item. Маркер ставится, когда приложение поднимает автозагрузка,
+        // но система поднимает его и другим путём: галка «Вновь открывать окна при повторном входе»
+        // возвращает всё, что работало на момент выхода, и событие приходит обычное, без маркера.
+        // Мы считали такой запуск ручным и лезли человеку в лицо на каждом входе. Промежуточная
+        // попытка (не считать ручным первые 90 секунд сессии) была отвергнута автором по делу: кто-то
+        // прячет значок из строки меню совсем, и тогда в эти 90 секунд человеку нечем открыть
+        // программу вообще.
+        //
+        // Правило теперь простое и без догадок о намерениях системы:
+        //   • Keyboop ещё не запущен → поднимаемся молча, без окна;
+        //   • Keyboop уже запущен и человек «запускает» его снова → окно настроек открывает
+        //     РАБОТАЮЩАЯ копия (см. single-instance выше: вторая копия шлёт сигнал и выходит).
+        // Второй пункт и есть выход для тех, кто спрятал значок: двойной клик по программе всегда
+        // открывает настройки, потому что программа к этому моменту уже работает.
         // Новый пользователь: заранее (один раз) просим доступ к микрофону, чтобы диктовка
         // сразу работала, а не «молчала». Раньше доступ спрашивался лениво — только при
         // первом нажатии хоткея И при установленной модели, поэтому промпт часто не появлялся.
@@ -374,6 +431,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+        // Dev-хук: плашка диктовки (KEYBOOP_HUDSHOT=1). Записи без микрофона не бывает, значит и
+        // посмотреть на плашку иначе как продиктовав что-нибудь нельзя — а смотреть на неё придётся
+        // каждый раз, когда трогаем её вид (задача 125). Хук показывает оба живых состояния и
+        // сохраняет снимки; уровни в волну подаём синтетические, чтобы бары не стояли по нулям.
+        // `=2` — то же самое, но в верхнем режиме («под чёлкой») и с долгим показом: место плашки
+        // на экране в её собственный снимок не попадает, его видно только на снимке ВСЕГО экрана,
+        // а тот делается снаружи и ему нужно время.
+        if let hud = ProcessInfo.processInfo.environment["KEYBOOP_HUDSHOT"], hud == "1" || hud == "2" {
+            VoiceIndicator.shared.forceTop = (hud == "2")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                VoiceIndicator.shared.showRecording()
+                var n = 0
+                let feed = Timer(timeInterval: 0.05, repeats: true) { t in
+                    n += 1
+                    VoiceIndicator.shared.pushLevel(Float(0.05 + 0.35 * abs(sin(Double(n) * 0.7))))
+                    if n > (VoiceIndicator.shared.forceTop ? 400 : 90) { t.invalidate() }
+                }
+                RunLoop.main.add(feed, forMode: .common)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) {
+                    VoiceIndicator.shared.saveShot(to: "/tmp/kb_hud_rec.png")
+                    guard !VoiceIndicator.shared.forceTop else { return }   // держим запись на экране, снимает bash
+                    VoiceIndicator.shared.showProcessing()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        VoiceIndicator.shared.saveShot(to: "/tmp/kb_hud_proc.png")
+                    }
+                }
+            }
+        }
+        // ОДНА КЛАВИША НА ДВА ДЕЙСТВИЯ: проверяем при КАЖДОМ запуске, а не только при назначении
+        // (отзыв #134). Человек видит не «конфликт», а «переключение тормозит», и сам никогда не
+        // свяжет одно с другим: каждое нажатие ждёт, удержание это или нажатие.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in self?.warnHotkeyClashOnce() }
+
+        // Dev-хук: ЖИВОЙ ТЕКСТ на плашке (KEYBOOP_LIVESHOT=1 у курсора, =2 в вырезе).
+        //
+        // Появился 13.08.2026 вместе с возвратом потокового набора. Смотреть на живой текст иначе
+        // как надиктовав вслух нельзя, а смотреть придётся много: строка растёт на каждом уточнении
+        // гипотезы, и вся сложность именно в том, как плашка при этом меняет ширину. Хук кормит
+        // `showLive` поддельными партиалами ровно так, как их шлёт движок: каждый раз ПОЛНЫЙ текст,
+        // а не добавку. Реальную модель для этого грузить не нужно.
+        if let lv = ProcessInfo.processInfo.environment["KEYBOOP_LIVESHOT"], lv == "1" || lv == "2" {
+            VoiceIndicator.shared.forceTop = (lv == "2")
+            VoiceIndicator.shared.forceIsland = (lv == "2")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                VoiceIndicator.shared.showRecording()
+                var n = 0
+                let levels = Timer(timeInterval: 0.05, repeats: true) { t in
+                    n += 1
+                    VoiceIndicator.shared.pushLevel(Float(0.05 + 0.35 * abs(sin(Double(n) * 0.7))))
+                    if n > 400 { t.invalidate() }
+                }
+                RunLoop.main.add(levels, forMode: .common)
+                // Фраза намеренно длинная: короткая ничего не проверяет, а вся задача про то, что
+                // делать, когда сказанное перестаёт помещаться.
+                let words = (ProcessInfo.processInfo.environment["KEYBOOP_LIVETEXT"]
+                             ?? "покажи как это выглядит когда я диктую длинную фразу целиком и она перестаёт помещаться")
+                    .split(separator: " ").map(String.init)
+                var i = 0
+                let feed = Timer(timeInterval: 0.5, repeats: true) { t in
+                    i += 1
+                    VoiceIndicator.shared.showLive(words.prefix(i).joined(separator: " "))
+                    if i == 3 { VoiceIndicator.shared.saveShot(to: "/tmp/kb_live_short.png") }
+                    if i >= words.count {
+                        VoiceIndicator.shared.saveShot(to: "/tmp/kb_live_long.png")
+                        t.invalidate()
+                    }
+                }
+                RunLoop.main.add(feed, forMode: .common)
+            }
+        }
         // Dev-хук: показать список выбора сниппета (KEYBOOP_SNIPPICK=1). Плашка не крадёт фокус и
         // управляется цифрами через перехватчик, поэтому руками её на снимок не поймать: любой клик
         // мимо ничего не закроет, а нажатие цифры вставит текст в чужое окно. Хук показывает её и
@@ -424,7 +551,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 kbLog("DUMP: opening settings")
                 if self.settingsWC == nil { self.settingsWC = SettingsWindowController() }
                 self.settingsWC?.show()
-                let names = ["switching", "exceptions", "snippets", "translate", "voice", "general", "updates", "privacy", "about"]
+                // ⚠️ ИМЕНА БЕРЁМ ИЗ САМОГО ПЕРЕЧИСЛЕНИЯ, А НЕ СПИСКОМ ВРУЧНУЮ. Здесь стоял свой
+                // список в том порядке, в каком разделы шли летом, и при первой же перестановке
+                // (задача 61, 0.4) файлы разъехались с содержимым: в `kb_voice.png` лежал «Перевод».
+                // Инструмент проверки, который врёт, хуже отсутствующего — правило проекта, и вот
+                // его очередное подтверждение.
+                let names = SettingsSection.sidebarCases.map { String(describing: $0) }
                 for (i, name) in names.enumerated() {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4 * Double(i + 1)) {
                         kbLog("DUMP: section \(i) \(name)")
@@ -442,7 +574,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 guard let self = self else { return }
                 if self.settingsWC == nil { self.settingsWC = SettingsWindowController() }
                 self.settingsWC?.show()
-                let secs: [(Int, String)] = [(0, "switching"), (3, "voice"), (4, "privacy"), (2, "snippets"), (6, "updates")]
+                // ⚠️ ИНДЕКСЫ СЧИТАЕМ, А НЕ ПИШЕМ РУКАМИ: раньше здесь стояли номера позапрошлого
+                // порядка разделов, и после перестановки (задача 61) снимок «Голоса» показывал бы
+                // чужой раздел. Тот же урок, что этажом выше в KEYBOOP_DUMP.
+                let want: [SettingsSection] = [.switching, .voice, .privacy, .snippets, .updates]
+                let secs: [(Int, String)] = want.compactMap { s in
+                    SettingsSection.sidebarCases.firstIndex(of: s).map { ($0, String(describing: s)) }
+                }
                 for (k, pair) in secs.enumerated() {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.45 * Double(k + 1)) {
                         self.settingsWC?.dumpFullWindow(section: pair.0, to: "/tmp/kbwin_\(pair.1).png")
@@ -639,7 +777,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             engineRunning = true
             welcomePending = false
             retryTicks = 0
-            menuBar.needsPermission = false
+            // ⚠️ ПОДНЯВШИЙСЯ TAP НЕ ЗНАЧИТ, ЧТО МЫ ЧТО-ТО СЛЫШИМ (12.08.2026, поймано на авторе).
+            //
+            // `tapCreate` удаётся с одним Accessibility, и мы гасили предупреждение. Но без
+            // «Мониторинга ввода» система не доставляет в tap НИ ОДНОГО нажатия: приложение живо,
+            // меню чистое, значок бодрый — и при этом ни автозамены, ни ручного переключения, ни
+            // сниппетов. Замер: за час работы в таком состоянии в логе ноль строк про набор против
+            // 56 за такой же час до этого.
+            //
+            // Хуже всего, что мы в этот момент ничего не просили: строчка ниже честно печатала
+            // `InputMon=false` в лог и ни на что не влияла. Человек видел исправное приложение,
+            // которое молча не работает, — а это худший вид поломки, потому что чинить его он не
+            // начнёт.
+            //
+            // Теперь недостающий мониторинг ввода: (1) оставляет предупреждение в меню, где пункт
+            // сам называет нужный доступ и открывает нужный раздел, (2) один раз за запуск зовёт
+            // системный запрос — именно он показывает macOS-промпт, и до сегодня его не звал никто,
+            // кроме кнопки в меню, до которой ещё надо додуматься.
+            let hasIM = Permissions.inputMonitoringGranted()
+            menuBar.needsPermission = !hasIM
+            if !hasIM, !askedInputMonitoring {
+                askedInputMonitoring = true
+                kbLog("нет доступа «Мониторинг ввода» — tap поднят, но событий он не получит; запрашиваю")
+                Permissions.requestInputMonitoring()
+                // Ответ на системное окно приходит через несколько секунд и НЕ нам: без этого
+                // наблюдателя предупреждение висело бы до перезапуска, хотя всё уже работает.
+                watchInputMonitoringGrant()
+            }
             menuBar.refresh()
             kbLog("engine STARTED ok (AX=\(Permissions.isTrusted()) InputMon=\(Permissions.inputMonitoringGranted()))")
             retryTimer?.invalidate()
@@ -660,6 +824,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             relaunchOffered = true
             offerRelaunch()
         }
+    }
+
+    /// Сказать про столкновение хоткеев ОДИН раз на конфигурацию, а не при каждом запуске.
+    ///
+    /// Ключ запоминания это сама пара функций: сменил комбинацию, конфликт исчез, ключ протух сам.
+    /// Появился новый конфликт, другой парой, и о нём скажем снова. Молчать нельзя (человек будет
+    /// годами жить с «тормозит»), долбить каждый запуск тоже нельзя.
+    private func warnHotkeyClashOnce() {
+        let clashes = HotkeyGuard.activeClashes()
+        guard let first = clashes.first else { return }
+        let key = "warnedClash:\(first.0)|\(first.1)"
+        kbLog("хоткеи: одна комбинация на две функции — \(first.0) и \(first.1)")
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+        AppBanner.shared.show(
+            title: L10n.t("clash.title"),
+            body: String(format: L10n.t("clash.body"), first.0, first.1),
+            actions: [.init(title: L10n.t("clash.open"), coral: true) { [weak self] in
+                self?.openSettings(section: .switching)
+            }])
     }
 
     private func showPermissionAlertOnce() {
@@ -821,7 +1005,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             actions: [
                 .init(title: L10n.t("upd.now"), coral: false) { UpdaterController.shared.installPendingNow() },
                 .init(title: L10n.t("upd.autoShort"), coral: true) { UpdaterController.shared.enableSilentAndInstall() }
-            ]
+            ],
+            // Крестик = «нет»: ничего не поставится ни сейчас, ни при выходе (отзыв #125).
+            onClose: { UpdaterController.shared.declinePending() }
         )
     }
 
@@ -947,8 +1133,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Мы — вторая копия и сейчас тихо выйдем. Флаг нужен ниже: откатывать СИСТЕМНЫЕ настройки
+    /// (Caps-ремап, роль 🌐) вторая копия не имеет права.
+    private var isSecondaryInstance = false
+
     func applicationWillTerminate(_ notification: Notification) {
         VoiceController.shared.unloadForTermination()
+        // ⚠️ ВТОРАЯ КОПИЯ НИЧЕГО НЕ ОТКАТЫВАЕТ (ревью 17.08). Флаг `capsRemapApplied` лежит в общих
+        // defaults и выставлен РАБОТАЮЩЕЙ копией, поэтому guard внутри removeIfOurs проходил и у
+        // второй: запуск из DMG обновления при живом старом снимал hidutil-ремап у него под ногами —
+        // Caps молча переставал менять язык, тумблер оставался включённым. То же с ролью 🌐.
+        guard !isSecondaryInstance else { return }
         // Caps-ремап и забранная 🌐 без нас жить не должны: выходим — возвращаем всё системе.
         // (Синхронно: терминация не ждёт GCD; hidutil отрабатывает за ~50мс.)
         CapsRemap.removeIfOurs()

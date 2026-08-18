@@ -289,6 +289,128 @@ enum HotkeyGuard {
         String(format: L10n.t("hkrec.warn.system"), what)
     }
 
+    // MARK: - Наши собственные хоткеи
+
+    /// Одно действие на одну комбинацию. Кто именно её занял, если занял.
+    ///
+    /// ⚠️ ЕДИНЫЙ РЕЕСТР, И ЭТО ГЛАВНОЕ В НЁМ. Проверка «занято нашей же функцией» существовала с
+    /// 24.07, но жила ВНУТРИ одного контрола (мгновенная смена языка) и знала о трёх функциях из
+    /// шести. То есть работала ровно в одну сторону: мгновенная смена берегла себя от чужих
+    /// комбинаций, а назначить конверсию поверх диктовки не мешал никто.
+    ///
+    /// Чем это оборачивается у человека, видно по отзывам. В диагностике отзыва #113 (08.08.2026)
+    /// стоит `конверсия=modkey/61 · диктовка=modkey/61`: обе функции на правом ⌥, и правый ⌥ это
+    /// заводская комбинация диктовки, то есть человек назначил конверсию на занятое и не получил ни
+    /// слова предупреждения. Отсюда же класс писем «поставил хоткей на диктовку, перестало работать
+    /// ручное переключение»: ничего не ломалось, просто на одно нажатие претендовали двое, и
+    /// выигрывал всегда один и тот же.
+    ///
+    /// Правило проекта (автор): **две функции на одну комбинацию не уживаются, и решать это надо в
+    /// интерфейсе, а не в момент нажатия.** Арбитраж на горячем пути был бы и медленнее, и
+    /// необъяснимее для человека: «нажал, сработало не то» без единой подсказки почему.
+    ///
+    /// Добавляя СЕДЬМОЙ хоткей, добавь его сюда же. Это единственное место, где перечислены все.
+    enum Slot: CaseIterable {
+        case convert, voice, translate, instant, snippet, plainPaste, caseChange
+
+        /// Как назвать функцию человеку в тексте «занято: %@».
+        var name: String {
+            switch self {
+            case .convert:    return L10n.t("is.busy.convert")
+            case .voice:      return L10n.t("is.busy.voice")
+            case .translate:  return L10n.t("is.busy.translate")
+            case .instant:    return L10n.t("is.busy.instant")
+            case .snippet:    return L10n.t("is.busy.snippet")
+            case .plainPaste: return L10n.t("is.busy.paste")
+            case .caseChange: return L10n.t("is.busy.case")
+            }
+        }
+
+        /// Текущая комбинация слота, либо nil — функция выключена или комбинация не назначена.
+        /// Выключенная функция комбинацию НЕ держит: человек вправе отдать её другой.
+        var trigger: (mode: String, keyCode: Int, mods: UInt64)? {
+            let s = AppSettings.shared
+            switch self {
+            case .convert:
+                return (s.hotkeyMode, s.hotkeyKeyCode, s.hotkeyModifiers)
+            case .voice:
+                guard s.voiceEnabled else { return nil }
+                return (s.voiceHotkeyMode, s.voiceHotkeyKeyCode, s.voiceHotkeyModifiers)
+            case .translate:
+                // У перевода своего режима нет, он всегда «клавиша + модификаторы».
+                return ("key", s.translateHotkeyKeyCode, s.translateHotkeyModifiers)
+            case .instant:
+                guard s.instantSwitchEnabled else { return nil }
+                return (s.instantSwitchMode, s.instantSwitchKeyCode, s.instantSwitchMods)
+            case .snippet:
+                guard s.snippetPickKeyCode >= 0 else { return nil }
+                return ("key", s.snippetPickKeyCode, s.snippetPickModifiers)
+            case .plainPaste:
+                guard s.plainPaste else { return nil }
+                return ("key", s.plainPasteKeyCode, s.plainPasteModifiers)
+            case .caseChange:
+                guard s.caseChangeEnabled else { return nil }
+                return ("key", s.caseChangeKeyCode, s.caseChangeModifiers)
+            }
+        }
+    }
+
+    /// Одна и та же ли это комбинация. Сравнение зависит от режима: у голого модификатора значим
+    /// только keyCode (маска у левого и правого ⌥ одинакова), у 🌐 сравнивать нечего вовсе.
+    static func sameTrigger(_ mode: String, _ keyCode: Int, _ mods: UInt64,
+                            as other: (mode: String, keyCode: Int, mods: UInt64)) -> Bool {
+        guard mode == other.mode else { return false }
+        switch mode {
+        case "globe":  return true
+        case "modkey": return keyCode == other.keyCode
+        default:       return keyCode == other.keyCode && mods == other.mods
+        }
+    }
+
+    /// Занята ли комбинация нашей же функцией. `excluding` — слот, который сейчас настраивают:
+    /// назначить себе то, что и так стоит, должно быть можно.
+    /// Алерт «комбинация занята нашей функцией» для ВЫБОРА ИЗ СПИСКА. В окне записи вместо него
+    /// показывается строка внутри самого окна (`hkrec.warn.ours`): там алерт перекрыл бы запись и
+    /// оборвал её, а из выпадающего списка перекрывать нечего.
+    static func busyAlert(_ what: String) {
+        let a = NSAlert()
+        a.messageText = L10n.t("is.busy.title")
+        a.informativeText = String(format: L10n.t("is.busy.body"), what)
+        a.addButton(withTitle: "OK")
+        a.runModal()
+    }
+
+    static func ourBusy(mode: String, keyCode: Int, mods: UInt64, excluding: Slot) -> String? {
+        for slot in Slot.allCases where slot != excluding {
+            guard let t = slot.trigger else { continue }
+            if sameTrigger(mode, keyCode, mods, as: t) { return slot.name }
+        }
+        return nil
+    }
+
+    /// Пары НАШИХ функций, которые прямо сейчас сидят на одной комбинации.
+    ///
+    /// ⚠️ ЗАЧЕМ ЭТО НУЖНО, ЕСЛИ ЕСТЬ ПРОВЕРКА ПРИ НАЗНАЧЕНИИ (отзыв #134, 13.08.2026). Проверка
+    /// срабатывает в момент выбора, и этого мало. Конфигурация может стать конфликтной ПОЗЖЕ и без
+    /// единого назначения:
+    ///  • функция была выключена, а выключенная комбинацию не держит (см. `Slot.trigger`), поэтому
+    ///    её клавишу спокойно отдали другой функции; потом человек включил её обратно;
+    ///  • настройки достались от версии, где проверки ещё не было, и просто пережили обновления.
+    /// Снаружи это выглядит не как конфликт, а как «переключение тормозит»: одна клавиша на два
+    /// действия заставляет ждать, удержание это или нажатие. Именно так жалобу и прислали.
+    static func activeClashes() -> [(String, String)] {
+        var out: [(String, String)] = []
+        let slots = Slot.allCases
+        for (i, a) in slots.enumerated() {
+            guard let ta = a.trigger else { continue }
+            for b in slots.dropFirst(i + 1) {
+                guard let tb = b.trigger else { continue }
+                if sameTrigger(ta.mode, ta.keyCode, ta.mods, as: tb) { out.append((a.name, b.name)) }
+            }
+        }
+        return out
+    }
+
     /// nil — комбинация допустима; иначе текст, чем именно она занята. ТОЛЬКО жёсткие запреты.
     static func rejection(keyCode: Int, mods: CGEventFlags) -> String? {
         let onlyCmd = mods == .maskCommand
@@ -300,6 +422,8 @@ enum HotkeyGuard {
         return nil
     }
 }
+
+
 
 final class HotkeyControl: NSView {
     private let settings = AppSettings.shared
@@ -418,15 +542,11 @@ final class HotkeyControl: NSView {
         let i = pop.indexOfSelectedItem
         if i < Self.presets.count {
             let p = Self.presets[i]
-            // Обратная проверка коллизии: та же комбинация уже назначена на МГНОВЕННУЮ смену языка
-            // → два действия подрались бы за одно нажатие (требование автора 24.07).
-            if settings.instantSwitchEnabled, p.1 == settings.instantSwitchMode,
-               p.2 == settings.instantSwitchKeyCode {
-                let a = NSAlert()
-                a.messageText = L10n.t("is.busy.title")
-                a.informativeText = String(format: L10n.t("is.busy.body"), L10n.t("is.busy.instant"))
-                a.addButton(withTitle: "OK"); a.runModal()
-                rebuild(); return
+            // Коллизия с ЛЮБОЙ нашей функцией, а не только с мгновенной сменой языка, как было до
+            // 10.08. Пресеты конверсии и заводская комбинация диктовки пересекаются напрямую:
+            // «Right ⌥» в этом списке и есть дефолт диктовки.
+            if let busy = HotkeyGuard.ourBusy(mode: p.1, keyCode: p.2, mods: p.3, excluding: .convert) {
+                HotkeyGuard.busyAlert(busy); rebuild(); return
             }
             settings.hotkeyMode = p.1
             settings.hotkeyKeyCode = p.2
@@ -487,6 +607,11 @@ final class HotkeyControl: NSView {
                 return
             }
             let kc = Int(ev.keyCode), label = KeyLabels.symbol(forKeyCode: Int(ev.keyCode))
+            if let busy = HotkeyGuard.ourBusy(mode: "key", keyCode: kc, mods: mods.rawValue, excluding: .convert) {
+                warnInPanel(String(format: L10n.t("hkrec.warn.ours"), busy),
+                            parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: label))
+                return
+            }
             pendingApply = { [weak self] in
                 guard let s = self?.settings else { return }
                 s.hotkeyMode = "key"; s.hotkeyKeyCode = kc
@@ -521,6 +646,11 @@ final class HotkeyControl: NSView {
                 // Отпустили все модификаторы → предлагаем накопленный пик (записываем по кнопке).
                 if count(peak) >= 2 {
                     let p = peak
+                    if let busy = HotkeyGuard.ourBusy(mode: "combo", keyCode: -1, mods: p.rawValue, excluding: .convert) {
+                        warnInPanel(String(format: L10n.t("hkrec.warn.ours"), busy),
+                                    parts: HotkeyRecorderPanel.parts(mods: p))
+                        return
+                    }
                     pendingApply = { [weak self] in
                         guard let s = self?.settings else { return }
                         s.hotkeyMode = "combo"          // ⌥⇧ и т.п.
@@ -531,6 +661,11 @@ final class HotkeyControl: NSView {
                     // ОДИН модификатор (напр. левый Option) → modkey: тап по нему = переключение.
                     // Без этой ветки одиночный модификатор НЕ записывался → запись висела «бесконечно».
                     let p = peak, pk = peakKey
+                    if let busy = HotkeyGuard.ourBusy(mode: "modkey", keyCode: pk, mods: p.rawValue, excluding: .convert) {
+                        warnInPanel(String(format: L10n.t("hkrec.warn.ours"), busy),
+                                    parts: HotkeyRecorderPanel.parts(mods: p))
+                        return
+                    }
                     pendingApply = { [weak self] in
                         guard let s = self?.settings else { return }
                         s.hotkeyMode = "modkey"
@@ -703,10 +838,7 @@ final class VoiceHotkeyControl: NSView {
     /// Занята ли эта комбинация модификаторов другим нашим хоткеем, живущим в режиме "combo".
     /// Сравниваем только с такими же комбинациями: modkey и key — другие нажатия, они не конфликтуют.
     private func comboCollision(_ mods: CGEventFlags) -> String? {
-        let s = settings
-        if s.hotkeyMode == "combo", s.hotkeyModifiers == mods.rawValue { return L10n.t("is.busy.convert") }
-        if s.instantSwitchMode == "combo", s.instantSwitchMods == mods.rawValue { return L10n.t("is.busy.instant") }
-        return nil
+        HotkeyGuard.ourBusy(mode: "combo", keyCode: -1, mods: mods.rawValue, excluding: .voice)
     }
 
     // (label, mode, keyCode, modifiers)
@@ -779,6 +911,9 @@ final class VoiceHotkeyControl: NSView {
         let i = pop.indexOfSelectedItem
         if i < Self.presets.count {
             let p = Self.presets[i]
+            if let busy = HotkeyGuard.ourBusy(mode: p.1, keyCode: p.2, mods: p.3, excluding: .voice) {
+                HotkeyGuard.busyAlert(busy); rebuild(); return
+            }
             settings.voiceHotkeyMode = p.1
             settings.voiceHotkeyKeyCode = p.2
             settings.voiceHotkeyModifiers = p.3
@@ -836,6 +971,11 @@ final class VoiceHotkeyControl: NSView {
                 return
             }
             let kc = Int(ev.keyCode), label = KeyLabels.symbol(forKeyCode: Int(ev.keyCode))
+            if let busy = HotkeyGuard.ourBusy(mode: "key", keyCode: kc, mods: mods.rawValue, excluding: .voice) {
+                warnInPanel(String(format: L10n.t("hkrec.warn.ours"), busy),
+                            parts: HotkeyRecorderPanel.parts(mods: mods, keyLabel: label))
+                return
+            }
             pendingApply = { [weak self] in
                 guard let s = self?.settings else { return }
                 s.voiceHotkeyMode = "key"; s.voiceHotkeyKeyCode = kc
@@ -890,6 +1030,11 @@ final class VoiceHotkeyControl: NSView {
             } else if count(peak) == 1, peakKey >= 0 {
                 // Один модификатор (напр. правый ⌥) — прежнее поведение hold-to-talk.
                 let p = peak, pk = peakKey
+                if let busy = HotkeyGuard.ourBusy(mode: "modkey", keyCode: pk, mods: p.rawValue, excluding: .voice) {
+                    warnInPanel(String(format: L10n.t("hkrec.warn.ours"), busy),
+                                parts: HotkeyRecorderPanel.parts(mods: p))
+                    return
+                }
                 pendingApply = { [weak self] in
                     guard let s = self?.settings else { return }
                     s.voiceHotkeyMode = "modkey"; s.voiceHotkeyKeyCode = pk
@@ -1028,6 +1173,9 @@ final class TranslateHotkeyControl: NSView {
         let i = pop.indexOfSelectedItem
         if i < Self.presets.count {
             let p = Self.presets[i]
+            if let busy = HotkeyGuard.ourBusy(mode: "key", keyCode: p.1, mods: p.2, excluding: .translate) {
+                HotkeyGuard.busyAlert(busy); rebuild(); return
+            }
             settings.translateHotkeyKeyCode = p.1
             settings.translateHotkeyModifiers = p.2
             settings.translateHotkeyKeyLabel = "T"
@@ -1108,6 +1256,11 @@ final class TranslateHotkeyControl: NSView {
                 return
             }
         let kc = Int(ev.keyCode), label = KeyLabels.symbol(forKeyCode: Int(ev.keyCode))
+        if let busy = HotkeyGuard.ourBusy(mode: "key", keyCode: kc, mods: m.rawValue, excluding: .translate) {
+            warnInPanel(String(format: L10n.t("hkrec.warn.ours"), busy),
+                        parts: HotkeyRecorderPanel.parts(mods: m, keyLabel: label))
+            return
+        }
         pendingApply = { [weak self] in
             guard let s = self?.settings else { return }
             s.translateHotkeyKeyCode = kc
@@ -1213,36 +1366,11 @@ final class InstantSwitchControl: NSView {
     /// Для «голого модификатора» ключ сравнения — сама клавиша: маска из неё следует, а левый и
     /// правый ⌥ дают ОДНУ маску при разных keyCode, так что сравнение по маске здесь и слепит
     /// разные клавиши, и не различает одинаковые.
-    private func sameTrigger(_ mode: String, _ keyCode: Int, _ mods: UInt64,
-                             as other: (mode: String, keyCode: Int, mods: UInt64)) -> Bool {
-        guard mode == other.mode else { return false }
-        switch mode {
-        case "globe":  return true                       // 🌐 одна на всех, сравнивать нечего
-        case "modkey": return keyCode == other.keyCode
-        default:       return keyCode == other.keyCode && mods == other.mods
-        }
-    }
-
-    /// Занята ли комбинация нашими же хоткеями (конверсия / диктовка / перевод).
-    ///
-    /// ⚠️ Проверки диктовки и перевода стояли под `mode == "key"` (исправлено 28.07). То есть режим
-    /// «голый модификатор» не проверялся ВООБЩЕ, а правый ⌥ (keyCode 61) — это заводская комбинация
-    /// диктовки. Назначив его же на мгновенную смену языка, человек получал два действия на одно
-    /// нажатие и ни одного предупреждения: правило проекта «одна комбинация = одна функция» молча
-    /// не работало ровно в том случае, ради которого писалось.
+    /// Занята ли комбинация нашими же хоткеями. С 10.08 это тонкая обёртка над общим реестром
+    /// (`HotkeyGuard.Slot`): раньше здесь лежал собственный список из трёх функций, и он был
+    /// ЕДИНСТВЕННЫМ местом в приложении, где проверка вообще выполнялась.
     private func collides(mode: String, keyCode: Int, mods: UInt64) -> String? {
-        let s = settings
-        if sameTrigger(mode, keyCode, mods, as: (s.hotkeyMode, s.hotkeyKeyCode, s.hotkeyModifiers)) {
-            return L10n.t("is.busy.convert")
-        }
-        if sameTrigger(mode, keyCode, mods, as: (s.voiceHotkeyMode, s.voiceHotkeyKeyCode, s.voiceHotkeyModifiers)) {
-            return L10n.t("is.busy.voice")
-        }
-        // Перевод живёт только в режиме «клавиша + модификаторы», своего режима у него нет.
-        if sameTrigger(mode, keyCode, mods, as: ("key", s.translateHotkeyKeyCode, s.translateHotkeyModifiers)) {
-            return L10n.t("is.busy.translate")
-        }
-        return nil
+        HotkeyGuard.ourBusy(mode: mode, keyCode: keyCode, mods: mods, excluding: .instant)
     }
 
     init() {
@@ -1438,4 +1566,197 @@ func instantSwitchDisplayString() -> String {
     default:
         return modsPlusKey(CGEventFlags(rawValue: s.instantSwitchMods), s.instantSwitchKeyCode)
     }
+}
+
+/// ОКНО НЕ ДОЛЖНО БЫТЬ БОЛЬШЕ ЭКРАНА (отзыв #125, 11.08.2026: «окно обратной связи и „Что нового“
+/// не подстраиваются под размер экрана, строчки не помещаются и увидеть текст целиком нельзя»).
+///
+/// Мы считаем высоту по содержимому (`fittingSize`) и ставим её как есть. На большом мониторе это
+/// незаметно, а на 13-дюймовом ноутбуке с крупным системным шрифтом окно вырастает выше рабочей
+/// области, и нижняя часть уезжает под край экрана — вместе с кнопками. Человек видит обрезанное
+/// окно и не может ничего сделать.
+///
+/// ⚠️ Меряем по `visibleFrame`, а не по `frame`: строку меню и Док окно занять не может, и разница
+/// как раз того порядка, на котором это и ломается.
+extension NSWindow {
+    func clampToScreen(margin: CGFloat = 24) {
+        guard let vis = (screen ?? NSScreen.main)?.visibleFrame else { return }
+        let maxH = vis.height - margin, maxW = vis.width - margin
+        var f = frame
+        guard f.height > maxH || f.width > maxW else { return }
+        f.size.height = min(f.height, maxH)
+        f.size.width = min(f.width, maxW)
+        setFrame(f, display: true)
+        center()
+    }
+}
+
+// MARK: - Переключатель режима настроек в строке заголовка
+
+/// Две вкладки в строке заголовка окна настроек: «Основное» и «Всё».
+///
+/// ⚠️ СВОЯ ОТРИСОВКА, А НЕ `NSSegmentedControl`. автор 17.08: в покое переключатель должен быть
+/// приглушённым, под курсором подсвечиваться. Системный сегментер рисует себя сам и в macOS 26
+/// приезжает в стеклянной капсуле, которую нельзя ни притушить, ни подсветить: единственное, что
+/// ему можно задать снаружи, это `alphaValue` на весь контрол разом, отчего гаснет и выделение.
+/// Здесь три состояния краски (покой, наведение, выбранная половина) и ни одного системного бейзеля.
+final class ModePicker: NSView {
+    private var titles: [String]
+    private let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+
+    /// Смена языка интерфейса: подписи меняются на месте, контрол пересобирать не нужно.
+    func setTitles(_ t: [String]) {
+        guard t.count == titles.count, t != titles else { return }
+        titles = t
+        for (i, l) in labels.enumerated() { l.string = t[i] }
+        invalidateIntrinsicContentSize()
+        frame.size = intrinsicContentSize
+        restyle(animated: false)
+    }
+    private let padX: CGFloat = 12
+    // ⚠️ ВЫСОТА ЭТО КОМПРОМИСС, И ОБЕ ЕГО СТОРОНЫ СТОИТ ЗНАТЬ, ПРЕЖДЕ ЧЕМ ТРОГАТЬ ЧИСЛО.
+    // Строка заголовка 32 pt, кнопки окна стоят в ней с полем 9 pt со всех сторон. Значит контрол,
+    // симметричный им сверху и справа, обязан быть 14 pt высотой, а в 14 pt подпись цепляет края
+    // капсулы. 19 pt (автор 17.08: «процентов на двадцать побольше») дают 6.5 pt сверху при 9.5
+    // справа. Растить дальше можно только за счёт верхнего поля.
+    private let barH: CGFloat = 19
+
+    // ⚠️ КОНТРОЛ СОБРАН ИЗ СЛОЁВ, А НЕ НАРИСОВАН В `draw`. автор 17.08: «чтобы он перетекал слева
+    // направо в стиле современных переключателей macOS». Перетекание это анимация геометрии, а
+    // рисование в `draw` умеет только перерисовать всё разом, в новом положении. Со слоями бегунок
+    // едет сам, а нам остаётся задать ему новый кадр.
+    private let track = CALayer()
+    private let thumb = CALayer()
+    private var labels: [CATextLayer] = []
+
+    var selected = 0 { didSet { if selected != oldValue { restyle(animated: true) } } }
+    var onSelect: ((Int) -> Void)?
+
+    /// Какая половина под курсором. `KEYBOOP_MODEHOVER=0|1` держит наведение принудительно: иначе
+    /// это состояние не попадает ни на один снимок, а показывать его надо.
+    private var hover: Int? = ProcessInfo.processInfo.environment["KEYBOOP_MODEHOVER"].flatMap(Int.init) {
+        didSet { if hover != oldValue { restyle(animated: true) } }
+    }
+    private var hoverPinned: Bool { ProcessInfo.processInfo.environment["KEYBOOP_MODEHOVER"] != nil }
+
+    init(titles: [String]) {
+        self.titles = titles
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.addSublayer(track)
+        track.addSublayer(thumb)
+        for t in titles {
+            let l = CATextLayer()
+            l.string = t
+            l.font = font
+            l.fontSize = font.pointSize
+            l.alignmentMode = .center
+            l.truncationMode = .none
+            labels.append(l)
+            layer?.addSublayer(l)
+        }
+        frame.size = intrinsicContentSize
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private var widths: [CGFloat] {
+        titles.map { ($0 as NSString).size(withAttributes: [.font: font]).width.rounded(.up) + padX * 2 }
+    }
+    private func box(_ i: Int) -> NSRect {
+        NSRect(x: widths.prefix(i).reduce(0, +), y: 0, width: widths[i], height: barH)
+    }
+    override var intrinsicContentSize: NSSize { NSSize(width: widths.reduce(0, +), height: barH) }
+    override var isFlipped: Bool { false }
+
+    // MARK: Краска
+    //
+    // ⚠️ ОДНА СЛИТНАЯ КАПСУЛА, А НЕ ДВЕ КНОПКИ РЯДОМ (автор 17.08). Общая дорожка есть всегда, и
+    // ровно она сообщает, что это ОДНА вещь с двумя положениями, а не два самостоятельных действия.
+    // Скругление половинное, как у сегментных контролов macOS: прямоугольник со скруглением 6-7
+    // читается как кнопка, капсула читается как переключатель.
+    //
+    // ⚠️ ЯРКОСТЬ ДОБАВЛЯТЬ НЕЛЬЗЯ, МОЖНО ТОЛЬКО ОТНИМАТЬ (он же, тогда же). Включённая половина
+    // держит обычную яркость интерфейса, выключенная приглушена. Обратный приём, подсветить
+    // активное, делает из служебного переключателя главный предмет в окне.
+    private func ink(_ alpha: CGFloat) -> CGColor {
+        var c = NSColor.labelColor.withAlphaComponent(alpha).cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            c = NSColor.labelColor.withAlphaComponent(alpha).cgColor
+        }
+        return c
+    }
+
+    private func restyle(animated: Bool) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(!animated)
+        if animated {
+            CATransaction.setAnimationDuration(0.22)
+            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+        }
+        track.frame = bounds
+        track.cornerRadius = bounds.height / 2
+        track.backgroundColor = ink(0.07)
+
+        // ⚠️ БЕГУНОК ВО ВСЮ ВЫСОТУ ДОРОЖКИ, БЕЗ ЗАЗОРА (автор 17.08: «выделение по высоте такое же,
+        // как основная плашка, сейчас оно меньше и смотрится коряво»). Утопленный бегунок это язык
+        // сегментного контрола iOS; в строке заголовка macOS он читался как кнопка внутри кнопки.
+        thumb.frame = box(selected)
+        thumb.cornerRadius = bounds.height / 2
+        thumb.backgroundColor = ink(0.13)
+
+        let scale = window?.backingScaleFactor ?? 2
+        for (i, l) in labels.enumerated() {
+            let b = box(i)
+            let lineH = font.ascender - font.descender
+            l.contentsScale = scale
+            l.frame = NSRect(x: b.minX, y: ((b.height - lineH) / 2).rounded(),
+                             width: b.width, height: lineH.rounded(.up))
+            l.foregroundColor = i == selected ? ink(0.85) : ink(hover == i ? 0.55 : 0.35)
+        }
+        CATransaction.commit()
+    }
+
+    override func layout() {
+        super.layout()
+        restyle(animated: false)
+    }
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        restyle(animated: false)
+    }
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        restyle(animated: false)
+    }
+
+    // MARK: Мышь
+
+    /// ⚠️ БЕЗ ЭТОГО ЩЕЛЧОК УХОДИТ В ПЕРЕТАСКИВАНИЕ ОКНА. Всё, что лежит в строке заголовка, macOS по
+    /// умолчанию считает поверхностью для таскания: нажатие не доходит до контрола, а начинает
+    /// двигать окно. Отсюда же `NonDraggableHostingView` в чужих проектах с тем же приёмом.
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    private func index(at p: NSPoint) -> Int? { titles.indices.first { box($0).contains(p) } }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let i = index(at: convert(event.locationInWindow, from: nil)), i != selected else { return }
+        selected = i
+        onSelect?(i)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds,
+                                       options: [.mouseEnteredAndExited, .mouseMoved,
+                                                 .activeInKeyWindow, .inVisibleRect],
+                                       owner: self))
+    }
+    override func mouseMoved(with event: NSEvent) {
+        guard !hoverPinned else { return }
+        hover = index(at: convert(event.locationInWindow, from: nil))
+    }
+    override func mouseEntered(with event: NSEvent) { mouseMoved(with: event) }
+    override func mouseExited(with event: NSEvent) { if !hoverPinned { hover = nil } }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }

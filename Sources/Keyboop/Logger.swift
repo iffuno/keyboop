@@ -29,10 +29,15 @@ private var kbLogWritesSinceCheck = kbLogCheckEvery
 /// процессов: чужие тайминги, дублирующиеся события, «launched» от одной сборки посреди работы другой.
 /// Хуже того, параллельная работа сама порождает баги (обе слышат хоткей → обе открывают микрофон →
 /// одна получает звук, вторая побитовые нули). Разделяем файлы, чтобы лог всегда описывал ОДИН процесс.
+/// ⚠️ ФАЙЛ ИМЕНУЕТСЯ ПО СУФФИКСУ bundle id, А НЕ ПРОВЕРКОЙ НА «.dev». Раньше здесь стояло «dev или
+/// не dev», и любая ТРЕТЬЯ сборка (проверочная копия агента `ru.keyboop.app.test`) писала в БОЕВОЙ
+/// лог — то есть в тот самый файл, хвост которого человек отправляет нам вместе с отзывом. Диагноз
+/// по чужому логу это худший вид потерянного времени. Прод остаётся `Keyboop.log`, `.dev` остаётся
+/// `Keyboop-dev.log`, всё остальное получает свой файл автоматически.
 let kbLogPath: String = {
-    let dev = (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
-    let name = dev ? "Keyboop-dev.log" : "Keyboop.log"
-    return (NSHomeDirectory() as NSString).appendingPathComponent("Library/Logs/\(name)")
+    let id = Bundle.main.bundleIdentifier ?? "ru.keyboop.app"
+    let suffix = id == "ru.keyboop.app" ? "" : "-" + (id.split(separator: ".").last.map(String.init) ?? "x")
+    return (NSHomeDirectory() as NSString).appendingPathComponent("Library/Logs/Keyboop\(suffix).log")
 }()
 /// Одноразовое предупреждение в лог, если рядом крутится вторая сборка Keyboop (см. kbLogPath).
 private let kbLogPathOnce: Void = {

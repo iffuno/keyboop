@@ -89,6 +89,11 @@ enum L10n {
         "sec.updates":    [.ru: "Обновления",   .en: "Updates"],
         "sec.about":      [.ru: "О программе",   .en: "About"],
 
+        // Переключатель режима окна настроек (над списком разделов). «Основное» — то, что нужно
+        // обычному человеку, «Все» — весь список без изъятий.
+        // Слово «Pro» одинаково в обоих языках (решение автора 11.08): короткого и понятного
+        // русского эквивалента не нашлось, а смысл поясняет подпись под тумблером.
+
         // Быстрые действия по правому клику и пауза (задача 21, 05.08.2026)
         "quick.title":    [.ru: "Быстрое действие правым кликом", .en: "Quick action on right click"],
         "quick.sub":      [.ru: "Левый клик по значку открывает меню, правый сразу делает выбранное", .en: "Left click opens the menu, right click does the chosen thing at once"],
@@ -193,6 +198,9 @@ enum L10n {
         "clip.gone":  [.ru: "Запись не открывается", .en: "The recording cannot be opened"],
         "clip.rate":  [.ru: "Скорость воспроизведения", .en: "Playback speed"],
         "paste.section":  [.ru: "ВСТАВКА ИЗ БУФЕРА", .en: "PASTING FROM THE CLIPBOARD"],
+        // Заголовок над «Исправлять опечатки» и «Две заглавные подряд»: обе правят текст, а не
+        // раскладку, поэтому и переехали сюда из «Переключения» (автор 11.08).
+        "fix.section":    [.ru: "ПРАВКА ТЕКСТА", .en: "TEXT FIXES"],
         "paste.plain":    [.ru: "Вставлять без форматирования", .en: "Paste without formatting"],
         "paste.plainSub": [.ru: "Текст ляжет шрифтом того места, куда вставляете",
                            .en: "The text takes on the style of where you paste it"],
@@ -226,10 +234,10 @@ enum L10n {
         "tr.sound":       [.ru: "Звук перевода", .en: "Translation sound"],
         "tr.soundVol":    [.ru: "Громкость звука", .en: "Sound volume"],
         "sound.keyboopTr": [.ru: "Keyboop", .en: "Keyboop"],   // звук ПЕРЕВОДА
-        "switch.live":    [.ru: "Исправлять не дожидаясь пробела", .en: "Fix without waiting for a space"],
+        "switch.live":    [.ru: "Исправлять на лету", .en: "Fix as you type"],
         // Подпись переписана вместе со сменой дефолта на ВКЛ (21.07): пометка «(агрессивно)» пугала
         // ровно там, где тумблер теперь включён из коробки. Объясняем пользу, а не пугаем.
-        "switch.liveSub": [.ru: "Не ждать пробела: чиню прямо посреди слова, как только сочетание стало невозможным в этом языке", .en: "Don’t wait for the space: I fix mid-word as soon as the combo becomes impossible in this language"],
+        "switch.liveSub": [.ru: "Не ждать пробела: чиню посреди слова. В браузерах и Slack жду пробел", .en: "Don’t wait for the space: I fix mid-word. In browsers and Slack I wait"],
         "switch.dev":     [.ru: "Режим для разработчиков", .en: "Mode for developers"],
         "switch.devSub":  [.ru: "Бережёт код: одиночные буквы и короткие сочетания (переменные, команды) не трогаем нигде. В IDE и терминалах авто выключено целиком.",
                            .en: "Protects code: single letters and short combos (variables, commands) are left alone everywhere. In IDEs and terminals auto-switch is fully off."],
@@ -316,6 +324,12 @@ enum L10n {
         "hkrec.warn.ours": [.ru: "Это сочетание у нас уже занято: %@. Две функции на одну комбинацию не уживутся.",
                             .en: "We already use this one for %@. Two actions on one shortcut never ends well."],
         "hkrec.cancel":   [.ru: "Отмена", .en: "Cancel"],
+        "case.title":  [.ru: "Менять регистр выделенного", .en: "Change case of the selection"],
+        "case.sub":    [.ru: "«телефон» становится «ТЕЛЕФОН», второе нажатие возвращает обратно",
+                        .en: "«phone» becomes «PHONE», pressing again brings it back"],
+        "case.help":   [.ru: "Выделите текст и нажмите сочетание: всё выделенное станет заглавным, независимо от того, что там было. Если оно уже заглавное целиком, следующее нажатие опустит его в строчные, так что одна комбинация работает в обе стороны и помнить ничего не нужно. Задумано для заголовков, титров и типографики, поэтому работает и с несколькими строками сразу. Ограничение одно: до 5000 символов за раз, чтобы случайное «Выделить всё» не подняло в верхний регистр весь документ. В программах, которые не отдают выделение системе (Electron, веб), текст читается через буфер обмена и возвращается в него ровно таким, каким был. По умолчанию сочетание не назначено.",
+                        .en: "Select some text and press the shortcut: everything selected becomes upper case, whatever it was before. If it is already all upper case, the next press takes it down to lower case, so one shortcut works both ways and there is nothing to remember. It is meant for headings, titles and typography, so it works across several lines at once. There is one limit: 5000 characters at a time, so that an accidental «Select All» cannot shout a whole document. In apps that do not hand their selection to the system (Electron, web) the text is read through the clipboard and the clipboard is put back exactly as it was. No shortcut is assigned by default."],
+        "case.assign": [.ru: "Сочетание", .en: "Shortcut"],
         "hkrec.what.switch": [.ru: "исправление раскладки по хоткею", .en: "fix layout by hotkey"],
         "hkrec.what.voice":  [.ru: "голосовой набор", .en: "dictation"],
         "hkrec.what.translate": [.ru: "перевод выделенного", .en: "translate selection"],
@@ -406,10 +420,15 @@ enum L10n {
         // Заголовок переписан 28.07 по прямому вопросу из репорта #31: «Пункт "стрелка отменяет
         // переключение" — это про какую стрелку речь?». Старая формулировка не отвечала ни на
         // «какая стрелка», ни на «переключение чего», и у строки вдобавок не было подписи вовсе.
-        "switch.arrows":  [.ru: "Стрелки сбрасывают набранное слово",
-                           .en: "Arrow keys drop the current word"],
-        "switch.arrowsSub": [.ru: "Нажали стрелку курсора — Keyboop забывает слово, которое вы печатали, и переключать его уже не будет. Удобно, если вы часто правите текст, двигая курсор",
-                             .en: "Press a cursor arrow and Keyboop forgets the word you were typing, so it will not switch it any more. Handy if you often move the caret while writing"],
+        // ⚠️ ВЕРНУЛИ ПРЕЖНЕЕ НАЗВАНИЕ (автор 13.08.2026: «раньше было нормально — стрелки отменяют
+        // переключение, с чего вдруг переименовали»). Формулировка «сбрасывают набранное слово»
+        // описывала НАШУ внутреннюю механику (буфер набранного), а не то, что человек видит.
+        // Человек видит одно: нажал стрелку — слово не переключилось. Название настройки обязано
+        // говорить о результате, а не о том, как он устроен внутри.
+        "switch.arrows":  [.ru: "Стрелки отменяют переключение",
+                           .en: "Arrow keys cancel the switch"],
+        "switch.arrowsSub": [.ru: "Нажали стрелку курсора — и слово, которое вы печатали, переключаться уже не будет. Удобно, если вы часто правите текст, двигая курсор",
+                             .en: "Press a cursor arrow and the word you were typing will not be switched any more. Handy if you often move the caret while writing"],
         "switch.soundOn": [.ru: "Звук при переключении", .en: "Sound on switch"],
         "switch.sound":   [.ru: "Звук", .en: "Sound"],
         "switch.soundVol":[.ru: "Громкость", .en: "Volume"],
@@ -487,6 +506,8 @@ enum L10n {
         // Обещание, сказанное двумя разными числами в двух местах, перестаёт быть обещанием.
         "priv.body2":     [.ru: "В сеть Keyboop выходит по четырём поводам, и три из них начинаешь ты: скачать языковую модель, открыть сайт или телеграм из меню, отправить отзыв (уходит ровно то, что видно в окне отправки). Четвёртый — проверка обновлений: она шлёт только твой IP и номер версии, как любой заход на сайт. Ни буквы из набранного или надиктованного. Всё выключается в Настройках → Обновления.",
                            .en: "Keyboop goes online for four reasons, and you start three of them: downloading a voice model, opening the site or Telegram from the menu, sending feedback (only what you see in the send window goes out). The fourth is the update check: it sends your IP and version number, the same as visiting any website. Not a letter of what you typed or dictated. All of it can be turned off in Settings → Updates."],
+        "priv.guard":     [.ru: "Пока мгновенное переключение висит на 🌐, рядом работает второй процесс с тем же именем — он сторожит одну-единственную вещь. Чтобы клавиша переключала язык, её системное действие приходится отключить, и вернуть его обязаны мы. Если Keyboop завершится аварийно, сделать это сам он уже не сможет, поэтому за него это делает сторож: он ждёт, возвращает клавишу и уходит. В сеть не ходит, ввод не читает, вашего в нём нет ничего.",
+                           .en: "While instant switching is bound to 🌐, a second process with the same name runs alongside — it guards exactly one thing. For the key to switch languages, its system action has to be turned off, and restoring it is on us. If Keyboop exits abnormally it can no longer do that itself, so the guard does it instead: it waits, restores the key and leaves. It never goes online, never reads your input, and holds nothing of yours."],
         "priv.update":    [.ru: "Обновления — на keyboop.com", .en: "Updates — at keyboop.com"],
         "priv.foot":      [.ru: "Спокойно. Всё остаётся на твоём Mac.", .en: "Calm. It all stays on your Mac."],
         "gen.title":      [.ru: "Общие", .en: "General"],
@@ -526,6 +547,14 @@ enum L10n {
         "is.shadow.inputSrc":[.ru: "системную смену языка", .en: "the system's language switch"],
         "is.shadow.caps": [.ru: "Caps Lock (заглавные)", .en: "Caps Lock (capitals)"],
         "is.shadow.globe":[.ru: "системное действие клавиши 🌐", .en: "the 🌐 key's system action"],
+        // ОДНА КОМБИНАЦИЯ НА ДВА ДЕЙСТВИЯ (отзыв #134). Формулируем через СИМПТОМ, а не через
+        // термин: человек пришёл с «переключение тормозит», а не с «у меня конфликт хоткеев», и
+        // должен узнать в тексте свою жалобу.
+        "clash.title":    [.ru: "Одна клавиша на два действия",
+                           .en: "One key, two actions"],
+        "clash.body":     [.ru: "На одно сочетание назначены %@ и %@. Из-за этого каждое нажатие ждёт, удержание это или короткое нажатие, и переключение кажется медленным. Дайте одному из них другую клавишу.",
+                           .en: "The same shortcut runs %@ and %@. Every press has to wait and see whether you are holding or tapping, which makes switching feel slow. Give one of them another key."],
+        "clash.open":     [.ru: "Открыть настройки", .en: "Open settings"],
         "is.busy.title":  [.ru: "Комбинация уже занята", .en: "Shortcut already taken"],
         "is.busy.body":   [.ru: "На неё в Keyboop назначено: %@. Выберите другую — иначе два действия подрались бы за одно нажатие.",
                            .en: "In Keyboop it's already used for: %@. Pick another one — otherwise two actions would fight over one press."],
@@ -533,20 +562,28 @@ enum L10n {
         "is.busy.voice":  [.ru: "голосовой набор", .en: "voice typing"],
         "is.busy.translate":[.ru: "перевод выделенного", .en: "translating the selection"],
         "is.busy.instant":[.ru: "мгновенная смена языка", .en: "instant language switch"],
+        "is.busy.snippet":[.ru: "список сниппетов", .en: "the snippet picker"],
+        "is.busy.paste":  [.ru: "вставка без форматирования", .en: "paste without formatting"],
+        "is.busy.case":   [.ru: "смена регистра", .en: "changing the case"],
+        "is.busy.snippetNoFree":[.ru: "все готовые сочетания уже заняты другими функциями. Назначьте своё через «Назначить свою…».",
+                                 .en: "every ready-made shortcut is already taken by another function. Set your own via «Set your own…»."],
         "is.noShift":     [.ru: "Shift не подойдёт: он нажимается перед каждой заглавной буквой, и язык начнёт переключаться сам собой. Выберите другую клавишу.",
                            .en: "Shift will not work: you press it before every capital letter, so the language would start switching on its own. Pick another key."],
-        "is.beta":        [.ru: "Бета: функция новая, перехватывает системные комбинации. Если заметите странности — напишите через «Сообщить о проблеме…», это очень поможет.",
-                           .en: "Beta: this is new and it intercepts system shortcuts. If anything acts up, tell us via “Report a problem…” — it really helps."],
+        // ОСИРОТЕВШАЯ 🌐 (задача 96): клавиша забрана, а забравшего уже нет.
+        "is.orphan":      [.ru: "Клавиша 🌐 сейчас ничего не делает: её системное действие когда-то отключили ради мгновенного переключения и не вернули. Так бывает после аварийного завершения на старых версиях.",
+                           .en: "The 🌐 key currently does nothing: its system action was switched off for instant layout switching and never restored. This happens after an abnormal exit on older versions."],
+        "is.orphanFix":   [.ru: "Вернуть клавише 🌐 системное действие",
+                           .en: "Restore the 🌐 key’s system action"],
         "is.capsShift":   [.ru: "Заглавные не потерялись: пока Caps Lock меняет язык, настоящий Caps Lock включается по Shift+Caps Lock.",
                            .en: "Capitals aren't lost: while Caps Lock changes the language, real Caps Lock goes on Shift+Caps Lock."],
         // Лампочка Caps Lock как индикатор языка (механизм перенесён из USRU).
-        "led.enable":     [.ru: "Русский — лампочкой на клавиатуре", .en: "Show Russian with the keyboard light"],
+        "led.enable":     [.ru: "Лампочка Caps Lock показывает язык", .en: "Caps Lock light shows the language"],
         "led.enableSub":  [.ru: "Горит — русский, погасла — английский",
                            .en: "Lit means Russian, dark means English"],
-        "led.offHint":    [.ru: "Выключено — лампочка Caps Lock работает как обычно, мы её не трогаем.",
-                           .en: "Off — the Caps Lock light behaves as usual; we don't touch it."],
-        "led.onHint":     [.ru: "Работает: лампочку зажигаем на всех подключённых клавиатурах, у которых она есть, — встроенной и внешних. Она теперь показывает ЯЗЫК, а не капс. Заглавные при этом на месте: если Caps Lock у вас меняет язык — по Shift+Caps Lock, если нет — обычным Caps Lock. Внутри парольного поля macOS запрещает трогать лампочку — там она догонит язык сразу после закрытия поля.",
-                           .en: "Working: we light it on every connected keyboard that has one — built-in and external alike. It now shows the LANGUAGE, not caps. Capitals stay available: if your Caps Lock changes the language, use Shift+Caps Lock; if it doesn't, plain Caps Lock. Inside a password field macOS forbids touching the light — there it catches up as soon as the field closes."],
+        "led.offHint":    [.ru: "Выключено — лампочка работает как обычно, показывает капс.",
+                           .en: "Off — the light behaves as usual and shows caps."],
+        "led.onHint":     [.ru: "Работает на всех клавиатурах, где лампочка есть. Заглавные на месте: если Caps Lock у вас меняет язык — по Shift+Caps Lock.",
+                           .en: "Works on every keyboard that has the light. Capitals stay: if your Caps Lock changes the language, use Shift+Caps Lock."],
         "led.noKb":       [.ru: "Лампочки Caps Lock нет ни на одной подключённой клавиатуре — показывать язык нечем.",
                            .en: "None of the connected keyboards has a Caps Lock light — there's nothing to show the language with."],
         "led.noPerm":     [.ru: "Нужен доступ «Мониторинг ввода» — без него macOS не даёт управлять лампочкой (это ДРУГОЕ разрешение, не то, что для исправления слов). Выдайте его в Настройках системы и перезапустите Keyboop.",
@@ -727,6 +764,86 @@ enum L10n {
         "voice.modeToggle":[.ru: "Нажимать", .en: "Press"],
         "voice.modeHelp": [.ru: "Удерживать: зажали клавишу диктовки, говорите, отпустили — речь распознаётся и текст встаёт в поле. Хорошо для коротких фраз: палец всё время помнит, что запись идёт, и забыть её выключить невозможно.\n\nНажимать: нажали один раз, говорите сколько нужно, нажали второй раз — и появится текст. Хорошо для длинных мыслей и когда руки нужны свободными; следите только за индикатором, запись ждёт второго нажатия сколько угодно.\n\nРазница между ними ровно одна: чем заканчивается запись — отпусканием клавиши или вторым нажатием. Клавиша в обоих случаях та же, что выбрана выше.",
                            .en: "Hold: press and hold the dictation key, speak, let go — your speech is recognised and the text lands in the field. Good for short phrases: your finger keeps reminding you that recording is on, so you cannot forget to stop it.\n\nPress: press once, speak for as long as you need, press again — and the text appears. Good for longer thoughts and when your hands are busy; just watch the indicator, because recording waits for that second press as long as it takes.\n\nThe only difference is what ends the recording: releasing the key, or a second press. The key itself is the same one you picked above."],
+        // ГДЕ ПОКАЗЫВАТЬ ПЛАШКУ (задача 125). Кнопки названы местом, а не механикой: «У курсора» и
+        // «Вверху» человек проверяет глазами за секунду, а «под чёлкой» верно не на каждой машине.
+        // Про чёлку и про внешний монитор сказано в подписи и под «i», где это не мешает выбирать.
+        "voice.hudPlace":  [.ru: "Плашка диктовки", .en: "Dictation badge"],
+        "voice.hudCaret":  [.ru: "У курсора", .en: "At the cursor"],
+        "voice.hudTop":    [.ru: "Вверху", .en: "At the top"],
+        "voice.hudIsland": [.ru: "В вырезе", .en: "In the notch"],
+        // Вырез в панели есть, но macOS сейчас закрыла его режимом совместимости с корпусом
+        // камеры: строка меню становится сплошной полосой, и класть туда нечего. Снаружи это
+        // выглядит как «настройка не работает», поэтому причину называем словами.
+        // ⚠️ КОРОТКО, В ОДНУ СТРОКУ. Подпись под настройкой не переносится (обрезается многоточием
+        // и уходит в toolTip), и первая версия этой фразы обрывалась на «с кам…». Подробности,
+        // включая способ вернуть вырез, живут в help рядом.
+        // КОРНЕВОЙ ЭКРАН ПРОСТОГО РЕЖИМА (15.08.2026). Подписи здесь свои, а не те же, что в Pro:
+        // в разделе строка объясняет настройку соседям по разделу, а на корневом экране она обязана
+        // объяснить сам двигатель человеку, который видит приложение впервые.
+        // ⚠️ СВОИ, КОРОТКИЕ ЗАГОЛОВКИ. Первый живой снимок показал «Автоматическое исправление
+        // расклад…» и «Ручное пе…»: заголовки Pro писались под колонку в 600 пунктов, а корневой
+        // экран вдвое уже. Резать их многоточием нельзя, это главные строки приложения.
+        // ⚠️ ОДНО СЛОВО, И ЭТО НЕ ЛЕНЬ. В строке с хоткеем управляющий элемент широкий (пикер сочетания,
+        // а у диктовки рядом ещё и «Проверить»), заголовку остаётся мало. «Исправить вру…» и «Нач…» на
+        // первом снимке резались оба. Под заголовком карточки «Исправление раскладки» строка
+        // «Сочетание» однозначна и без глагола.
+        "root.manual":   [.ru: "Исправить раскладку", .en: "Fix the layout"],
+        "root.voiceKey": [.ru: "Начать диктовку", .en: "Start dictation"],
+        "root.tr":       [.ru: "Перевести выделенное", .en: "Translate the selection"],
+        // ⚠️ НАЗВАНИЯ РЕЖИМОВ ОПИСЫВАЮТ ОКНО, А НЕ ЧЕЛОВЕКА. «Простой» и «Продвинутый» сообщают
+        // человеку, кто он такой, и первый вариант звучит снисходительно. «Кратко» и «Подробно»
+        // говорят про то, сколько всего показано, и это правда, а не оценка. автор просил подобрать
+        // варианты, этот стоит первым.
+        // Ссылка называет, КУДА уйдём. «Кнопка, показывающая текущий режим» заставляет думать,
+        // а ссылка с названием места читается за раз.
+        // Подпись у тумблера режима. Ровно то, что включает тумблер, и ровно то, что влезает рядом
+        // с ним в колонку сайдбара (замер 16.08: 81 пункт из 122 доступных).
+        "mode.simple":   [.ru: "Основное",  .en: "Basics"],
+        "mode.pro":      [.ru: "Всё",       .en: "Everything"],
+        "root.back":     [.ru: "‹ Основное", .en: "‹ Essentials"],
+        // ⚠️ САМАЯ ВАЖНАЯ ПОДПИСЬ НА ЭКРАНЕ. Человек, который не знает про ручное переключение,
+        // считает, что приложение просто не работает, и удаляет его (случай знакомой автора, 15.08).
+        "root.manualSub":[.ru: "Если не починили сами или ошиблись: нажмите, и последнее слово переключится. Тем же сочетанием вернуть обратно",
+                          .en: "If we missed it or got it wrong: press this and the last word switches. The same combo puts it back"],
+        "root.voiceKeySub":[.ru: "Нажмите и говорите, нажмите ещё раз, чтобы закончить",
+                          .en: "Press and talk, press again to finish"],
+        // ⚠️ Подпись обязана совпадать с РЕЖИМОМ, а по умолчанию он «удерживать». Пока строка была
+        // одна, она обещала второе нажатие всем подряд, в том числе тем, у кого запись кончается
+        // отпусканием клавиши.
+        "root.voiceKeySubHold":[.ru: "Зажмите и говорите, отпустите, чтобы закончить",
+                          .en: "Hold and talk, release to finish"],
+        "root.voiceKeyHelp":[.ru: "Нажмите выбранную клавишу и говорите. Речь распознаётся прямо на этом маке: звук никуда не отправляется, интернет не нужен. Готовый текст печатается туда, где стоит курсор, в любой программе, даже там, где системной диктовки нет.\n\nЗапись заканчивается отпусканием клавиши или вторым нажатием — это выбирается в подробных настройках, в разделе «Голосовой набор». Там же живут язык, модель распознавания и то, что делать с текстом после: убирать ли точку в конце, нажимать ли Enter, добавлять ли пробел.\n\nПока идёт запись, у курсора висит плашка «Слушаю»: по ней видно, что микрофон открыт. Escape обрывает запись, и ничего не вставляется.\n\nПервая диктовка после запуска чуть медленнее остальных: модель загружается в память. Дальше текст появляется почти сразу.",
+                          .en: "Press the key you picked and talk. Speech is recognised on this Mac: the audio goes nowhere and no internet is needed. The finished text is typed wherever the caret is, in any app, including the ones the system dictation ignores.\n\nRecording ends either when you release the key or on a second press — that is a choice in the full settings, under «Voice input». The language, the recognition model and what happens to the text afterwards (strip the final period, press Enter, add a space) live there too.\n\nWhile it records, a «Listening» plaque sits by the caret so you can see the microphone is open. Escape aborts the recording and inserts nothing.\n\nThe first dictation after launch is a little slower: the model is loading into memory. After that the text shows up almost at once."],
+        "root.trHelp":   [.ru: "Выделите текст в поле ввода и нажмите сочетание: перевод встанет ровно на место оригинала. Направление определяется само по тексту, русский становится английским и наоборот.\n\nПереводит сама macOS своим встроенным движком, поэтому текст не уходит в интернет и всё работает без сети. Нужен языковой пакет «русский ↔ английский»: если он не скачан, поставьте его в подробных настройках, в разделе «Перевод». Система разок спросит подтверждение.\n\nРаботает там, где можно печатать. Текст «только для чтения» на веб-странице заменить нечем, поэтому там сочетание промолчит. Нужна macOS 15 или новее.",
+                          .en: "Select text in an editable field and press the shortcut: the translation lands exactly where the original was. The direction is picked from the text itself, Russian becomes English and the other way round.\n\nmacOS translates it with its own built-in engine, so nothing leaves the machine and it works offline. The «Russian ↔ English» language pack is required: if it is not there yet, install it in the full settings, under «Translate». The system will ask for confirmation once.\n\nIt works wherever you can type. Read-only text on a web page has nothing to replace, so there the shortcut stays silent. Requires macOS 15 or newer."],
+        "root.trSub":    [.ru: "Выделите текст и нажмите сочетание: перевод встанет на место оригинала",
+                          .en: "Select some text and press the combo: the translation replaces the original"],
+        // Порядок подстановок: расколдовано, надиктовано.
+        "root.counters": [.ru: "Расколдовано %@ · надиктовано %@", .en: "Unjinxed %@ · dictated %@"],
+        "voice.hudNotchCompat":[.ru: "macOS сейчас закрыла вырез, плашка будет у курсора",
+                            .en: "macOS is hiding the notch right now, so the plaque stays at the cursor"],
+        "voice.hudNoNotch":[.ru: "«В вырезе» доступно на MacBook с чёлкой — на этом экране её нет",
+                            .en: "“In the notch” needs a MacBook with a notch — this screen has none"],
+        // ⚠️ ПОДПИСЬ КОРОТКАЯ НАМЕРЕННО. Первый вариант договаривал и про внешний монитор, и на
+        // рендере обрезался ровно на этой оговорке — то есть строка теряла именно то, ради чего
+        // была длинной. Строки настроек у нас не переносятся, в них помещается одна мысль;
+        // оговорка живёт под «i», где ей и место.
+        "voice.hudPlaceSub":[.ru: "В вырезе — плашка вырастает прямо из чёлки MacBook",
+                             .en: "In the notch — the badge grows straight out of the MacBook notch"],
+        "voice.hudPlaceHelp":[.ru: "У курсора: плашка появляется там, куда пойдёт текст, и её видно, не отрывая глаз от места ввода. Так было всегда.\n\nВверху: плашка встаёт по центру верхней кромки, сразу под чёлкой MacBook. Удобно, если она мешает читать написанное или прыгает вслед за кареткой.\n\nУ внешнего монитора выреза нет, и плашка под несуществующей чёлкой выглядит чужеродно, поэтому на нём она сама возвращается к курсору. На встроенном экране без чёлки (MacBook Air 2020, машины на Intel) верхний режим работает как обычно.\n\nЕсли вырез вдруг пропал и сверху появилась ровная полоса, это режим совместимости macOS с корпусом камеры. Система включает его сама, когда приложение, собранное до macOS 12 или с галочкой «Подогнать под встроенную камеру» в «Свойствах», положит окно за камерой на этом рабочем столе. Возвращается вырез выходом из системы или на новом рабочем столе.",
+                             .en: "At the cursor: the badge appears where the text will go, so you can see it without looking away from what you are typing. This is how it has always worked.\n\nAt the top: the badge sits centred at the top edge, right under the MacBook notch. Handy if it covers what you have written or keeps jumping after the caret.\n\nAn external display has no notch, and a badge under a notch that isn’t there looks out of place, so on one it falls back to the cursor. On a built-in screen without a notch (MacBook Air 2020, Intel machines) the top mode works as usual."],
+        // СЛОВАРЬ ДИКТОВКИ (задачи 13/126).
+        "voice.grpDict":   [.ru: "СЛОВАРЬ", .en: "DICTIONARY"],
+        "voice.dictSub":   [.ru: "Слова, которые распознавание слышит по-своему",
+                            .en: "Words the recogniser keeps hearing its own way"],
+        "voice.dictPhHeard":  [.ru: "напр. кейбуп", .en: "e.g. keyboop"],
+        "voice.dictPhWritten":[.ru: "напр. Keyboop", .en: "e.g. Keyboop"],
+        "voice.dictHint":  [.ru: "Замена ищется с начала слова, поэтому «вайп» → «вайб» чинит и «вайпкодинг». Регистр и «ё» при поиске не важны; если справа написано с заглавной, она сохраняется.",
+                            .en: "A match is looked for at the start of a word, so “vibe” fixes “vibecoding” too. Case and “ё” don’t matter when matching; a capital on the right-hand side is kept as you wrote it."],
+        "voice.noEmDash":   [.ru: "Без длинных тире", .en: "No em dashes"],
+        "voice.noEmDashSub":[.ru: "Заменять «—» на обычный дефис", .en: "Replace “—” with a plain hyphen"],
+        "voice.noEmDashHelp":[.ru: "Распознавание щедро расставляет длинное тире там, где вы сами набрали бы дефис: на клавиатуре этого знака попросту нет. В переписке он вдобавок выдаёт текст, набранный не руками.\n\nМы не выбрасываем знак, а заменяем на дефис: он держит ту же паузу, и без него фраза слипается. Меняются оба длинных знака, «—» и «–»: на слух они не различаются, а модель ставит то один, то другой.",
+                             .en: "Recognition is generous with em dashes where you would have typed a plain hyphen — the key simply isn’t on the keyboard. In chats it also makes text look machine-written.\n\nWe replace rather than drop it: the hyphen holds the same pause, and without it the sentence runs together. Both long dashes are replaced, “—” and “–”: they sound identical and the model uses them interchangeably."],
         "voice.needModelTitle":[.ru: "Нужна модель распознавания", .en: "A recognition model is needed"],
         "voice.needModelBody": [.ru: "Чтобы я понимал речь, скачай модель — один раз, дальше всё локально, без интернета. Открыть настройки?",
                                 .en: "To understand speech I need a model — once, then it’s all local, no internet. Open settings?"],
@@ -777,18 +894,26 @@ enum L10n {
         "voice.outputGroupNote": [.ru: "Эти правила применяются к уже распознанному тексту, поэтому работают одинаково на любой модели.",
                                   .en: "These rules apply to the finished text, so they work the same on every model."],
         "voice.noCapital":[.ru: "Не начинать с заглавной", .en: "No leading capital"],
-        "voice.noCapitalSub": [.ru: "Удобно, когда диктуете в середину уже начатого предложения. Аббревиатуры вроде «МФЦ» не трогаем",
-                               .en: "Handy when you dictate into the middle of a sentence. Acronyms like «NASA» are left alone"],
+        "voice.noCapitalSub": [.ru: "Со строчной начинается каждое предложение, а не только первое. Аббревиатуры вроде «МФЦ» не трогаем",
+                               .en: "Every sentence starts lowercase, not just the first one. Acronyms like «NASA» are left alone"],
+        "voice.noCapitalHelp": [.ru: "Заглавная снимается у первой буквы КАЖДОГО предложения: и в самом начале, и после каждой точки, вопросительного и восклицательного знака. До 0.3.20 правило доставало только первую букву всей диктовки, а остальные предложения оставались с заглавной. Аббревиатуры не трогаем: если следом за первой буквой идёт ещё одна заглавная, слово остаётся как есть, иначе «МФЦ» превратилось бы в «мФЦ». Сокращения с точкой («г.», «ул.», «т. д.») концом предложения не считаются, поэтому «г. Москва» остаётся Москвой.",
+                                .en: "The capital is removed from the first letter of EVERY sentence: at the very start and after every full stop, question mark and exclamation mark. Until 0.3.20 the rule only reached the first letter of the whole dictation and later sentences kept their capitals. Acronyms are left alone: if the second letter is also a capital the word stays as it is, otherwise «NASA» would become «nASA». Abbreviations that end in a period («Mr.», «Dr.», «e.g.») do not count as the end of a sentence."],
         "voice.noPeriod": [.ru: "Не ставить точку в конце", .en: "No trailing period"],
         "voice.noPeriodSub": [.ru: "Для мессенджеров и полей поиска, где точка в конце лишняя. Вопрос, восклицание и многоточие остаются",
                               .en: "For chats and search fields where a final period is noise. Question marks, exclamations and ellipses stay"],
+        "voice.noPeriodHelp": [.ru: "Снимается ТОЛЬКО одиночная точка в самом конце вставляемого текста. Точки внутри предложений остаются на месте, а многоточие, вопросительный и восклицательный знаки не трогаются вовсе: они несут смысл, а многоточие вдобавок часто ставит сама модель на оборванной фразе. Если после снятия точки на конце остались пробелы, они тоже убираются.",
+                               .en: "Only a single period at the very end of the inserted text is removed. Periods inside the text stay where they are, and ellipses, question marks and exclamation marks are never touched: they carry meaning, and an ellipsis is often the model's own mark for an unfinished phrase. Any spaces left at the end after the period is dropped are removed too."],
         "voice.autoEnter": [.ru: "Отправлять сразу", .en: "Send right away"],
         "voice.autoEnterKey": [.ru: "Чем отправлять", .en: "Send with"],
         "voice.autoEnterSub": [.ru: "После вставки нажимается Enter. Для чатов; в текстовом редакторе это будет перенос строки, а не отправка",
                                .en: "Enter is pressed after the insert. Meant for chats; in a text editor it will be a line break, not a send"],
+        "voice.autoEnterHelp": [.ru: "Сразу после вставки текста нажимается Enter, как если бы вы нажали его сами. Смысл зависит от того, где вы диктуете: в мессенджере это отправка сообщения, а в текстовом редакторе просто перенос строки. Чем именно нажимать, выбирается ниже: Enter или ⌘Enter, потому что в части чатов отправка висит на втором сочетании. Учтите, что отменить отправку уже нельзя, поэтому в незнакомом месте лучше проверить на безобидной фразе.",
+                                .en: "Enter is pressed right after the text is inserted, exactly as if you pressed it yourself. What that means depends on where you dictate: in a chat it sends the message, in a text editor it is just a line break. Which key to press is chosen below, Enter or ⌘Enter, because some chats put sending on the second one. Keep in mind that a sent message cannot be taken back, so try it on something harmless first."],
         "voice.trailSpace": [.ru: "Пробел после вставки", .en: "Space after the insert"],
         "voice.trailSpaceSub": [.ru: "Чтобы следующая фраза не слиплась с этой. В поле поиска бывает лишним",
                                 .en: "So the next phrase does not stick to this one. In a search field it can be excess"],
+        "voice.trailSpaceHelp": [.ru: "После вставленного текста добавляется один пробел, чтобы следующая продиктованная фраза не слиплась с предыдущей. В полях поиска и в коротких формах он чаще мешает: пробел на конце запроса иногда меняет результат, а иногда просто выглядит небрежно. Поэтому настройка отдельная, а не вшита намертво.",
+                                 .en: "A single space is added after the inserted text so that the next dictated phrase does not stick to the previous one. In search fields and short forms it is usually a nuisance: a trailing space sometimes changes the result and always looks careless. That is why this is a separate setting rather than fixed behaviour."],
         "voice.sound":    [.ru: "Звук записи", .en: "Recording sound"],
         "voice.soundSub": [.ru: "Короткий сигнал в начале и в конце записи",
                           .en: "A short cue when recording starts and stops"],
@@ -803,10 +928,13 @@ enum L10n {
         // Условие, о котором тумблер раньше молчал: на whisper он включался и не делал НИЧЕГО.
         "voice.streamNeedsPk":[.ru: "Нужен движок Parakeet — выберите его в списке моделей выше",
                                .en: "Needs the Parakeet engine — pick it in the model list above"],
+        // ⚠️ ЦИФРА ЗАМЕРЕНА, А НЕ ВЗЯТА ИЗ ОПИСАНИЯ МОДЕЛИ (13.08.2026). Было «~120 МБ»: столько
+        // весит сама модель по карточке, а в каталог приезжает 429 МБ, потому что рядом с .mlmodelc
+        // качается и .mlpackage. Обещать человеку втрое меньший объём и потом занять диск нельзя.
         "voice.streamDlTitle":[.ru: "Скачать модель потокового набора?",
                                .en: "Download the streaming dictation model?"],
-        "voice.streamDlSub": [.ru: "Это отдельная модель (~120 МБ), едет один раз. Без неё потоковый набор не заведётся — пока качается, диктовка работает по-старому.",
-                              .en: "It's a separate model (~120 MB), downloaded once. Streaming won't run without it — meanwhile dictation works the old way."],
+        "voice.streamDlSub": [.ru: "Это отдельная модель (около 430 МБ), едет один раз. Без неё потоковый набор не заведётся, а пока качается, диктовка работает по-старому.",
+                              .en: "A separate model (about 430 MB), downloaded once. Streaming will not run without it, and meanwhile dictation works the old way."],
         "voice.streamDlGo":  [.ru: "Скачать", .en: "Download"],
         "voice.streamDlOk":  [.ru: "Готово — потоковый набор включён. Нажми хоткей диктовки и говори.",
                               .en: "Done — streaming dictation is on. Press the dictation hotkey and talk."],
@@ -885,6 +1013,10 @@ enum L10n {
         "upd.silent":     [.ru: "Ставить сразу, без вопросов", .en: "Install right away, no questions"],
         "upd.silentSub":  [.ru: "Тихо ставит в простое, когда ты отошёл — не дёргая вопросом",
                            .en: "Installs quietly while you're away, without asking"],
+        "upd.betaExistsTitle": [.ru: "Стабильная у вас последняя", .en: "You are on the latest stable"],
+        "upd.betaExistsBody":  [.ru: "Новее есть, но это бета %@, а бета-версии у вас выключены. Включить и поставить? Обратно можно в любой момент, в настройках обновлений.",
+                                .en: "There is something newer, but it is beta %@, and beta versions are off for you. Turn them on and install it? You can switch back any time in the update settings."],
+        "upd.betaExistsYes":   [.ru: "Включить бета-версии", .en: "Turn on betas"],
         "upd.beta":       [.ru: "Ставить бета-версии", .en: "Install beta versions"],
         "upd.betaSub":    [.ru: "Свежие сборки раньше всех, ещё до обкатки",
                            .en: "New builds before everyone else, straight off the bench"],
@@ -897,18 +1029,18 @@ enum L10n {
                            .en: "A beta is the same build everyone will get, just earlier. It usually sits for a day or two until it is clear nothing broke. In exchange you sometimes hit fresh bugs first — reporting them via «Report a problem» helps a lot."],
         "switch.autoHelp": [.ru: "Keyboop следит за набранным словом и, если оно не могло быть набрано в текущей раскладке, переключает его сам. Работает в обе стороны, RU и EN. Если слово нужно оставить как есть, верните его как было, и Keyboop предложит запомнить исключение.",
                             .en: "Keyboop watches the word you are typing and, if it could not have been typed in the current layout, switches it. Works both ways, RU and EN. If a word should stay as is, type it back and Keyboop will offer to remember an exception."],
-        "switch.liveHelp": [.ru: "Обычно слово чинится на границе, по пробелу или Enter. С этой настройкой оно чинится прямо посреди набора, как только сочетание букв стало невозможным в текущей раскладке. Замена происходит в тот же момент, когда вы нажимаете клавишу, поэтому следующий символ в неё не вклинивается.",
-                            .en: "Normally a word is fixed at its boundary, on space or Enter. With this on it is fixed mid-word, as soon as the letter combination becomes impossible in the current layout. The replacement happens at the exact moment you press the key, so your next character cannot slip into it."],
-        "switch.devHelp": [.ru: "В коде полно коротких сочетаний, которые выглядят как опечатка, но опечаткой не являются: имена переменных, флаги, команды. Режим оставляет их в покое — одиночные буквы и короткие сочетания не трогаются. В программах из списка исключений он не нужен, там правило и так отключено.",
-                           .en: "Code is full of short sequences that look like typos but are not: variable names, flags, commands. This mode leaves them alone — single letters and short sequences are not touched. Apps on your exceptions list do not need it, the rule is already off there."],
+        "switch.liveHelp": [.ru: "Обычно слово чинится на границе, по пробелу или Enter. С этой настройкой оно чинится прямо посреди набора, как только сочетание букв стало невозможным в текущей раскладке. Замена происходит в тот же момент, когда вы нажимаете клавишу, поэтому следующий символ в неё не вклинивается.\n\nГде это НЕ работает, и почему честнее сказать сразу: в приложениях на Chromium и Electron. Это Chrome, Arc, Opera, Яндекс.Браузер, Brave, Vivaldi, а также VS Code, Slack, Notion, Obsidian, Figma, Discord, Linear, Signal и Spotify. Там наша вставка текста ненадёжна: удаление доходит, а вставка нет, и слово пропадает совсем. Стёртое слово хуже непочиненного, поэтому посреди набора мы там ничего не трогаем, а чиним по пробелу, как обычно. В остальных программах настройка работает.",
+                            .en: "Normally a word is fixed at its boundary, on space or Enter. With this on it is fixed mid-word, as soon as the letter combination becomes impossible in the current layout. The replacement happens at the exact moment you press the key, so your next character cannot slip into it.\n\nWhere it does NOT work, and it is fairer to say so up front: apps built on Chromium and Electron. That is Chrome, Arc, Opera, Brave, Vivaldi and Yandex Browser, plus VS Code, Slack, Notion, Obsidian, Figma, Discord, Linear, Signal and Spotify. Our text insertion is unreliable there: the deletion lands, the insertion does not, and the word disappears entirely. A word eaten is worse than a word left alone, so mid-word we touch nothing there and fix on the space as usual. Everywhere else the setting works."],
+        "switch.devHelp": [.ru: "В коде полно коротких сочетаний, которые выглядят как опечатка, но опечаткой не являются: имена переменных, флаги, команды. Поэтому в редакторах кода и в IDE авто-переключение выключено целиком, а в остальных программах Keyboop работает как обычно. Раньше этот режим глушил короткие слова ВЕЗДЕ, и «не», «по», «и», «я» переставали чиниться в мессенджерах и заметках; теперь осторожность живёт там, где она нужна, а не поверх всей системы. Программы, где нужна та же осторожность, добавляются в «Исключения» с мягким режимом.",
+                           .en: "Code is full of short sequences that look like typos but are not: variable names, flags, commands. So in code editors and IDEs the automatic switching is off entirely, while in every other app Keyboop works as usual. This mode used to mute short words EVERYWHERE, so «не», «по», «и», «я» stopped being fixed in chats and notes too; now the caution lives where it is needed instead of across the whole system. Add any other app that needs the same caution to «Exceptions» in soft mode."],
         "switch.chatter":    [.ru: "Глотать дребезг клавиши", .en: "Swallow key chatter"],
         "switch.chatterSub": [.ru: "Одно нажатие, одна буква", .en: "One press, one letter"],
         "switch.chatterHelp": [.ru: "У изношенных клавиатур контакт иногда срабатывает дважды с одного нажатия, и в тексте появляется лишняя буква. Мы отбрасываем повтор той же клавиши, если он пришёл быстрее чем через 30 миллисекунд. Настоящие двойные буквы это не задевает: даже у быстрых машинисток на «сс» в «ссоре» уходит вдвое больше. Зажатую клавишу тоже не трогаем, автоповтор работает как обычно. Сочетания с ⌘, ⌃ и ⌥ проходят мимо фильтра целиком: пропущенная команда заметна сильнее, чем лишняя. Выключено по умолчанию, потому что это перехват ввода, а не исправление текста.",
                                .en: "On worn keyboards a contact sometimes fires twice from a single press, and an extra letter shows up. We drop a repeat of the same key if it arrives sooner than 30 milliseconds. Genuine double letters are untouched: even fast typists need twice that for the pair in “class”. Holding a key is unaffected too, autorepeat works as usual. Shortcuts with ⌘, ⌃ or ⌥ bypass the filter entirely: a command that never fired hurts more than one that fired twice. Off by default, because this intercepts your typing rather than correcting text."],
         "switch.typoFix":    [.ru: "Исправлять опечатки", .en: "Fix typos"],
-        "switch.typoFixSub": [.ru: "«тедефон» превращается в «телефон»", .en: "“tlephone” becomes “telephone”"],
-        "switch.typoFixHelp":[.ru: "Исправляются два случая: частая опечатка из проверенного списка («извените» → «извините») и промах по соседней клавише или перестановка двух букв («тедефон» → «телефон»). Слово меняется, только если словарное слово получилось ровно одно; если подходящих несколько, мы не гадаем и не трогаем ничего. Выключено по умолчанию, потому что это правка самого текста, а не раскладки. ⚠️ Профессиональное слово, которого нет в словаре, программа тоже может исправить. Верните его как было, и она это запомнит. Ваши исключения и выученные слова не трогаются вовсе.",
-                              .en: "Two cases get corrected: a common typo from a vetted list (“recieve” → “receive”), and a slip onto a neighbouring key or two letters swapped (“tlephone” → “telephone”). A word changes only when exactly one dictionary word fits; when several do, we do not guess and change nothing. Off by default, because this edits the text itself rather than the layout. ⚠️ A professional word missing from the dictionary can be corrected too. Put it back the way you had it and the app remembers. Your exceptions and learned words are never touched."],
+        "switch.typoFixSub": [.ru: "«тедефон» превращается в «телефон», а «пРИВЕТ» в «Привет»", .en: "“tlephone” becomes “telephone”, and “hELLO” becomes “Hello”"],
+        "switch.typoFixHelp":[.ru: "Исправляются два случая: частая опечатка из проверенного списка («извените» → «извините») и промах по соседней клавише или перестановка двух букв («тедефон» → «телефон»). Слово меняется, только если словарное слово получилось ровно одно; если подходящих несколько, мы не гадаем и не трогаем ничего. Выключено по умолчанию, потому что это правка самого текста, а не раскладки. ⚠️ Профессиональное слово, которого нет в словаре, программа тоже может исправить. Верните его как было, и она это запомнит. Ваши исключения и выученные слова не трогаются вовсе. Сюда же попадает след Caps Lock: слово, у которого первая буква строчная, а все остальные заглавные («пРИВЕТ»), разворачивается обратно в «Привет».",
+                              .en: "Two cases get corrected: a common typo from a vetted list (“recieve” → “receive”), and a slip onto a neighbouring key or two letters swapped (“tlephone” → “telephone”). A word changes only when exactly one dictionary word fits; when several do, we do not guess and change nothing. Off by default, because this edits the text itself rather than the layout. ⚠️ A professional word missing from the dictionary can be corrected too. Put it back the way you had it and the app remembers. Your exceptions and learned words are never touched. The Caps Lock signature belongs here too: a word whose first letter is lower case and all the rest upper case (“hELLO”) is turned back into “Hello”."],
         "switch.twoCaps":    [.ru: "Две заглавные подряд", .en: "Two leading capitals"],
         "switch.twoCapsSub": [.ru: "«КОгда» превращается в «Когда»", .en: "“WHen” becomes “When”"],
         "switch.twoCapsHelp": [.ru: "Так выходит, когда Shift отпущен на миг позже, чем нажата вторая буква. Keyboop чинит только этот случай: ровно две первые буквы заглавные, третья строчная, и в слове одни буквы. Слова целиком заглавными, вроде ГОСТ или USB, а также короткие «ДА» и «ОК» не трогаются. Выключено по умолчанию, потому что это правка самого текста, а не раскладки.",
@@ -919,8 +1051,8 @@ enum L10n {
         // маленьком поповере путает ровно того, кто уже не разобрался, а именно ради него он и писан.
         "switch.manualHelp": [.ru: "Переключает последнее набранное слово в другую раскладку, ждать пробела не нужно. Если Keyboop переключил слово сам и зря, эта же комбинация вернёт его как было. А когда ничего не набрано, просто меняется язык, как обычным переключателем раскладки.",
                               .en: "Flips the last word you typed into the other layout, no need to wait for a space. If Keyboop flipped a word by itself and got it wrong, the same combo puts it back. And when nothing is typed, it simply switches the language, like the system layout switcher."],
-        "switch.arrowsHelp": [.ru: "Речь о четырёх клавишах курсора. Пока вы печатаете слово, Keyboop держит его в памяти, чтобы починить. Стрелка означает, что курсор уехал и слово, скорее всего, уже не то — поэтому память сбрасывается. Выключите, если часто двигаете курсор посреди слова и хотите, чтобы починка всё равно сработала.",
-                              .en: "This is about the four cursor keys. While you type a word, Keyboop keeps it in memory so it can fix it. An arrow means the caret moved and the word is probably no longer the one you meant, so the memory is dropped. Turn this off if you often move the caret mid-word and still want the fix."],
+        "switch.arrowsHelp": [.ru: "Речь о четырёх клавишах курсора. Пока вы печатаете слово, Keyboop держит его в памяти, чтобы починить. Стрелка означает, что курсор уехал и слово, скорее всего, уже не то — поэтому память сбрасывается. Выключите, если часто двигаете курсор посреди слова и хотите, чтобы починка всё равно сработала.\n\nВажная мелочь, о которой не говорит ни заголовок, ни подпись: вместе с памятью пропадает цель и у ручного сочетания. Нажали стрелку, потом ⌥⇧ — язык сменится, но слово уже не починится, потому что чинить нечего.",
+                              .en: "This is about the four cursor keys. While you type a word, Keyboop keeps it in memory so it can fix it. An arrow means the caret moved and the word is probably no longer the one you meant, so the memory is dropped. Turn this off if you often move the caret mid-word and still want the fix.\n\nOne detail neither the title nor the subtitle mentions: the manual shortcut loses its target too. Press an arrow, then ⌥⇧, and the language will switch but the word will not be fixed — there is nothing left to fix."],
         "hist.lockHelp":  [.ru: "Окно истории будет спрашивать пароль при каждом открытии. Сам пароль хранится в связке ключей macOS, а записи шифруются — мы их не видим и восстановить не сможем. Защита от того, кто сядет за ваш незаблокированный Mac, а не от кражи диска.",
                            .en: "The history window will ask for a password every time it opens. The password lives in the macOS keychain and the entries are encrypted — we cannot see them and cannot recover them. This guards against someone sitting down at your unlocked Mac, not against a stolen disk."],
         "is.enableHelp":  [.ru: "Обычная смена языка в macOS идёт с задержкой: система ждёт, не окажется ли нажатие началом сочетания. Мы перехватываем клавишу раньше и меняем язык сразу. Набранное при этом не трогаем — это именно смена раскладки, а не починка слова.",

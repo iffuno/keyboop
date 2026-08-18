@@ -155,6 +155,33 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + pendingTTL, execute: work)
     }
 
+    /// ОТКАЗ: человек закрыл плашку крестиком (отзыв #125, 11.08.2026).
+    ///
+    /// Раньше крестик значил «спрятать»: обработчик установки оставался у нас, через `pendingTTL`
+    /// страховка его отпускала, и обновление приезжало при следующем выходе. С точки зрения человека
+    /// это «я отказался, а оно всё равно поставилось» — и он прав. Для программы, которая читает
+    /// клавиатуру, доверие дороже свежести версии.
+    ///
+    /// Что делаем: обработчик НЕ отпускаем (пока он у нас, Sparkle не поставит апдейт при выходе), а
+    /// страховку от вечной парковки перезаводим на сутки вместо десяти минут. То есть отказ работает
+    /// как отказ, но расписание не умирает: через сутки цикл оживёт и предложит снова.
+    ///
+    /// ⚠️ Именно перезавести, а не отменить. Ветка «держим обработчик без страховки» уже стоила нам
+    /// людей, застрявших на 0.2.69 навсегда, и об этом написано этажом выше.
+    func declinePending() {
+        guard pendingInstall != nil else { return }
+        kbLog("updater: \(pendingVersion) отклонён крестиком — при выходе НЕ ставим, вернусь через сутки")
+        pendingSafety?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.pendingInstall != nil else { return }
+            self.pendingInstall = nil
+            kbLog("updater: сутки после отказа прошли — перезавожу расписание обновлений")
+            self.controller?.updater.resetUpdateCycle()
+        }
+        pendingSafety = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 24 * 3600, execute: work)
+    }
+
     /// Поставить отложенный апдейт сейчас (левая кнопка плашки, «Обновить»).
     ///
     /// Обработчик установки у нас на руках в ЛЮБОМ режиме (см. делегат), поэтому ставим и
@@ -243,8 +270,46 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
         case Int(SPUNoUpdateFoundReason.hardwareDoesNotSupportARM64.rawValue): why = "версия только для Apple Silicon"
         default:                                                             why = "причина не указана"
         }
-        let latest = (e.userInfo[SPULatestAppcastItemFoundKey] as? SUAppcastItem)?.displayVersionString
+        let latestItem = e.userInfo[SPULatestAppcastItemFoundKey] as? SUAppcastItem
+        let latest = latestItem?.displayVersionString
         kbLog("updater: апдейта нет — \(why)\(latest.map { ", свежайшая в фиде \($0)" } ?? "")")
+        offerBetaIfNewerExists(latestItem)
+    }
+
+    /// «У ВАС ПОСЛЕДНЯЯ ВЕРСИЯ», КОГДА НОВЕЕ ЕСТЬ, НО ОНА БЕТА (задача 107).
+    ///
+    /// Это не баг, но выглядит багом, и в отзыве это видно построчно: человек честно нажимает
+    /// «Проверить обновления», Sparkle честно отвечает «установлена последняя версия», а на сайте в
+    /// это же время лежит версия новее. Он делает единственный доступный вывод: обновления сломаны.
+    /// Правда же в том, что новее только бета, а бета-канал у него выключен, и об этом ему никто не
+    /// сказал ни словом.
+    ///
+    /// Поэтому после ответа «нечего ставить» мы смотрим, что за версия лежит в фиде самой свежей.
+    /// Если она НОВЕЕ нашей, значит существует сборка, которую мы сознательно не берём, и человеку
+    /// про неё говорим сами, вместе с кнопкой включить бета-канал.
+    ///
+    /// ⚠️ ЧЕСТНО ПРО ГРАНИЦУ ЗНАНИЯ. Отдаёт ли Sparkle в `SPULatestAppcastItemFoundKey` сборку из
+    /// ЧУЖОГО канала или уже отфильтрованную, из документации не следует, а проверить это можно
+    /// только на живой бете новее нашей: сейчас такой в фиде нет. Код написан так, что оба ответа
+    /// безопасны. Пришла версия новее — говорим о ней. Пришла отфильтрованная (не новее) — молчим,
+    /// как молчали раньше, и ни одного ложного сообщения не появляется. Проверить на следующем же
+    /// бета-релизе: `Tools/updateprobe` умеет притвориться клиентом любой версии.
+    private func offerBetaIfNewerExists(_ latest: SUAppcastItem?) {
+        guard !AppSettings.shared.betaChannel else { return }   // человек и так на бете, говорить не о чем
+        guard let latest, let ver = latest.displayVersionString as String? else { return }
+        let mine = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? ""
+        guard ver.compare(mine, options: .numeric) == .orderedDescending else { return }
+        kbLog("updater: в фиде есть \(ver), новее нашей \(mine), но бета-канал выключен — предлагаю включить")
+        DispatchQueue.main.async {
+            AppBanner.shared.show(
+                title: L10n.t("upd.betaExistsTitle"),
+                body: String(format: L10n.t("upd.betaExistsBody"), ver),
+                actions: [.init(title: L10n.t("upd.betaExistsYes"), coral: true) {
+                    AppSettings.shared.betaChannel = true
+                    NotificationCenter.default.post(name: .updaterStatusChanged, object: nil)
+                    UpdaterController.shared.checkNow()
+                }])
+        }
     }
 
     @objc(updater:willDownloadUpdate:withRequest:)

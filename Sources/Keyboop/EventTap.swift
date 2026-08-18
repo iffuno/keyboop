@@ -20,6 +20,8 @@ protocol EventTapHandler: AnyObject {
     func handleVoiceBegin()
     func handleVoiceEnd()
     func handleTranslateHotkey()
+    /// Смена регистра выделенного текста (задача 122).
+    func handleCaseHotkey()
 }
 
 /// Глобальный наблюдатель клавиатуры (CGEventTap, АКТИВНЫЙ `.defaultTap` — нужен Accessibility,
@@ -98,6 +100,8 @@ final class EventTap {
     private var modkeyArmed = false
     private var lastModTap: CFTimeInterval = 0
     private var otherKeyBetweenTaps = false
+    /// Разовая диагностика «сосед LANG1» уже написана (см. caps-режим в keyDown).
+    private var loggedLang1Neighbor = false
     private var voiceActive = false
     /// Взвод жеста «диктовка по одиночному модификатору» в режиме переключения. Нужен ровно затем
     /// же, зачем `fnArmed` и `modkeyArmed`: в момент НАЖАТИЯ модификатор всегда выглядит одиночным,
@@ -208,7 +212,14 @@ final class EventTap {
         // клавиши печатаются. Глотаем ТОЛЬКО эти события, всё остальное проходит насквозь.
         // ВАЖНО: возврат tapCreate — это ЖИВОЙ детектор доступа: не-nil ровно тогда, когда
         // Accessibility реально выдан СЕЙЧАС (без TCC-кэша, в отличие от залипающего AXIsProcessTrusted).
-        let mask = bit(.keyDown) | bit(.flagsChanged) | bit(.keyUp)
+        // ⚠️ ТИП 14 (NX_SYSDEFINED) НУЖЕН НЕ ДЛЯ ПЕРЕХВАТА, А ДЛЯ ОТМЕНЫ ВЗВОДА (автор 16.08).
+        // Клавиши громкости, яркости, подсветки и плеера НЕ приходят как `.keyDown`: система шлёт
+        // их отдельным типом. Из-за этого «⌥ + F12» мы видели как одинокий ⌥: нажали, отпустили,
+        // между ними для нас ничего не было, и запускалась диктовка ровно в тот момент, когда
+        // человек хотел всего лишь прибавить звук. Событие пропускаем насквозь, нам нужен только
+        // сам факт «при зажатом модификаторе что-то нажали».
+        let sysDefined = CGEventMask(1) << 14
+        let mask = bit(.keyDown) | bit(.flagsChanged) | bit(.keyUp) | sysDefined
         guard let newTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
             eventsOfInterest: mask, callback: eventTapCallback,
@@ -366,6 +377,25 @@ final class EventTap {
         // Одно сравнение с часами, настройки не читаем (см. `Pause`).
         if Pause.active { return Unmanaged.passUnretained(event) }
         let s = AppSettings.shared
+        // Системная клавиша (громкость/яркость/плеер) при зажатом модификаторе это аккорд, а не тап.
+        // Гасим все взводы ровно как на обычной клавише и НИЧЕГО не глотаем.
+        if type.rawValue == 14 {
+            // ⚠️ ЛОГ ТОЛЬКО НА СМЕНУ СОСТОЯНИЯ (ревью 17.08). Пока условие включало `comboArmed`,
+            // штатный маковский аккорд ⌥⇧+громкость (четверть шага, дефолтный комбо-хоткей у всех)
+            // писал строку на КАЖДОЕ событие, включая автоповтор удержания: десятки одинаковых
+            // строк за один жест, и хвост диагностики в багрепорте вытеснялся мусором. Комбо эта
+            // ветка намеренно не гасит (оно разбирается на отпускании), значит и логировать его
+            // здесь нечего — логируем ровно те взводы, которые сейчас снимем.
+            if modkeyArmed || fnArmed || voiceModArmed {
+                kbLog("жест по модификатору снят: при зажатом модификаторе нажата системная клавиша")
+            }
+            if comboArmed { otherKeyDuringCombo = true }
+            modkeyArmed = false
+            fnArmed = false
+            voiceModArmed = false
+            otherKeyBetweenTaps = true
+            return Unmanaged.passUnretained(event)
+        }
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
             // ДИАГНОСТИКА «под нагрузкой конверсия не срабатывает» (баг-репорт): macOS САМА
@@ -524,8 +554,12 @@ final class EventTap {
             }
             // Диагностика допущения «LANG1 = keyCode 104»: если при активном caps-режиме прилетает
             // сосед по диапазону экзотических кодов — это ремапнутый Caps под другим номером.
+            // ⚠️ ОДИН РАЗ НА ЗАПУСК (ревью 17.08): в диапазон 100…110 попадают обычные F8–F16, и у
+            // человека с «F-клавиши как стандартные» строка писалась на каждый step-over в
+            // отладчике — сотни раз за сессию. Диагностика допущения по определению разовая.
             if s.instantSwitchEnabled, s.instantSwitchMode == "modkey", s.instantSwitchKeyCode == 57,
-               (100...110).contains(Int(keyCode)) {
+               (100...110).contains(Int(keyCode)), !loggedLang1Neighbor {
+                loggedLang1Neighbor = true
                 kbLog("caps-режим: keyDown keyCode=\(keyCode), ожидаем LANG1=\(CapsRemap.lang1KeyCode) — если Caps «молчит», настоящий код таков")
             }
             // Voice hold-хоткей (диктовка) — перехватываем и ГЛОТАЕМ (вкл. autorepeat),
@@ -586,6 +620,15 @@ final class EventTap {
                 let want = relevantMods(CGEventFlags(rawValue: s.plainPasteModifiers))
                 if !want.isEmpty, relevantMods(event.flags) == want {
                     onMain { PlainPaste.paste() }
+                    return swallowDown(keyCode)
+                }
+            }
+            // Смена регистра выделенного. Стоит рядом со вставкой без форматирования и переводом:
+            // все трое работают с выделением/буфером и обязаны решаться ДО раскладочных веток.
+            if s.caseChangeEnabled, keyMatches(keyCode, s.caseChangeKeyCode) {
+                let want = relevantMods(CGEventFlags(rawValue: s.caseChangeModifiers))
+                if !want.isEmpty, relevantMods(event.flags) == want {
+                    onMain { [weak self] in self?.handler?.handleCaseHotkey() }
                     return swallowDown(keyCode)
                 }
             }

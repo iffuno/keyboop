@@ -17,7 +17,12 @@ final class AppBanner {
     private var restX: CGFloat = 0          // x в покое (для свайпа/возврата)
 
     /// Показать баннер. `actions` пусто → инфо-тост. `autoDismiss` > 0 → сам скроется через N сек.
-    func show(title: String, body: String, actions: [Action] = [], autoDismiss: TimeInterval = 0) {
+    /// Что делать, если человек закрыл плашку крестиком. Ставится тем, кто её показал.
+    var onClose: (() -> Void)?
+
+    func show(title: String, body: String, actions: [Action] = [], autoDismiss: TimeInterval = 0,
+              onClose: (() -> Void)? = nil) {
+        self.onClose = onClose
         DispatchQueue.main.async { self.present(title: title, body: body, actions: actions, autoDismiss: autoDismiss) }
     }
 
@@ -261,7 +266,17 @@ final class AppBanner {
         kbLog("баннер: нажата кнопка \(s.tag)\(h == nil ? " — обработчика нет!" : "")")
         dismiss(); h?()
     }
-    @objc private func closeTapped() { kbLog("баннер: закрыт крестиком"); dismiss() }
+    @objc private func closeTapped() {
+        kbLog("баннер: закрыт крестиком")
+        // ⚠️ КРЕСТИК ЭТО ОТВЕТ «НЕТ», А НЕ «СПРЯТАТЬ» (отзыв #125, 11.08.2026). Дословно: «от
+        // обновления нельзя отказаться, даже если нажимаешь крестик, оно устанавливается при
+        // перезапуске. Для приложения, которое имеет доступ к клавиатуре, это очень неприятно».
+        // Он прав, и это вопрос доверия, а не удобства: закрыв окно, человек считает, что сказал
+        // «нет», и обязан получить именно «нет». Кто показал плашку, тот и решает, что значит отказ.
+        let cb = onClose; onClose = nil
+        dismiss()
+        cb?()
+    }
 }
 
 /// Кнопка, реагирующая на ПЕРВЫЙ клик даже когда окно неактивно (.nonactivatingPanel).

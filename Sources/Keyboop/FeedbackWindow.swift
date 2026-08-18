@@ -207,7 +207,7 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         }
         formContent = content
         w.contentView = content
-        w.setContentSize(content.fittingSize)
+        w.setContentSize(content.fittingSize); w.clampToScreen()
     }
 
     /// Экран «отправлено».
@@ -261,7 +261,7 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         doneText.stringValue = L10n.t(hasContact ? "fb.doneWithContact" : "fb.doneNoContact")
         let done = makeDoneContent()
         w.contentView = done
-        w.setContentSize(done.fittingSize)
+        w.setContentSize(done.fittingSize); w.clampToScreen()
         w.makeFirstResponder(nil)
     }
 
@@ -284,7 +284,7 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         mailBtn.isHidden = true
         sendBtn.isEnabled = true
         w.contentView = form
-        w.setContentSize(form.fittingSize)
+        w.setContentSize(form.fittingSize); w.clampToScreen()
     }
 
     @objc private func closeDone() { window?.close() }

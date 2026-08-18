@@ -22,6 +22,13 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
     /// Подписи-приглашения в пустой строке: у списков разный смысл колонок.
     private let phLeft: String
     private let phRight: String
+    /// Моноширинный ли шрифт в ЛЕВОЙ колонке.
+    ///
+    /// ⚠️ У автозамены и сниппетов — да: слева стоит последовательность КЛАВИШ («!ee», «итд»), и
+    /// моноширинный шрифт честно показывает, что важен каждый знак. У словаря диктовки слева
+    /// обычные произнесённые слова, и мониширина превращала бы их в код: «кейбуп» набранное как
+    /// консольная команда выглядит настройкой для программиста, а это список для всех.
+    private let monoLeft: Bool
     /// Можно ли менять порядок строк перетаскиванием.
     ///
     /// ⚠️ ТОЛЬКО У СНИППЕТОВ (автор 10.08). В автозамене порядок не значит ничего: там срабатывает
@@ -54,11 +61,12 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
 
     init(frame frameRect: NSRect, store: PairListStore = SnippetStore.shared,
          phLeft: String = "snip.phTrigger", phRight: String = "snip.phExpansion",
-         allowsReorder: Bool = false) {
+         allowsReorder: Bool = false, monoLeft: Bool = true) {
         self.store = store
         self.phLeft = phLeft
         self.phRight = phRight
         self.allowsReorder = allowsReorder
+        self.monoLeft = monoLeft
         super.init(frame: frameRect)
         rows = store.pairs()
         normalizeTrailing()
@@ -146,7 +154,7 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
         let empty = rows[index].0.isEmpty && rows[index].1.isEmpty
         let isLast = index == rows.count - 1
 
-        let trig = field(mono: true,  value: rows[index].0, id: "trig",
+        let trig = field(mono: monoLeft, value: rows[index].0, id: "trig",
                          placeholder: isLast ? L10n.t(phLeft) : nil)
         let exp  = field(mono: false, value: rows[index].1, id: "exp",
                          placeholder: isLast ? L10n.t(phRight) : nil)

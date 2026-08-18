@@ -51,6 +51,46 @@ enum Changelog {
     }
 
     static let releases: [Release] = [
+        // 0.4 «Axolotl» — СРАЗУ СТАБИЛЬНАЯ, без беты (решение автора 17.08). Обычно крупное уходит
+        // бетой, но эта версия неделю проверялась ревью в четыре измерения, стендами и глазами:
+        // двенадцать подтверждённых дефектов закрыты до релиза, а не после него.
+        Release(version: "0.4",
+            ru: [
+                "Смена регистра выделенного: «телефон» в «ТЕЛЕФОН» и обратно. Выделите текст, нажмите сочетание, второе нажатие возвращает как было. Сочетание по умолчанию не занято: назначьте своё в разделе «Автозамена», блок «Правка текста».",
+                "Лампочка Caps Lock показывает язык. Горит русский, погасла английский, и так на всех подключённых клавиатурах сразу. Выключено по умолчанию: настройка меняет смысл железной лампочки, включать такое молча нельзя. Заглавные при этом на месте.",
+                "Плашка диктовки растёт из чёлки MacBook. Раньше она ходила за курсором и иногда мешала читать написанное. Теперь можно выбрать: у курсора или в вырезе. На мониторе без выреза плашка сама возвращается к курсору.",
+                "Громкость и яркость больше не запускают диктовку. Если на диктовку назначен модификатор, аккорд с системной клавишей считался «жестом» и включал запись. Теперь такие сочетания снимают жест, как обычная клавиша.",
+                "Выбранная раскладка запоминается, даже если их у вас три. Раньше выбор жил до перезапуска, и человек с «Русской ПК» после каждого запуска получал обычную «Русскую».",
+                "Настройки перебраны целиком, до последнего отступа. Простой экран при первом запуске, переключатель режимов в строке заголовка, одинаковые поля в строках, высота окна по содержимому, полоса прокрутки только там, где есть что прокручивать.",
+            ],
+            en: [
+                "Change the case of a selection: «phone» becomes «PHONE» and back. Select the text, press the shortcut, press it again to undo. No shortcut is taken by default: assign your own under «Snippets», the «Text editing» block.",
+                "The Caps Lock light shows the language. Lit means Russian, dark means English, on every connected keyboard at once. Off by default: this changes what a hardware light means, and that is not something to switch on silently. Capitals stay available.",
+                "The dictation panel grows out of the MacBook notch. It used to follow the caret and sometimes covered what you were reading. Now you choose: by the caret or in the notch. On a display without a notch it returns to the caret by itself.",
+                "Volume and brightness keys no longer start dictation. With dictation on a modifier, a chord with a system key counted as a gesture and began recording. Such chords now cancel the gesture, like any ordinary key.",
+                "The app remembers which of your layouts is yours, even if you have three. The choice used to live until the next restart, so someone on «Russian PC» got plain «Russian» after every launch.",
+                "The settings were rebuilt down to the last margin. A simple screen on first launch, a mode switch in the title bar, equal padding in every row, window height that follows the content, and a scrollbar only where there is something to scroll.",
+            ],
+            announce: """
+                К этому обновлению я готовился долго. Оказалось сложнее, чем рассчитывал: \
+                перепроверял, гонял проверки на Fable 5 и спалил гору токенов. \
+                Но вышло вроде неплохо.
+
+                Главное: настройки больше не пугают. При первом запуске открывается простой \
+                экран, три строки, и всё. Остальные двадцать тумблеров за переключателем в углу, \
+                никуда не делись.
+
+                Ещё у Keyboop новый маскот. Нерпа Бупа, с выражением лица «я всё починил, пока \
+                ты печатал».
+                """,
+            announceEnd: """
+                Смену регистра просили двое, и оба перед этим закинули на чай. Приятно.
+
+                Поддержать: keyboop.com/tips или boosty.to/iffun
+
+                До Homebrew не хватает 84 звёзды. Клик бесплатный, нерпа будет должна: \
+                github.com/iffuno/keyboop
+                """),
         // 0.3.19 — СТАБИЛЬНАЯ, срочная. Функция исправления опечаток, вышедшая утром в 0.3.18,
         // выключала сама себя на втором повторе слова, то есть у всех и почти сразу. Бета-канал
         // здесь бессмысленен по той же причине, что и в 0.3.18: чинить надо тем, у кого сломано.

@@ -20,10 +20,18 @@ final class StreamingEouEngine {
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
     }
-    /// Каталог конкретной модели (160ms — минимальная задержка). Подпапка = Repo.parakeetEou160.folderName
-    /// (ModelNames.swift:91 «parakeet-realtime-eou-120m-coreml/160ms»); loadModels(to:) кладёт сюда же.
+    /// Каталог конкретной модели (160 мс — минимальная задержка).
+    ///
+    /// ⚠️ ПУТЬ БЕРЁМ У БИБЛИОТЕКИ, А НЕ ПИШЕМ РУКАМИ (13.08.2026). Здесь был литерал
+    /// «parakeet-realtime-eou-120m-coreml/160ms», и это ИМЯ РЕПОЗИТОРИЯ на HuggingFace
+    /// (`ModelNames.swift:22`), а кладёт файлы `loadModels(to:)` в `repo.folderName`, то есть в
+    /// «parakeet-eou-streaming/160ms» (`ModelNames.swift:223`). Два разных имени у одной модели.
+    /// Из-за этого `modelInstalled` смотрел в несуществующий каталог и всегда возвращал false:
+    /// модель была скачана 29.07, лежала на диске, а потоковый путь молча откатывался на батч.
+    /// Ни одна проверка этого не поймала, потому что откат тихий и выглядит как обычная диктовка.
+    /// `Repo` публичный, так что спрашиваем имя у того, кто его и назначает.
     static var modelDir: URL {
-        modelRoot.appendingPathComponent("parakeet-realtime-eou-120m-coreml/160ms", isDirectory: true)
+        modelRoot.appendingPathComponent(Repo.parakeetEou160.folderName, isDirectory: true)
     }
 
     /// Установлена ли модель: все файлы, которые читает loadModels(from:) (StreamingEouAsrManager.swift:288-299).
@@ -46,7 +54,11 @@ final class StreamingEouEngine {
         guard Self.modelInstalled else { kbLog("eou: модель не установлена"); return false }
         do {
             DownloadUtils.enforceOffline = true                 // рантайм — ноль сети (принцип №2)
-            let mgr = manager ?? StreamingEouAsrManager(chunkSize: .ms160)
+            // Конфигурацию берём библиотечную: она ставит cpuAndNeuralEngine и подсказки резидентности
+            // ANE. Голый MLModelConfiguration() означает computeUnits = .all, то есть единственную
+            // нашу модель, которой разрешено уехать на GPU и подраться там с чужой отрисовкой.
+            let mgr = manager ?? StreamingEouAsrManager(configuration: MLModelConfigurationUtils.defaultConfiguration(),
+                                                       chunkSize: .ms160)
             try await mgr.loadModels(from: Self.modelDir)
             manager = mgr; ready = true
             kbLog("eou: модель загружена (офлайн)")
@@ -54,13 +66,27 @@ final class StreamingEouEngine {
         } catch { kbLog("eou: загрузка не удалась: \(error)"); return false }
     }
 
-    /// Скачать модель (~120 МБ) — ЯВНОЕ действие пользователя (тумблер). progress 0…1.
+    /// Скачать модель — ЯВНОЕ действие пользователя (тумблер). progress 0…1.
+    ///
+    /// Размер: 216 МБ нужных файлов, 429 МБ в каталоге после загрузки (качается и .mlpackage рядом
+    /// с .mlmodelc). Замерено 13.08.2026 на скачанной копии; прежние «~120 МБ» в комментарии и в
+    /// диалоге были втрое меньше правды.
     func download(progress: @escaping (Double) -> Void) async -> Bool {
         do {
             DownloadUtils.enforceOffline = false                // на время скачивания сеть нужна
-            let mgr = StreamingEouAsrManager(chunkSize: .ms160)
-            try await mgr.loadModels(to: Self.modelRoot, progressHandler: { p in progress(p.fractionCompleted) })
+            let mgr = StreamingEouAsrManager(configuration: MLModelConfigurationUtils.defaultConfiguration(),
+                                             chunkSize: .ms160)
+            try await mgr.loadModels(to: Self.modelRoot,
+                                     configuration: MLModelConfigurationUtils.defaultConfiguration(),
+                                     progressHandler: { p in progress(p.fractionCompleted) })
             DownloadUtils.enforceOffline = true
+            // ⚠️ СВЕРЯЕМ С ДИСКОМ, А НЕ ВЕРИМ СЕБЕ. Раньше здесь просто ставили ready = true, и
+            // расхождение путей (см. modelDir) прошло мимо всех проверок: скачивание отчитывалось
+            // об успехе, а следующий запуск не находил файлов и тихо откатывался на батч.
+            guard Self.modelInstalled else {
+                kbLog("eou: скачивание отчиталось об успехе, но файлов по \(Self.modelDir.path) нет")
+                return false
+            }
             manager = mgr; ready = true
             kbLog("eou: модель скачана и загружена")
             return true

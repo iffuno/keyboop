@@ -97,8 +97,16 @@ enum CapsLED {
     /// но окно взводить нельзя. Она срабатывает на каждой границе слова, то есть при печати
     /// практически непрерывно, — и окно оказывалось взведено всегда, из-за чего ВНЕШНЕЕ
     /// переключение (🌐 или ⌃Space) выбрасывалось и лампочка замирала. Ровно этот баг и был.
+    /// `KEYBOOP_LEDDEBUG=1` пишет в лог каждый вызов set: без этого лампочка отлаживается вслепую —
+    /// сами записи в железо намеренно не логируются (переходы «пишется/не пишется» только).
+    private static let debugLog = ProcessInfo.processInfo.environment["KEYBOOP_LEDDEBUG"] == "1"
+
     static func set(cyrillic: Bool, authoritative: Bool = true) {
         onMain {
+            if debugLog {
+                kbLog("caps-LED[debug]: set(cyr=\(cyrillic), authoritative=\(authoritative)) "
+                    + "было desiredOn=\(desiredOn) manager=\(manager != nil)")
+            }
             if authoritative { lastAuthoritativeAt = ProcessInfo.processInfo.systemUptime }
             let changed = (cyrillic != desiredOn) || !wroteOnce
             desiredOn = cyrillic
@@ -134,7 +142,9 @@ enum CapsLED {
             }
             // Прочитанное — не «названное»: окно не взводим, иначе следующая внешняя смена
             // подавила бы сама себя.
-            set(cyrillic: LayoutManager.systemIsCyrillic(), authoritative: false)
+            let cyr = LayoutManager.systemIsCyrillic()
+            if debugLog { kbLog("caps-LED[debug]: refreshFromSystem → cyr=\(cyr)") }
+            set(cyrillic: cyr, authoritative: false)
         }
     }
 
@@ -277,36 +287,110 @@ enum CapsLED {
     }
 
     /// Записать лампочку на всех клавиатурах фоном (см. writeQ — main держит ранлуп тапа).
+    /// Последнее желаемое значение и флаг «задача уже в очереди». Оба трогаются ТОЛЬКО с main.
+    ///
+    /// ⚠️ ОЧЕРЕДЬ БЕЗ ЭТОГО ПРИМЕНЯЛА ИСТОРИЮ, А НЕ ПОСЛЕДНЕЕ ЗНАЧЕНИЕ (найдено обратным чтением
+    /// 17.08). Запись в спящую Bluetooth-клавиатуру блокирует writeQ на ~5 с, задачи копились
+    /// FIFO, и на ЖИВУЮ клавиатуру приезжали устаревшие значения с опозданием в десятки секунд:
+    /// лог поймал запись «1» через 15 с после того, как язык стал английским. Со стороны это
+    /// выглядит как «лампочка постоянно горит» — ровно жалоба пользователя. Теперь задача одна и читает
+    /// последнее значение в момент исполнения.
+    /// ⚠️ НЕ main.sync: на выходе `shutdown(atExit:)` держит main в `writeQ.sync`, и задача,
+    /// которая полезла бы с writeQ обратно на main, повесила бы завершение намертво. Поэтому
+    /// последнее значение и снимок устройств передаются через собственный замок.
+    private static let pendingLock = NSLock()
+    private static var pendingOn = false
+    private static var writeScheduled = false
+    private static var pendingDevices: [IOHIDDevice] = []
+
     private static func write(_ on: Bool) {
         wroteOnce = true
-        let snapshot = devices
+        pendingLock.lock()
+        pendingOn = on
+        pendingDevices = devices
+        let already = writeScheduled
+        writeScheduled = true
+        pendingLock.unlock()
+        guard !already else { return }          // задача в очереди подхватит последнее значение сама
         writeQ.async {
-            let r = writeAll(snapshot, on)
-            DispatchQueue.main.async { noteWrite(r, devicesEmpty: snapshot.isEmpty) }
+            pendingLock.lock()
+            let value = pendingOn
+            let snapshot = pendingDevices
+            writeScheduled = false
+            pendingLock.unlock()
+            let r = writeAll(snapshot, value)
+            DispatchQueue.main.async {
+                noteWrite(r, devicesEmpty: snapshot.isEmpty)
+                evict(r.dead)
+            }
         }
     }
 
-    private static func writeAll(_ list: [IOHIDDevice], _ on: Bool) -> (ok: Bool, blocked: Bool) {
+    /// Убрать из списка устройства, в которые не пишется (`kIOReturnNotOpen`/`kIOReturnTimeout`):
+    /// каждая запись в такое блокирует очередь на секунды, а толку ноль. Вернётся — придёт заново
+    /// через device-matching.
+    private static func evict(_ dead: [IOHIDDevice]) {
+        guard !dead.isEmpty else { return }
+        let before = devices.count
+        devices.removeAll { d in dead.contains(where: { $0 === d }) }
+        if devices.count != before {
+            kbLog("caps-LED: убрал \(before - devices.count) клавиатуру(ы) без связи из списка — "
+                + "вернутся сами при переподключении")
+        }
+    }
+
+    private static func writeAll(_ list: [IOHIDDevice], _ on: Bool)
+        -> (ok: Bool, blocked: Bool, dead: [IOHIDDevice]) {
         var any = false, blocked = false
+        var dead: [IOHIDDevice] = []
         for d in list {
+            let name = (IOHIDDeviceGetProperty(d, kIOHIDProductKey as CFString) as? String) ?? "?"
             for el in capsLEDElements(d) {
                 let v = IOHIDValueCreateWithIntegerValue(kCFAllocatorDefault, el, 0, on ? 1 : 0)
-                switch IOHIDDeviceSetValue(d, el, v) {
+                let r = IOHIDDeviceSetValue(d, el, v)
+                switch r {
                 case kIOReturnSuccess:      any = true
                 case kIOReturnNotPermitted: blocked = true   // Secure Input, см. secureTimer
+                // ⚠️ И ТАЙМАУТ ТОЖЕ (замер 17.08: у встроенной клавиатуры ВТОРОЙ HID-интерфейс с
+                // пустым именем, он не принимает выходные отчёты и держит запись 5 секунд до
+                // kIOReturnTimeout — 0x2d6). Настоящая клавиатура, уснувшая по Bluetooth, при
+                // пробуждении переподключается и придёт заново через device-matching.
+                case kIOReturnNotOpen, kIOReturnTimeout:
+                    if !dead.contains(where: { $0 === d }) { dead.append(d) }
                 default:                    break
+                }
+                if debugLog {
+                    // Обратное чтение: что железо ДУМАЕТ о лампочке после нашей записи.
+                    let ph = IOHIDValueCreateWithIntegerValue(kCFAllocatorDefault, el, 0, 0)
+                    var back = Unmanaged.passUnretained(ph)
+                    let rr = IOHIDDeviceGetValue(d, el, &back)
+                    let got = rr == kIOReturnSuccess
+                        ? String(IOHIDValueGetIntegerValue(back.takeUnretainedValue())) : "?"
+                    kbLog("caps-LED[debug]: запись \(on ? 1 : 0) → \(name) "
+                        + "usage=\(IOHIDElementGetUsage(el)) ret=0x\(String(format: "%04x", r & 0xffff)) "
+                        + "читается=\(got)")
                 }
             }
         }
-        return (any, blocked)
+        return (any, blocked, dead)
     }
 
-    private static func noteWrite(_ r: (ok: Bool, blocked: Bool), devicesEmpty: Bool) {
+    private static func noteWrite(_ r: (ok: Bool, blocked: Bool, dead: [IOHIDDevice]), devicesEmpty: Bool) {
         // Запрет по Secure Input — не поломка: писать нельзя, пока открыто парольное поле, и
         // лампочку допишет фронт «поле закрылось». Состояние lastWriteOK при этом НЕ трогаем,
         // иначе лог скажет «ни одна клавиатура не приняла запись» — правдоподобная неправда,
         // которая уводит диагностику к правам и отвалившейся клавиатуре (урок USRU 28.07).
         if r.blocked && !r.ok {
+            // ⚠️ ТОТ ЖЕ КОД ОШИБКИ ДАЁТ И ОТСУТСТВИЕ «МОНИТОРИНГА ВВОДА» (ревью 17.08). Пока это не
+            // различалось, включённый без доступа тумблер писал в лог про парольное поле, которое
+            // «закроется» никогда, и уводил разбор багрепорта в ложную ветку. Права проверяются
+            // дёшево, поэтому спрашиваем их прежде, чем валить на Secure Input.
+            if !Permissions.inputMonitoringGranted() {
+                guard lastWriteOK else { return }
+                lastWriteOK = false
+                kbLog("caps-LED: нет доступа «Мониторинг ввода» — лампочка ждёт разрешения")
+                return
+            }
             guard !secureLogged else { return }
             secureLogged = true
             kbLog("caps-LED: Secure Input запрещает запись — перепишу лампочку, когда поле закроется")

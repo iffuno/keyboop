@@ -460,7 +460,18 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// Перезаполняем ТОТ ЖЕ объект меню, который macOS сейчас открывает (`removeAllItems` + populate),
     /// а не подменяем `statusItem.menu` — подмена открывающегося меню на лету и есть способ получить
     /// пустое или мигающее меню.
+    /// Пересчитать состояние доступов прямо перед показом меню (ставит AppDelegate).
+    ///
+    /// ⚠️ БЕЗ ЭТОГО ПРЕДУПРЕЖДЕНИЕ ЗАВИСАЛО (12.08.2026, поймано в тестировании). `needsPermission` ставился
+    /// один раз, в момент запуска движка, — то есть по снимку состояния ДО того, как человек ответил
+    /// на системный запрос. Он разрешал доступ, всё начинало работать, а оранжевая строчка «Нужен
+    /// доступ» продолжала висеть, потому что пересчитать её было некому: `tryStart()` после успеха
+    /// больше не зовётся. Меню и так пересобирается на каждое открытие — значит и правду о доступах
+    /// надо брать здесь, а не помнить с прошлого раза.
+    var recheckPermissions: (() -> Void)?
+
     func menuNeedsUpdate(_ menu: NSMenu) {
+        recheckPermissions?()
         menu.removeAllItems()
         populate(menu)
     }
@@ -560,7 +571,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
 
         // Галочка состояния и иконка живут в РАЗНЫХ колонках, поэтому на переключателе уживаются обе.
-        let auto = NSMenuItem(title: L10n.t("menu.auto"), action: #selector(toggleAuto), keyEquivalent: "")
+        // ⚠️ БУКВЫ БЕЗ МОДИФИКАТОРОВ — ЭТО ЯРЛЫКИ ВНУТРИ ОТКРЫТОГО МЕНЮ, А НЕ ГЛОБАЛЬНЫЕ ХОТКЕИ
+        // (задача 123). Пока меню закрыто, они не значат ничего и ничего ни у кого не отнимают;
+        // открыл меню, нажал букву — сработал пункт. Раньше сочетаний в меню было ровно два, ⌘Q и
+        // ⌘, и оба достались нам от системы, то есть частые действия открывались только мышью.
+        // Буквы выбраны по первому слогу русского названия, потому что интерфейс у большинства
+        // русский, а латинская раскладка в этот момент может быть любой.
+        let auto = NSMenuItem(title: L10n.t("menu.auto"), action: #selector(toggleAuto), keyEquivalent: "a")
+        auto.keyEquivalentModifierMask = []
         auto.target = self
         auto.state = settings.autoEnabled ? .on : .off
         auto.image = icon("arrow.trianglehead.2.clockwise.rotate.90",   // SF 6, macOS 15
@@ -616,14 +634,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // отсутствие. Проверка честна именно потому, что меню пересобирается при открытии (см.
         // menuNeedsUpdate выше); без этого пункт появлялся и пропадал бы с опозданием.
         // Порядок: сначала история, потом копирование (решение автора 30.07 — было наоборот).
-        let vh = NSMenuItem(title: L10n.t("menu.voiceHistory"), action: #selector(showVoiceHistory), keyEquivalent: "")
+        let vh = NSMenuItem(title: L10n.t("menu.voiceHistory"), action: #selector(showVoiceHistory), keyEquivalent: "h")
+        vh.keyEquivalentModifierMask = []
         vh.target = self
         vh.image = icon("clock.arrow.trianglehead.counterclockwise.rotate.90",   // SF 6, macOS 15
                         "clock.arrow.circlepath")
         menu.addItem(vh)
 
         if VoiceHistory.shared.lastVisible() != nil {
-            let copyLast = NSMenuItem(title: L10n.t("menu.copyLast"), action: #selector(copyLastDictation), keyEquivalent: "")
+            let copyLast = NSMenuItem(title: L10n.t("menu.copyLast"), action: #selector(copyLastDictation), keyEquivalent: "c")
+        copyLast.keyEquivalentModifierMask = []
             copyLast.target = self
             copyLast.image = icon("document.on.document",   // SF 6, macOS 15 — переименование doc.* → document.*
                                   "doc.on.doc")
@@ -651,12 +671,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // У «Настройки» macOS 26 рисует системную шестерёнку, и в её группе резервируется колонка под
         // иконку → безиконочный сосед уезжал вправо. Здесь между ними разделитель, то есть это другая
         // группа, и оба пункта тут безиконочные — сдвинуть их нечему.
-        let upd = NSMenuItem(title: L10n.t("menu.checkUpdates"), action: #selector(checkUpdatesItem), keyEquivalent: "")
+        let upd = NSMenuItem(title: L10n.t("menu.checkUpdates"), action: #selector(checkUpdatesItem), keyEquivalent: "u")
+        upd.keyEquivalentModifierMask = []
         upd.target = self
         upd.image = icon("arrow.down.circle")
         menu.addItem(upd)
 
-        let report = NSMenuItem(title: L10n.t("menu.report"), action: #selector(reportProblem), keyEquivalent: "")
+        let report = NSMenuItem(title: L10n.t("menu.report"), action: #selector(reportProblem), keyEquivalent: "r")
+        report.keyEquivalentModifierMask = []
         report.target = self
         report.image = icon("exclamationmark.bubble")
         menu.addItem(report)

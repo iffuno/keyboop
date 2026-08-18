@@ -274,6 +274,9 @@ final class Engine: EventTapHandler {
                     DynamicKeymap.rebuild()
                     KeyboardLayoutCache.refreshOnMain()
                     self?.layout.noteExternalLayoutChange()   // память о раскладке — свежим чтением
+                    // Человек переключился сам — запоминаем ИМЕННО эту раскладку как его выбор с
+                    // этой стороны, чтобы вернуть его туда же, а не на первую попавшуюся (105/106).
+                    self?.layout.noteCurrentAsUserChoice()
                 }
             }
             // Голосовая вставка завершилась → чистим буфер, чтобы надиктованное не попало в группу (G3).
@@ -1178,6 +1181,76 @@ final class Engine: EventTapHandler {
         #endif
     }
 
+    // MARK: - Смена регистра выделенного
+
+    func handleCaseHotkey() {
+        kbLog("регистр: хоткей нажат")
+        DispatchQueue.main.async { [weak self] in self?.changeSelectionCase() }
+    }
+
+    /// СМЕНА РЕГИСТРА ВЫДЕЛЕННОГО ТЕКСТА (задача 122).
+    ///
+    /// Просьба пользователя дословно: «телефон → ТЕЛЕФОН» по сочетанию. автор уточнил объём: именно
+    /// ВЫДЕЛЕНИЕ, именно везде, и всё выделенное целиком становится заглавным либо строчным,
+    /// независимо от того, что там было. Это работа с типографикой, титрами и заголовками, то есть
+    /// то же самое, что делает Shift+F3 в редакторах и смена регистра в графических программах.
+    ///
+    /// Направление выбирается по содержимому и потому переключается само: есть хоть одна строчная
+    /// буква — поднимаем всё в заглавные; всё уже заглавное — опускаем всё в строчные. Повторное
+    /// нажатие возвращает как было, и запоминать состояние не нужно.
+    ///
+    /// # Про буфер обмена (решение автора 11.08.2026)
+    ///
+    /// Путь тот же, что у перевода и конверсии выделения: сначала Accessibility, и только если
+    /// приложение через AX не отвечает (Electron, веб) — чтение через буфер с полным анти-Punto
+    /// чеклистом. Раньше правило «буфер не трогаем» читалось как абсолютное. Оно родилось из того,
+    /// что предшественник буфер ЛОМАЛ, а не из того, что к буферу нельзя прикасаться, и мы его уже
+    /// используем осознанно (копирование последней диктовки, вставка без форматирования). Здесь
+    /// отказ от буфера означал бы «в половине программ функция не работает», что и есть худший из
+    /// возможных результатов для функции, которую просили сделать «везде».
+    ///
+    /// ⚠️ Многострочность здесь РАЗРЕШЕНА, в отличие от конверсии раскладки, и это осознанно.
+    /// Там запрет защищает от «⌘C при пустом выделении копирует целую строку»: человек хотел
+    /// починить слово, а получил бы правку абзаца. Здесь же заголовок в несколько строк это
+    /// нормальная работа, ради которой функцию и просили. Ограничение осталось одно, на объём.
+    private func changeSelectionCase() {
+        guard !muted else { return }
+        if IsSecureEventInputEnabled() { Sounds.beep(); return }   // поле пароля не читаем никогда
+        liveFixLast = ""
+        muted = true                                  // глушим синтетический Cmd+C от readViaClipboard
+        let sel = SelectionText.read()
+        muted = false
+        guard let (text, writeBack) = sel, !text.isEmpty else {
+            kbLog("регистр: выделение не прочитано"); Sounds.beep(); return
+        }
+        guard text.count <= Self.caseChangeMaxChars else {
+            kbLog("регистр: отклонено, \(text.count) симв. — это больше похоже на случайное ⌘A")
+            Sounds.beep(); return
+        }
+        let toUpper = text.contains { $0.isLowercase }
+        let changed = toUpper ? text.uppercased() : text.lowercased()
+        guard changed != text else {                  // в выделении нет букв — менять нечего
+            kbLog("регистр: букв в выделении нет"); Sounds.beep(); return
+        }
+        muted = true
+        let usedSynth = !(writeBack?(changed) ?? false)
+        if usedSynth {
+            TextReplacer.insert(changed) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self?.muted = false; self?.drainPendingManual() }
+            }
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.muted = false; self?.drainPendingManual() }
+        }
+        buffer.clear()
+        playSound()
+        kbLog("регистр: \(text.count) симв. → \(toUpper ? "ЗАГЛАВНЫЕ" : "строчные") (\(usedSynth ? "печатью" : "через AX"))")
+    }
+
+    /// Потолок на объём. Не защита от больших заголовков, а защита от ⌘A: перевести в верхний
+    /// регистр весь документ по случайному нажатию человек нам не простит, а отменить это одним
+    /// ⌘Z в приложениях, куда мы печатаем посимвольно, может не получиться.
+    private static let caseChangeMaxChars = 5000
+
     // MARK: - Конвертация
 
     /// Конвертация ВЫДЕЛЕННОГО текста (нативные приложения, через AX). true — если выделение
@@ -1495,7 +1568,40 @@ final class Engine: EventTapHandler {
     ///
     /// ⚠️ Личный словарь пополняем ВСЕГДА, даже когда сама функция выключена. Иначе человек,
     /// включивший её через месяц работы, получил бы пустую защиту и правку своих же привычных слов.
+    /// СЛЕД CAPS LOCK: «пРИВЕТ» → «Привет» (отзыв @danielvald #119, решение автора 11.08.2026).
+    ///
+    /// Человек забыл выключить Caps Lock и добавил Shift на первую букву, получилось слово наизнанку.
+    /// автор решил не заводить под это отдельное сочетание, а обрабатывать вместе с опечатками: это
+    /// такая же механическая ошибка ввода, и живёт она в той же настройке.
+    ///
+    /// Условие узкое ровно под этот случай, чтобы не задеть ничего живого:
+    ///   • первая буква строчная, ВСЕ остальные заглавные («пРИВЕТ» да, «iPhone» нет, «ГОСТ» нет);
+    ///   • от трёх букв, иначе «яМ» и подобный мусор попал бы под раздачу;
+    ///   • только буквы одного алфавита, без цифр и знаков;
+    ///   • слово не в пользовательских исключениях.
+    /// Возвращаем как задумано: первая заглавная, остальные строчные.
+    private func fixCapsLockWord(word: String, item: (word: String, tail: String, deleteCount: Int)) -> Bool {
+        guard settings.typoFix else { return false }
+        let ch = Array(word)
+        guard ch.count >= 3, ch.allSatisfy({ $0.isLetter }) else { return false }
+        guard ch[0].isLowercase, ch.dropFirst().allSatisfy({ $0.isUppercase }) else { return false }
+        guard word.hasCyrillic != word.hasLatinLetter else { return false }
+        guard !ExceptionStore.shared.ignored.contains(word.lowercased()) else { return false }
+        let fixed = String(ch[0]).uppercased() + String(ch.dropFirst()).lowercased()
+        guard fixed != word else { return false }
+        muted = true
+        kbLog("caps lock: \(item.deleteCount) симв. развёрнуто")   // без контента (принцип №2)
+        UndoLearner.shared.noteConversion(original: word, converted: fixed)
+        TextReplacer.replace(deleteCount: item.deleteCount, with: fixed + item.tail) { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
+        }
+        buffer.applyCompletedConversion(converted: fixed)
+        return true
+    }
+
     private func fixTypo(word: String, item: (word: String, tail: String, deleteCount: Int)) {
+        if fixCapsLockWord(word: word, item: item) { return }
         TypoFix.shared.noteTyped(word)
         guard let fixed = TypoFix.shared.suggest(word) else { return }
         muted = true
@@ -1515,6 +1621,16 @@ final class Engine: EventTapHandler {
         -> (text: String, toCyrillic: Bool, rescue: Bool)?
     {
         guard Warm.isReady else { return nil }   // см. Warm: до готовности молчим, а не блокируем колбэк
+        // ТРЕТЬЯ ПИСЬМЕННОСТЬ — МОЛЧИМ (задачи 105/106, отзыв @Tigran1963 про армянский).
+        // Весь наш детектор устроен как разговор двух раскладок: словари русского и английского,
+        // таблица физических клавиш, триграммы. Когда человек печатает армянским, грузинским или
+        // ивритом, у нас нет ни словаря, чтобы понять слово, ни правильного направления, чтобы его
+        // «починить», и любое решение здесь это гадание. Тишина в этом состоянии не потеря функции:
+        // функции для этой письменности у нас и не было, была видимость.
+        if layout.currentScript() == .other {
+            silentLog("script3", "авто молчит: текущая раскладка не кириллица и не латиница")
+            return nil
+        }
         // Обучение на отмене: слово, которое юзер только что восстановил в этом контексте, —
         // не конвертируем повторно (анти-«драка»), даже если порог обучения ещё не достигнут.
         if UndoLearner.shared.isSessionProtected(word) {
@@ -1560,9 +1676,21 @@ final class Engine: EventTapHandler {
             // Почему это безопаснее, чем кажется: выше по каскаду стоит strict-gate, который
             // держит ЛЮБОЕ слово, валидное в языке набора. Двухбуквенные английские слова
             // (id, ok, is, to) он не отдаст и без этого фильтра.
-            if soft || settings.developerMode {
+            // ⚠️ ТОЛЬКО МЯГКИЙ РЕЖИМ, БЕЗ ГЛОБАЛЬНОГО РЕЖИМА РАЗРАБОТЧИКА (решение автора 11.08.2026).
+            //
+            // Раньше здесь стояло `soft || developerMode`, и вторая половина глушила короткие слова
+            // ВЕЗДЕ, включая мессенджеры и заметки. Отзыв @ToshaSoft #120 показал цену: «keyboop b
+            // someone», «z очень люблю», «j качестве» — предлоги не чинились нигде, потому что
+            // человек однажды включил режим разработчика ради кода.
+            //
+            // Новая расстановка ролей, и она честнее: опасные программы (редакторы кода, IDE)
+            // сидят в исключениях с мягким режимом, и вот ТАМ работает именной список. Везде
+            // остальном защиты нет вовсе, потому что и опасности нет: «c» и «d» в переписке это
+            // предлоги, а не переменные. Режим разработчика при этом никуда не делся, он по-прежнему
+            // выключает авто в IDE и терминалах целиком.
+            if soft {
                 let core = Keymap.core(of: word).lowercased()
-                let pass = core.count == 2 && Self.softShortPass.contains(core)
+                let pass = Self.softShortPass.contains(core)
                 if !pass, core.count <= 2 || Set(core).count == 1 {
                     silentLog("soft", "авто молчит: мягкий фильтр (короткое/однобуквенное, len \(word.count))")
                     return nil
@@ -1592,7 +1720,21 @@ final class Engine: EventTapHandler {
     ///
     /// Чего здесь сознательно НЕТ: `vs` (versus), `dj` (диджей), `kb` (килобайт) — живые
     /// английские сокращения, их латинская форма человеком и задумана.
+    /// ⚠️ ОДНОБУКВЕННЫЕ ДОБАВЛЕНЫ 11.08.2026 (решение автора, отзыв @ToshaSoft #120), и список
+    /// именно ИМЕННОЙ по той же причине, что и у двухбуквенных: порог пускать нельзя.
+    ///
+    /// Что пускаем: f→а, b→и, j→о, z→я, r→к. Что осознанно НЕ пускаем даже в мягком режиме:
+    ///   • `c` и `d` — те самые «переменные c/d», ради которых мягкий режим и заведён;
+    ///   • `e` — самый частый идентификатор в JS (`catch (e)`, `onClick(e)`);
+    ///   • `i` — счётчик цикла (и «ш» русским словом всё равно не является, так что он и не дошёл бы).
+    /// Из пяти случаев в отзыве это чинит четыре. Пятый («e меня») остаётся ценой за `catch (e)`,
+    /// и в обычных программах он всё равно чинится: мягкий режим живёт только в редакторах кода.
     private static let softShortPass: Set<String> = [
+        "f",   // а
+        "b",   // и
+        "j",   // о
+        "z",   // я
+        "r",   // к
         "yt",  // не
         "gj",  // по
         "lj",  // до

@@ -26,14 +26,29 @@ if [ -f "$SWIFTDIR/module.modulemap" ] && [ -f "$SWIFTDIR/bridging.modulemap" ];
   echo
 fi
 
-APP="Keyboop.app"
+# Куда собирать. По умолчанию в рабочую папку, но агент собирает в /tmp: пока автор работает в
+# своей копии по обычному пути, пересборка туда же означала бы гасить приложение у него под руками,
+# а перенос копии в другое место ломает выданные доступы (TCC привязан к пути и подписи).
+APP="${KEYBOOP_BUILD_APP:-Keyboop.app}"
 
 # ⚠️ Пересборка бандла под РАБОТАЮЩИМ из него процессом запрещена: macOS перестаёт доверять
 # клиенту, чей бандл изменился на диске, и coreaudiod МОЛЧА глушит ему микрофон — TCC отвечает
 # authorized, буферы идут, но в них битовый ноль (инцидент 23.07.2026).
-if pgrep -f "$(pwd)/$APP/Contents/MacOS/Keyboop" >/dev/null 2>&1; then
+# ⚠️ СТОРОЖ КЛАВИШИ 🌐 НЕ СЧИТАЕТСЯ (13.08). Он запускается из ТОГО ЖЕ файла, что приложение, и
+# после закрытия живёт ещё до восьми секунд: ждёт, не появится ли отчёт о падении. Простая проверка
+# по пути видела его и отказывалась собирать, хотя приложения уже нет. Причина запрета — микрофон и
+# TCC у РАБОТАЮЩЕГО приложения, а сторож ни того, ни другого не трогает.
+if pgrep -f "$(pwd)/$APP/Contents/MacOS/Keyboop" 2>/dev/null | while read -r pid; do
+     ps -o args= -p "$pid" | grep -q -- "--globe-guard" || echo "$pid"
+   done | grep -q .; then
   echo "✗ Keyboop сейчас запущен из $(pwd)/$APP — собирать под ним нельзя."
-  echo "  Сначала:  pkill -x Keyboop        затем собери и:  open \"$APP\""
+  # ⚠️ ГАСИМ ПО ПУТИ, А НЕ ПО ИМЕНИ. Здесь стояло `pkill -x Keyboop`, и эта подсказка обошлась
+  # дорого: она гасит ЛЮБОЙ процесс с именем Keyboop, то есть заодно и боевую копию из
+  # /Applications, которой человек в этот момент пользуется. У сборочной и у боевой копии общее
+  # имя процесса и разные пути — значит и различать их надо путём.
+  # И `-f`, а не `-9`: SIGKILL перехватить нельзя, а на выходе мы возвращаем системе роль клавиши
+  # 🌐, иначе она остаётся сломанной до перезапуска (задача 96).
+  echo "  Сначала:  pkill -f \"$(pwd)/$APP/Contents/MacOS/Keyboop\"        затем собери и:  open \"$APP\""
   exit 1
 fi
 # ПРОВЕРКА ДУБЛЕЙ В L10n (25.07): Swift-словарь-литерал с повторяющимся ключом компилируется молча,
@@ -157,8 +172,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key>            <string>Keyboop</string>
     <key>CFBundleDisplayName</key>     <string>Keyboop</string>
     <key>CFBundleIdentifier</key>      <string>ru.keyboop.app</string>
-    <key>CFBundleVersion</key>         <string>0.3.19</string>
-    <key>CFBundleShortVersionString</key> <string>0.3.19</string>
+    <key>CFBundleVersion</key>         <string>0.4</string>
+    <key>CFBundleShortVersionString</key> <string>0.4</string>
     <!-- Штамп сборки: подставляется ниже (sed по __BUILD_STAMP__). Логируется при запуске, чтобы по
          логу было ВИДНО, какую именно сборку гоняем. Прецедент 21.07: диагностировали баг по логу
          процесса, стартовавшего на 11 минут РАНЬШЕ пересборки, — то есть по коду без свежих правок. -->
@@ -186,6 +201,16 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>LSUIElement</key>             <true/>
     <key>NSAccentColorName</key>       <string>AccentColor</string>
     <key>NSMicrophoneUsageDescription</key> <string>Keyboop распознаёт надиктованный текст локально, на вашем Mac. Аудио никуда не отправляется.</string>
+    <!-- ⚠️ ЯВНЫЙ ОТКАЗ ОТ РЕЖИМА СОВМЕСТИМОСТИ С КОРПУСОМ КАМЕРЫ (13.08.2026).
+         На маках с чёлкой система умеет менять активную область экрана так, чтобы она обходила
+         корпус камеры: тогда вырез исчезает, сверху появляется ровная полоса, а safeAreaInsets
+         обнуляется. Включается это НЕ настройкой человека, а автоматически, как только приложение,
+         которому режим нужен, положит окно за корпусом камеры на текущем рабочем столе. Мы кладём
+         туда остров НАМЕРЕННО и умеем это делать правильно, поэтому говорим системе false: тогда
+         Finder не показывает у нас галочку «Подогнать под встроенную камеру» в «Свойствах», и
+         включить её случайно нельзя. Ключ документирован:
+         developer.apple.com/documentation/bundleresources/information-property-list/nsprefersdisplaysafeareacompatibilitymode -->
+    <key>NSPrefersDisplaySafeAreaCompatibilityMode</key> <false/>
     <key>NSPrincipalClass</key>        <string>NSApplication</string>
     <key>NSHumanReadableCopyright</key><string>Keyboop — free &amp; open source</string>
     <!-- Sparkle (автообновления). Проверка ВКЛ + фоновое скачивание. SUAutomaticallyUpdate=true
