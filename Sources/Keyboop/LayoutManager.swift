@@ -14,9 +14,12 @@ final class LayoutManager {
     private var opinionCyr: Bool?
 
     /// Текущая раскладка — кириллическая? (сырое чтение TIS; может отставать, см. opinionCyr)
-    func currentIsCyrillic() -> Bool {
+    func currentIsCyrillic() -> Bool { Self.systemIsCyrillic() }
+
+    /// То же без экземпляра — для индикатора на лампочке Caps Lock (CapsLED живёт статикой).
+    static func systemIsCyrillic() -> Bool {
         guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return false }
-        return Self.languages(of: src).first?.hasPrefix("ru") ?? false
+        return languages(of: src).first?.hasPrefix("ru") ?? false
     }
 
     /// Текущая раскладка с поправкой на баг стейл-чтения: если мы недавно переключали сами —
@@ -33,7 +36,10 @@ final class LayoutManager {
     /// сбрасывается в «не знаю», правду установят boundary-сверка (следующее слово) или фоновая
     /// (2.5с простоя). Пока мнения нет, currentIsCyrillicOpinion() отвечает сырым чтением — хуже
     /// самосогласованной лжи оно не бывает.
-    func noteExternalLayoutChange() { opinionCyr = nil }
+    func noteExternalLayoutChange() {
+        opinionCyr = nil
+        CapsLED.refreshSoon()   // язык сменили мимо нас — лампочка-индикатор должна догнать
+    }
 
     /// Когда мы сами переключали в последний раз (для сверки: свежий свой select не проверяем —
     /// чтение в этот момент само стейлится и дало бы ложное «не применилось»).
@@ -53,6 +59,10 @@ final class LayoutManager {
     func reconcileWithReality() -> Bool {
         guard ProcessInfo.processInfo.systemUptime - lastSelectAt > 0.8 else { return false }
         let real = currentIsCyrillic()
+        // Момент выбран вызывающим — чтение достоверно. Но окно подавления НЕ взводим
+        // (authoritative: false): сверка идёт на каждой границе слова, и взведённое окно
+        // съедало бы внешние переключения (🌐/⌃Space) — лампочка замирала. См. CapsLED.set.
+        CapsLED.set(cyrillic: real, authoritative: false)
         guard let op = opinionCyr else {
             // Мнение сброшено (внешняя смена раскладки, R2): принимаем реальность. Слово подозрительно
             // ТОЛЬКО если блоб декодера при этом реально сменился — иначе декод шёл верной раскладкой
@@ -193,6 +203,7 @@ final class LayoutManager {
         }
         if ok {
             opinionCyr = cyrillic   // память против стейл-чтения (см. opinionCyr)
+            CapsLED.set(cyrillic: cyrillic)   // лампочка-индикатор языка (если включена)
             lastSelectAt = ProcessInfo.processInfo.systemUptime
             // Кэш — из ТОГО источника, который мы только что выбрали (объект в руках). НЕ через
             // чтение «текущего»: сразу после TISSelect оно возвращает СТАРЫЙ источник (стейл-баг

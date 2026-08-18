@@ -462,6 +462,12 @@ final class AppSettings {
     }
     /// Что мы «затеняем» этой комбинацией — показываем предупреждение в настройках (Spotlight и т.п.).
     var instantSwitchKeyLabel: String { get { d.string(forKey: "instantSwitchKeyLabel") ?? "" } set { d.set(newValue, forKey: "instantSwitchKeyLabel") } }
+    /// Лампочка Caps Lock показывает ЯЗЫК (горит = русский), а не состояние капса — см. CapsLED.
+    /// По умолчанию ВЫКЛ: настройка меняет смысл железной лампочки, включать такое молча нельзя.
+    var capsLEDIndicator: Bool {
+        get { d.bool(forKey: "capsLEDIndicator") }
+        set { d.set(newValue, forKey: "capsLEDIndicator") }
+    }
     /// Наш hidutil-ремап Caps→LANG1 применён (см. CapsRemap: ставится только в пустой список).
     var capsRemapApplied: Bool {
         get { d.bool(forKey: "capsRemapApplied") }

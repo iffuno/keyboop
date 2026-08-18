@@ -100,6 +100,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         CapsRemap.reconcile()   // Caps-ремап не переживает перезагрузку (переприменить) и не должен
                                 // переживать выключенный тумблер (снять после падения без restore)
         GlobeKey.reconcile()    // роль 🌐: забрать при включённом режиме / вернуть после падения
+        CapsLED.reconcile()     // лампочка Caps Lock как индикатор языка (если включена в настройках).
+                                // Не зависит от Accessibility: работает и до старта движка.
         installTerminationSignalHandlers()   // SIGTERM/SIGINT: вернуть системе 🌐 и Caps (см. ниже)
         engine = Engine()
         menuBar = MenuBarController(layout: engine.layout)
@@ -937,6 +939,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 kbLog("получен сигнал \(sig) — возвращаю системе 🌐 и Caps, выхожу")
                 CapsRemap.removeIfOurs()
                 GlobeKey.release()
+                CapsLED.shutdown(atExit: true)   // иначе лампочка останется гореть после нас
                 exit(0)
             }
             src.resume()
@@ -950,6 +953,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // (Синхронно: терминация не ждёт GCD; hidutil отрабатывает за ~50мс.)
         CapsRemap.removeIfOurs()
         GlobeKey.release()
+        CapsLED.shutdown(atExit: true)   // лампочке — обратно её системный смысл (состояние капса)
     }
 
     /// Sparkle и прочие системные диалоги — на языке ПРИЛОЖЕНИЯ, а не только системы.

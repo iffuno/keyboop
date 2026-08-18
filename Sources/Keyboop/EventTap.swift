@@ -509,10 +509,16 @@ final class EventTap {
             // Caps Lock-режим мгновенного переключения: физический Caps РЕМАПНУТ на LANG1
             // (keyCode 104) через hidutil — см. CapsRemap, почему flagsChanged-путь невозможен
             // (капс-замок включается ниже session-тапа). LANG1 глотаем целиком.
+            // SHIFT+Caps = настоящий Caps Lock: пока клавиша занята сменой языка, это ЕДИНСТВЕННЫЙ
+            // способ включить заглавные — ремап отнял у Caps его замок (механизм из USRU).
             if s.instantSwitchEnabled, s.instantSwitchMode == "modkey", s.instantSwitchKeyCode == 57,
                keyCode == CapsRemap.lang1KeyCode {
                 if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
-                    onMain { [weak self] in self?.handler?.handleLayoutSwitchOnly() }
+                    if event.flags.contains(.maskShift) {
+                        onMain { RealCapsLock.toggle() }
+                    } else {
+                        onMain { [weak self] in self?.handler?.handleLayoutSwitchOnly() }
+                    }
                 }
                 return swallowDown(keyCode)
             }
@@ -686,6 +692,10 @@ final class EventTap {
     private func handleFlags(_ flags: CGEventFlags, keyCode: Int64) -> Bool {
         if HotkeyRecording.active { return false }   // идёт запись комбинации — не перехватываем (см. keyDown)
         let s = AppSettings.shared
+        // Щёлкнули НАСТОЯЩИЙ капс (клавиша не занята сменой языка — иначе она ремапнута и сюда не
+        // приходит): ОС в этот момент сама зажигает/гасит лампочку под состояние капса, а у нас она
+        // индикатор ЯЗЫКА. Возвращаем ей наш смысл (событие не трогаем — капс работает как обычно).
+        if keyCode == 57, s.capsLEDIndicator { CapsLED.reassert() }
         // ⚠️ SECURE INPUT ПРЯЧЕТ keyDown, НО НЕ ПРЯЧЕТ flagsChanged (разбор 29.07, репорт #46).
         // Все четыре жеста «чистый тап» доказывают свою чистоту ОТСУТСТВИЕМ обычной клавиши между
         // нажатием и отпусканием — а именно эти события macOS от нас и скрывает, пока держится
