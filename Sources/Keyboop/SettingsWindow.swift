@@ -1169,17 +1169,8 @@ final class DetailVC: NSViewController {
         // Документ и так приколот по ширине к вьюпорту (констрейнт ниже), то есть ехать ему
         // некуда — ехала именно упругость.
         scroll.horizontalScrollElasticity = .none
-        // ⚠️ ПОЛОСА ПРОКРУТКИ ВИДНА ВСЕГДА (автор 16.08). По умолчанию macOS показывает её только во
-        // время прокрутки, и в окне настроек это стоит дорого: человек переключает раздел, видит
-        // экран без единого намёка на продолжение и не догадывается, что ниже есть ещё половина.
-        // `.legacy` это тот самый режим «полоса занимает место и не прячется», который система
-        // включает, когда к маку подключена мышь; мы просим его явно, а не полагаемся на железо.
-        //
-        // Ширину колонки это не ломает: полоса рисуется в своём жёлобе, и наши 600 пунктов
-        // содержимого остаются нетронутыми (в этом и разница `.legacy` от `.overlay`, где полоса
-        // ложится ПОВЕРХ текста).
-        scroll.autohidesScrollers = !showsScroller
-        if showsScroller { scroll.scrollerStyle = .legacy }
+        // Стиль полосы выбирает macOS из системной настройки пользователя.
+        scroll.autohidesScrollers = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
         docView.translatesAutoresizingMaskIntoConstraints = false
         column.translatesAutoresizingMaskIntoConstraints = false
@@ -3068,7 +3059,7 @@ final class DetailVC: NSViewController {
     func openWhatsNewForDev() { showWhatsNew() }
     @objc private func showWhatsNew() {
         if whatsNewWindow == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 440, height: 500),
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 528, height: 500),
                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             w.title = L10n.t("about.whatsNew")
             // ⚠️ Краш при ВТОРОМ открытии (крэш-репорт 27.07, EXC_BAD_ACCESS/SIGSEGV на главном
@@ -3082,8 +3073,9 @@ final class DetailVC: NSViewController {
             w.center()
             let scroll = NSScrollView()
             scroll.hasVerticalScroller = true; scroll.drawsBackground = false
-            scroll.autohidesScrollers = false
-            scroll.scrollerStyle = .legacy
+            scroll.hasHorizontalScroller = false
+            scroll.horizontalScrollElasticity = .none
+            scroll.autohidesScrollers = true
             let tv = NSTextView()
             tv.isEditable = false; tv.isSelectable = true; tv.drawsBackground = false
             tv.textContainerInset = NSSize(width: 20, height: 18)
@@ -3092,8 +3084,15 @@ final class DetailVC: NSViewController {
             tv.minSize = NSSize(width: 0, height: 0)
             tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
             tv.isVerticallyResizable = true; tv.isHorizontallyResizable = false
+            tv.autoresizingMask = [.width]
             tv.textContainer?.widthTracksTextView = true
             w.contentView = scroll
+            let viewport = scroll.contentSize
+            tv.frame = NSRect(origin: .zero, size: viewport)
+            tv.textContainer?.containerSize = NSSize(
+                width: max(0, viewport.width - tv.textContainerInset.width * 2),
+                height: CGFloat.greatestFiniteMagnitude
+            )
             // Окно фиксированной высоты 500 не влезает на маленький экран целиком (отзыв #125).
             w.clampToScreen()
             whatsNewWindow = w

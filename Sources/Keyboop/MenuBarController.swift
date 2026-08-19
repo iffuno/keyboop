@@ -73,7 +73,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     ///   • наш флаг и любая другая голая NSImage — центр 26.5 px;
     ///   • значки соседей (SF Symbol и шаблонные картинки) — 29.0…30.0 px;
     ///   • наши же буквы «RU» — 29.0 px.
-    /// То есть мы выше всех ровно на 3 px, это 1.5 pt. Причина не в размере картинки: все варианты
+    /// Стенд давал разницу 3 px, но снимок живого пункта после поправки показал перескок на 2 px вниз,
+    /// поэтому практический сдвиг — 1 px, то есть 0.5 pt. Причина не в размере картинки: все варианты
     /// с разной высотой чернил сели в один и тот же центр 26.5. AppKit центрирует голую картинку по
     /// кнопке пункта, а символам знает базовую линию и сажает их ниже. У картинки такой линии нет,
     /// поэтому опускаем её сами.
@@ -81,7 +82,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// ⚠️ ЛЕЧИТЬ ИМЕННО КОРОБКОЙ, А НЕ РАЗМЕРОМ. Первым делом хочется уменьшить флаг, но замер это
     /// опровергает: высота чернил на положение центра не влияет вовсе. И размер флага — отдельное
     /// решение автора от 25.07 («чтобы флаг не выглядел мелким»), его трогать нельзя.
-    private static let menuBarInkDrop: CGFloat = 1.5
+    private static let menuBarInkDrop: CGFloat = 0.5
 
     /// Опустить готовую картинку на `menuBarInkDrop`, дорисовав поле сверху. Всё остальное
     /// (шаблонность, подпись для VoiceOver) переносится как есть.
@@ -99,6 +100,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     private func configureButton() {
         applyIconStyle()
+    }
+
+    /// AppKit ставит текст статуса чуть выше визуального центра соседних системных значков.
+    private func setStatusTitle(_ title: String, on button: NSButton) {
+        button.title = title
+        guard !title.isEmpty else { return }
+        let shifted = NSMutableAttributedString(attributedString: button.attributedTitle)
+        shifted.addAttribute(.baselineOffset, value: -1.0, range: NSRange(location: 0, length: shifted.length))
+        button.attributedTitle = shifted
     }
 
     /// «Фирменный знак» для покоя строки меню: тот же логотип (template), что и в waveform.
@@ -272,7 +282,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         guard !parts.isEmpty else { button.title = ""; return }
         let text = parts.joined(separator: " ")
         // Без значка (hidden) подпись без ведущего пробела; со значком — с отступом от него.
-        button.title = settings.menuBarStyle == "hidden" ? text : " \(text)"
+        setStatusTitle(settings.menuBarStyle == "hidden" ? text : " \(text)", on: button)
     }
 
     /// Индикатор диктовки в статус-баре: запись / распознавание / покой.
@@ -295,7 +305,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             // В режиме «без значка» код языка на время записи НЕ прячем: он там единственное, что
             // человек согласился видеть, и его исчезновение читалось бы как ещё одна поломка.
             let bare = settings.menuBarStyle == "hidden"
-            button.title = (bare && settings.menuBarShowLanguage) ? layout.currentCodeLive() : ""
+            setStatusTitle((bare && settings.menuBarShowLanguage) ? layout.currentCodeLive() : "", on: button)
             button.imagePosition = bare ? .imageLeading : .imageOnly
             button.image?.accessibilityDescription = L10n.t("a11y.recording")
             startWave()

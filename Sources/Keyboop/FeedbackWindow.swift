@@ -111,17 +111,22 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         // «каретка двигается, текста не видно». Размещённые глифы рисуются за границей видимой
         // области, а каретка видна, потому что её рисуют в начале координат. Цвета тут ни при чём,
         // их выставили явно ещё в июле, и не помогло — потому что лечили не то.
-        textView.frame = NSRect(x: 0, y: 0, width: 468, height: 150)
+        textView.frame = NSRect(x: 0, y: 0, width: textScroll.contentSize.width, height: 150)
         textView.minSize = NSSize(width: 0, height: 150)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
-        textView.textContainer?.containerSize = NSSize(width: 468, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.containerSize = NSSize(
+            width: max(0, textScroll.contentSize.width - textView.textContainerInset.width * 2),
+            height: CGFloat.greatestFiniteMagnitude
+        )
         textView.textContainer?.widthTracksTextView = true
 
         textScroll.documentView = textView
         textScroll.hasVerticalScroller = true
+        textScroll.hasHorizontalScroller = false
+        textScroll.horizontalScrollElasticity = .none
         textScroll.borderType = .bezelBorder
         textScroll.translatesAutoresizingMaskIntoConstraints = false
         textScroll.heightAnchor.constraint(equalToConstant: 150).isActive = true
@@ -208,6 +213,13 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         formContent = content
         w.contentView = content
         w.setContentSize(content.fittingSize); w.clampToScreen()
+        content.layoutSubtreeIfNeeded()
+        let viewportWidth = textScroll.contentSize.width
+        textView.setFrameSize(NSSize(width: viewportWidth, height: textView.frame.height))
+        textView.textContainer?.containerSize = NSSize(
+            width: max(0, viewportWidth - textView.textContainerInset.width * 2),
+            height: CGFloat.greatestFiniteMagnitude
+        )
     }
 
     /// Экран «отправлено».

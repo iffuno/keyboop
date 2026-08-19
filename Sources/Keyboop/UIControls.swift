@@ -1686,6 +1686,16 @@ final class ModePicker: NSView {
         return c
     }
 
+    /// Same quiet track tint as before, composited onto the window color so content cannot show through.
+    private func opaqueTrackInk() -> CGColor {
+        var c = NSColor.windowBackgroundColor.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            c = (NSColor.windowBackgroundColor.blended(withFraction: 0.07, of: .labelColor)
+                 ?? NSColor.windowBackgroundColor).cgColor
+        }
+        return c
+    }
+
     private func restyle(animated: Bool) {
         CATransaction.begin()
         CATransaction.setDisableActions(!animated)
@@ -1695,7 +1705,7 @@ final class ModePicker: NSView {
         }
         track.frame = bounds
         track.cornerRadius = bounds.height / 2
-        track.backgroundColor = ink(0.07)
+        track.backgroundColor = opaqueTrackInk()
 
         // ⚠️ БЕГУНОК ВО ВСЮ ВЫСОТУ ДОРОЖКИ, БЕЗ ЗАЗОРА (автор 17.08: «выделение по высоте такое же,
         // как основная плашка, сейчас оно меньше и смотрится коряво»). Утопленный бегунок это язык
