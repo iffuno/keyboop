@@ -19,26 +19,41 @@ final class AppBanner {
     /// Показать баннер. `actions` пусто → инфо-тост. `autoDismiss` > 0 → сам скроется через N сек.
     /// Что делать, если человек закрыл плашку крестиком. Ставится тем, кто её показал.
     var onClose: (() -> Void)?
+    /// Что делать, если баннер убрали программно или заменили другим. Для вопросов это отдельный
+    /// ответ: замена не должна притворяться нажатием на крестик.
+    private var onDismiss: (() -> Void)?
 
     func show(title: String, body: String, actions: [Action] = [], autoDismiss: TimeInterval = 0,
-              onClose: (() -> Void)? = nil) {
-        self.onClose = onClose
-        DispatchQueue.main.async { self.present(title: title, body: body, actions: actions, autoDismiss: autoDismiss) }
+              onClose: (() -> Void)? = nil, onDismiss: (() -> Void)? = nil) {
+        DispatchQueue.main.async {
+            self.present(title: title, body: body, actions: actions, autoDismiss: autoDismiss,
+                         onClose: onClose, onDismiss: onDismiss)
+        }
     }
 
     func dismiss() {
+        dismiss(notifyingOwner: true)
+    }
+
+    private func dismiss(notifyingOwner: Bool) {
         dismissTimer?.invalidate(); dismissTimer = nil
-        guard let p = panel else { return }
+        let cb = notifyingOwner ? onDismiss : nil
+        onClose = nil; onDismiss = nil
+        guard let p = panel else { cb?(); return }
         panel = nil
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.18; p.animator().alphaValue = 0
         }, completionHandler: { p.orderOut(nil) })
+        cb?()
     }
 
     // MARK: present
 
-    private func present(title: String, body: String, actions: [Action], autoDismiss: TimeInterval) {
+    private func present(title: String, body: String, actions: [Action], autoDismiss: TimeInterval,
+                         onClose: (() -> Void)?, onDismiss: (() -> Void)?) {
         dismiss(); dismissTimer?.invalidate()
+        self.onClose = onClose
+        self.onDismiss = onDismiss
         let (content, width, height) = makeContent(title: title, body: body, actions: actions, solidDarkBG: true)
 
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -243,12 +258,15 @@ final class AppBanner {
         case .ended, .cancelled, .failed:
             if tx > 60 {                                   // свайп достаточный → улетает вправо и закрывается
                 dismissTimer?.invalidate(); dismissTimer = nil
+                let cb = onClose
+                onClose = nil; onDismiss = nil
                 let win = p; panel = nil
                 NSAnimationContext.runAnimationGroup({ ctx in
                     ctx.duration = 0.16
                     var f = win.frame; f.origin.x += 360; win.animator().setFrame(f, display: true)
                     win.animator().alphaValue = 0
                 }, completionHandler: { win.orderOut(nil) })
+                cb?()
             } else {                                       // недостаточно → возврат на место
                 NSAnimationContext.runAnimationGroup { ctx in
                     ctx.duration = 0.15
@@ -264,7 +282,7 @@ final class AppBanner {
         // нажатие до нас или нет, и был ли под кнопкой обработчик.
         let h = actionHandlers[safe: s.tag]
         kbLog("баннер: нажата кнопка \(s.tag)\(h == nil ? " — обработчика нет!" : "")")
-        dismiss(); h?()
+        dismiss(notifyingOwner: false); h?()
     }
     @objc private func closeTapped() {
         kbLog("баннер: закрыт крестиком")
@@ -274,7 +292,7 @@ final class AppBanner {
         // Он прав, и это вопрос доверия, а не удобства: закрыв окно, человек считает, что сказал
         // «нет», и обязан получить именно «нет». Кто показал плашку, тот и решает, что значит отказ.
         let cb = onClose; onClose = nil
-        dismiss()
+        dismiss(notifyingOwner: false)
         cb?()
     }
 }

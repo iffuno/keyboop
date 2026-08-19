@@ -213,15 +213,13 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>NSPrefersDisplaySafeAreaCompatibilityMode</key> <false/>
     <key>NSPrincipalClass</key>        <string>NSApplication</string>
     <key>NSHumanReadableCopyright</key><string>Keyboop — free &amp; open source</string>
-    <!-- Sparkle (автообновления). Проверка ВКЛ + фоновое скачивание. SUAutomaticallyUpdate=true
-         включает «тихий» путь, но мы его ПЕРЕХВАТЫВАЕМ делегатом willInstallUpdateOnQuit
-         (UpdaterController) и по умолчанию НЕ ставим молча, а показываем СВОЁ уведомление «Обновить
-         сейчас / Обновлять автоматически». Тихо ставим только если пользователь сам выбрал «авто».
-         Так выполняется требование ревизии (установка с согласия), а тихий режим — opt-in. Профайлинг off. -->
+    <!-- Sparkle (автообновления). Проверка включена, но скачивание и установка по умолчанию
+         выключены: выбор делается в нашем уведомлении через SPUUserDriver. Тихо скачиваем и ставим
+         только после явного выбора «Обновлять автоматически». Профайлинг off. -->
     <key>SUFeedURL</key>                       <string>https://keyboop.com/appcast.xml</string>
     <key>SUPublicEDKey</key>                   <string>JHgcY6qatoAU6Tdo02B7mHgfceMyfdPWXqwWQiMESmY=</string>
     <key>SUEnableAutomaticChecks</key>         <true/>
-    <key>SUAutomaticallyUpdate</key>           <true/>
+    <key>SUAutomaticallyUpdate</key>           <false/>
     <key>SUEnableSystemProfiling</key>         <false/>
     <key>SUVerifyUpdateBeforeExtraction</key>  <true/>
     <key>SURequireSignedFeed</key>             <true/>
@@ -234,11 +232,9 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
            открытая вкладка делает за минуту.
          • Батарея — короткий GET, Мак от него не просыпается: Sparkle планирует проверку на время
            бодрствования, а не будильником.
-         • Назойливость — и это главное, чего можно было бы бояться, но её нет. Найдя апдейт, Sparkle
-           СКАЧИВАЕТ его и зовёт `willInstallUpdateOnQuit`; мы там возвращаем true и паркуем цикл
-           (UpdaterController.swift:189), показав СВОЁ уведомление один раз. Пока человек не решил,
-           дальнейшие проверки ничего не показывают, сколько бы их ни было. То есть интервал влияет
-           только на скорость ПЕРВОГО обнаружения.
+         • Назойливость — найдя апдейт, Sparkle показывает наше уведомление и ждёт решения. Пока
+           человек не решил, цикл остаётся активным и повторных уведомлений нет. То есть интервал
+           влияет только на скорость ПЕРВОГО обнаружения.
          Ниже часа опускать нельзя: Sparkle поднимет значение до своего минимума. 2 часа с запасом.
          Персонального значения в user defaults ни у кого нет (проверено: `defaults read ru.keyboop.app
          SUScheduledCheckInterval` → does not exist), поэтому новая цифра из Info.plist доедет до всех
