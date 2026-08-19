@@ -63,6 +63,40 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         buildMenu()
     }
 
+    // MARK: - Выравнивание своих картинок по системной линии значков
+
+    /// ⚠️ РУЧНАЯ КАРТИНКА В СТРОКЕ МЕНЮ СИДИТ ВЫШЕ СИСТЕМНЫХ ЗНАЧКОВ, И ЭТО ВИДНО (отзыв #150,
+    /// «язык не выровнен по отношению к иконке», 18.08.2026).
+    ///
+    /// Замер стендом (отдельный процесс с шестью пунктами разной постройки, скриншот строки меню,
+    /// центр чернил каждого значка посчитан по пикселям):
+    ///   • наш флаг и любая другая голая NSImage — центр 26.5 px;
+    ///   • значки соседей (SF Symbol и шаблонные картинки) — 29.0…30.0 px;
+    ///   • наши же буквы «RU» — 29.0 px.
+    /// То есть мы выше всех ровно на 3 px, это 1.5 pt. Причина не в размере картинки: все варианты
+    /// с разной высотой чернил сели в один и тот же центр 26.5. AppKit центрирует голую картинку по
+    /// кнопке пункта, а символам знает базовую линию и сажает их ниже. У картинки такой линии нет,
+    /// поэтому опускаем её сами.
+    ///
+    /// ⚠️ ЛЕЧИТЬ ИМЕННО КОРОБКОЙ, А НЕ РАЗМЕРОМ. Первым делом хочется уменьшить флаг, но замер это
+    /// опровергает: высота чернил на положение центра не влияет вовсе. И размер флага — отдельное
+    /// решение автора от 25.07 («чтобы флаг не выглядел мелким»), его трогать нельзя.
+    private static let menuBarInkDrop: CGFloat = 1.5
+
+    /// Опустить готовую картинку на `menuBarInkDrop`, дорисовав поле сверху. Всё остальное
+    /// (шаблонность, подпись для VoiceOver) переносится как есть.
+    private static func dropped(_ img: NSImage) -> NSImage {
+        let size = NSSize(width: img.size.width, height: img.size.height + menuBarInkDrop * 2)
+        let out = NSImage(size: size)
+        out.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        img.draw(in: NSRect(x: 0, y: 0, width: img.size.width, height: img.size.height))
+        out.unlockFocus()
+        out.isTemplate = img.isTemplate
+        out.accessibilityDescription = img.accessibilityDescription
+        return out
+    }
+
     private func configureButton() {
         applyIconStyle()
     }
@@ -78,7 +112,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                  from: .zero, operation: .sourceOver, fraction: 1)
         img.unlockFocus()
         img.isTemplate = true
-        return img
+        return dropped(img)                    // на системную линию значков, см. menuBarInkDrop
     }()
 
     /// ФЛАГ ЯЗЫКА в строке меню — как когда-то в Punto Switcher (просьба пользователей 25.07).
@@ -138,8 +172,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         img.unlockFocus()
         img.isTemplate = false
         img.accessibilityDescription = lang
-        flagCache[lang] = img
-        return img
+        let out = dropped(img)                 // на системную линию значков, см. menuBarInkDrop
+        flagCache[lang] = out
+        return out
     }
 
     /// Язык, под который уже нарисован флаг. Меняем картинку ТОЛЬКО при реальной смене раскладки:

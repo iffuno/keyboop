@@ -19,9 +19,67 @@ final class ParakeetEngine {
     /// Модель уже скачана?
     static var modelInstalled: Bool { AsrModels.modelsExist(at: modelDir) }
 
-    /// Загрузить модель из локальной папки (офлайн). Идемпотентно.
+    /// Идёт загрузка. ⚠️ ХРАНИМ ЗАДАЧУ, А НЕ ФЛАГ «занято»: второй заявке нужно ДОЖДАТЬСЯ первой,
+    /// а не отступить и не начать свою. Флаг умеет только второе.
+    private var loading: Task<Bool, Never>?
+    /// Замок ровно на проверку-и-установку `loading`. Под ним нет ни одного `await`, поэтому он
+    /// никого не держит: сама загрузка идёт уже снаружи, в задаче.
+    private let loadGate = NSLock()
+
+    /// Менеджер распознавания с НАШЕЙ настройкой нарезки. Один на все три места, где он создаётся
+    /// (загрузка и два пути после скачивания модели): три копии настройки разошлись бы в первый же
+    /// раз, когда мы поправим одну из них.
+    ///
+    /// ⚠️ `melChunkContext: false` — ПРЯМОЕ УКАЗАНИЕ ВЕНДОРА ДЛЯ НАШЕГО СЛУЧАЯ, а не наша догадка.
+    /// Док-комментарий `ASRConfig` (vendor/FluidAudio/.../AsrTypes.swift:26-38): прибавка 80 мс
+    /// контекста к не-первым кускам чинила пустые предсказания на ДЛИННОМ АНГЛИЙСКОМ (PR #264), но
+    /// на многоязычной v3 (issue #594) она смещает первый кадр энкодера так, что декодер сползает
+    /// к английскому приору. Дословно: «Set to false for v3 multilingual long-form batch
+    /// transcription». У нас ровно это: v3, русский, длинные диктовки.
+    ///
+    /// Повод искать (18.08.2026) — жалоба «диктовка снова без знаков препинания». Замер по логу на
+    /// 167 диктовках дал ровную закономерность: чем длиннее, тем реже знаки. 4.2 знака на 100
+    /// символов при длине до 5 с, 4.0 на 5-10 с, 3.5 на 10-20 с, 2.8 на 20-40 с, 2.3 дальше.
+    /// Пунктуацию рождает модель, наш слой её не добавляет, значит дело в том, КАК режется звук.
+    ///
+    /// ⚠️ ЭТО ГИПОТЕЗА, А НЕ ДОКАЗАННАЯ ПОЧИНКА. Аудио у нас не сохраняется (настройка выключена),
+    /// сравнить на одной и той же записи не на чем. Проверяем на живом потоке тем же счётчиком:
+    /// `grep "пунктуация=" ~/Library/Logs/Keyboop.log` и та же разбивка по длительности. Если
+    /// плотность на 20-40 с не выросла — флаг вернуть и идти дальше в `dualDecodeArbitration`.
+    private static func makeManager() -> AsrManager {
+        AsrManager(config: ASRConfig(melChunkContext: false))
+    }
+
+    /// Загрузить модель из локальной папки (офлайн). Идемпотентно И безопасно при параллельных
+    /// вызовах: одновременные заявки ждут одну загрузку.
+    ///
+    /// ⚠️ ЗАЧЕМ ЗДЕСЬ ЗАМОК, А НЕ ПРОСТО `if ready` (задача 155). Прежняя проверка стояла ДО первого
+    /// `await`, но между ней и присвоением `ready = true` лежат десятки секунд ожидания. Прогрев из
+    /// `VoiceController` и первая настоящая диктовка попадали в этот зазор оба, и модель на 465 МБ
+    /// грузилась ДВАЖДЫ: двойная память и вторая компиляция CoreML под ANE. Именно так выглядела
+    /// жалоба «первое распознавание идёт очень долго».
     func loadIfNeeded() async -> Bool {
         if ready { return true }
+        loadGate.lock()
+        if let running = loading {
+            loadGate.unlock()
+            return await running.value                  // ждём чужую загрузку, своей не заводим
+        }
+        let task = Task { await self.loadNow() }
+        loading = task
+        loadGate.unlock()
+        let ok = await task.value
+        // Неудачу НЕ запоминаем: человек мог просто не скачать модель, а через минуту скачать.
+        // Удачу помнить незачем — её помнит `ready`, и следующий вызов уходит по быстрому пути.
+        // Обнуляет только ТОТ, КТО ЗАВЁЛ задачу: остальные ушли выше по ветке ожидания. Пока
+        // `loading` не пуст, новую задачу никто завести не может, значит здесь всегда лежит наша, и
+        // сравнивать не с чем (`Task` — структура, `===` к ней и не применить).
+        loadGate.lock(); loading = nil; loadGate.unlock()
+        return ok
+    }
+
+    /// Собственно загрузка. Отдельным методом, потому что её ход теперь сторожит `loadIfNeeded`.
+    private func loadNow() async -> Bool {
         guard Self.modelInstalled else { kbLog("parakeet: модель не установлена"); return false }
         do {
             let t0 = ProcessInfo.processInfo.systemUptime
@@ -32,7 +90,7 @@ final class ParakeetEngine {
             // ANE, которая на чистой машине занимает почти минуту (замер стенда 15.08: 49,7с против
             // 0,26с на прогретой).
             loadedModels = models
-            let mgr = AsrManager()
+            let mgr = Self.makeManager()
             try await mgr.loadModels(models)
             decoderLayers = await mgr.decoderLayerCount
             manager = mgr
@@ -91,7 +149,7 @@ final class ParakeetEngine {
             let models = try await AsrModels.downloadAndLoad(version: .v3, progressHandler: { p in
                 progress(p.fractionCompleted)
             })
-            let mgr = AsrManager()
+            let mgr = Self.makeManager()
             try await mgr.loadModels(models)
             decoderLayers = await mgr.decoderLayerCount
             manager = mgr
@@ -155,7 +213,7 @@ final class ParakeetEngine {
             }
             DownloadUtils.enforceOffline = true
             let models = try await AsrModels.load(from: dir, version: .v3)
-            let mgr = AsrManager()
+            let mgr = Self.makeManager()
             try await mgr.loadModels(models)
             decoderLayers = await mgr.decoderLayerCount
             manager = mgr

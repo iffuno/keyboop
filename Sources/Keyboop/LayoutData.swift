@@ -14,7 +14,7 @@ final class LayoutData {
     private init() {
         trigramsRu = Self.loadDict("trigrams_ru")
         trigramsEn = Self.loadDict("trigrams_en")
-        wordsRu = Self.loadSet("words_ru").union(ExtraWords.ru).union(ExtraWords.ruDev).union(ExtraWords.ruAbbr).union(ExtraWords.ruShort)
+        wordsRu = Self.loadSet("words_ru").union(ExtraWords.ru).union(ExtraWords.ruDev).union(ExtraWords.ruAbbr).union(ExtraWords.ruShort).union(ExtraWords.ruLoanNames)
         wordsEn = Self.loadSet("words_en").union(ExtraWords.en)
         isLoaded = !trigramsRu.isEmpty && !wordsEn.isEmpty
         NSLog("Keyboop: LayoutData loaded=\(isLoaded) ru-tri=\(trigramsRu.count) en-tri=\(trigramsEn.count) ru-w=\(wordsRu.count) en-w=\(wordsEn.count)")

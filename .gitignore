@@ -1,8 +1,41 @@
-.build/
-.DS_Store
-Keyboop.app/
-*.xcodeproj
+# ЧТО НЕ ДЕРЖИМ В ИСТОРИИ. Правило простое: в git идёт то, что незаменимо и текстом; всё, что можно
+# пересобрать или скачать, остаётся снаружи. Список сверен с Tools/backup.sh — там та же граница,
+# проверенная годом работы.
 
-# Punto-копии для reverse-engineering — не коммитим бинарь
-research/punto-switcher/PuntoSwitcher.app/
+# Сборка и дистрибутивы (пересобираются)
+.build/
+Keyboop.app/
+*.dmg
+*.delta
+sparkle-updates/            # 860 МБ старых сборок, и они же лежат на сервере
+
+# Чужой код (вендорится своими скриптами, 322 МБ)
+vendor/
+
+# Тяжёлые картинки и видео: не меняются от релиза к релизу, для них своё зеркало (backup.sh assets)
+Promo/
+img/
+marketing/**/*.png
+marketing/**/*.jpg
+marketing/**/*.jpeg
+marketing/**/*.mp4
+marketing/**/*.mov
+site/**/*.png
+site/**/*.jpg
+site/**/*.mp4
+site/models/
+
+# Разбор чужих приложений — не наше, в историю не кладём
+Handy Files/
 PuntoS files/
+
+# Мусор системы и инструментов
+.DS_Store
+*.log
+__pycache__/
+*.pyc
+node_modules/
+.venv/
+.code-review-graph/
+*.rej
+*.orig

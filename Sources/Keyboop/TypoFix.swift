@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics   // CGFloat для геометрии клавиатуры
 
 /// ИСПРАВЛЕНИЕ ОПЕЧАТОК ПО ТАБЛИЦЕ ПРАВИЛ (задача 114, решение автора 09.08.2026).
 ///
@@ -147,23 +148,37 @@ final class TypoFix {
     private static let rowsRu = ["йцукенгшщзхъ", "фывапролджэ", "ячсмитьбю"]
     private static let rowsEn = ["qwertyuiop", "asdfghjkl", "zxcvbnm"]
 
+    /// Сдвиги рядов на НАСТОЯЩЕЙ клавиатуре, в ширинах клавиши: после Tab 1.5, после Caps Lock 1.75,
+    /// после Shift 2.25. Это не украшение, а суть: без сдвигов ряды сравниваются по НОМЕРУ клавиши,
+    /// и «а» оказывается соседом «и», хотя между ними полторы клавиши.
+    private static let rowOffsets: [CGFloat] = [1.5, 1.75, 2.25]
+
+    /// Соседство по ФИЗИЧЕСКОМУ положению клавиш, а не по номеру в ряду (задача 157, 18.08.2026).
+    ///
+    /// ⚠️ ЧЕМ БЫЛА ПЛОХА ПРЕЖНЯЯ КАРТА. Она брала клавиши с теми же номерами в соседних рядах, то
+    /// есть считала «а» (второй ряд, позиция 3) соседкой «и» (третий ряд, позиция 4). На настоящей
+    /// клавиатуре их центры разнесены на полторы ширины клавиши, пальцем так не промахиваются.
+    /// Именно эта пара давала жалобу «раскладки» → «раскладка»: замена последней буквы на «соседку»
+    /// превращала одну живую форму слова в другую.
+    ///
+    /// Соседями считаем клавиши, чьи центры по горизонтали расходятся меньше чем на ширину клавиши:
+    /// в своём ряду это левая и правая, в соседнем — те, что физически перекрываются.
     private static func neighbourMap(_ rows: [String]) -> [Character: [Character]] {
-        let grid = rows.map { Array($0) }
-        var map: [Character: Set<Character>] = [:]
-        for (r, row) in grid.enumerated() {
+        var centre: [Character: (row: Int, x: CGFloat)] = [:]
+        for (r, row) in rows.enumerated() {
             for (c, ch) in row.enumerated() {
-                var s = Set<Character>()
-                if c > 0 { s.insert(row[c - 1]) }
-                if c + 1 < row.count { s.insert(row[c + 1]) }
-                for dr in [-1, 1] {
-                    let rr = r + dr
-                    guard rr >= 0, rr < grid.count else { continue }
-                    for cc in [c - 1, c, c + 1] where cc >= 0 && cc < grid[rr].count { s.insert(grid[rr][cc]) }
-                }
-                map[ch, default: []].formUnion(s)
+                centre[ch] = (r, rowOffsets[r] + CGFloat(c) + 0.5)
             }
         }
-        return map.mapValues { Array($0) }
+        var map: [Character: Set<Character>] = [:]
+        for (ch, a) in centre {
+            for (other, b) in centre where other != ch {
+                guard abs(a.row - b.row) <= 1 else { continue }
+                let limit: CGFloat = a.row == b.row ? 1.01 : 1.0   // свой ряд: строго соседняя клавиша
+                if abs(a.x - b.x) < limit { map[ch, default: []].insert(other) }
+            }
+        }
+        return map.mapValues { Array($0).sorted() }
     }
     private static let nearRu = neighbourMap(rowsRu)
     private static let nearEn = neighbourMap(rowsEn)
@@ -199,7 +214,12 @@ final class TypoFix {
             found = s
             return false
         }
-        for i in 0..<chars.count {                        // промах на соседнюю клавишу
+        // ⚠️ ПОСЛЕДНЮЮ БУКВУ НЕ ТРОГАЕМ ВОВСЕ (задача 157). В русском последняя буква это окончание,
+        // и её замена почти всегда превращает одну живую форму слова в другую: «автозагрузки» →
+        // «автозагрузка», «альтернативу» → «альтернатива», «арифметике» → «арифметика». Замер на
+        // корпусе наших документов: две трети всей порчи приходилось ровно на этот один шаг.
+        // Цена честная и принята: настоящие опечатки в последней букве мы теперь пропускаем.
+        for i in 0..<(chars.count - 1) {                  // промах на соседнюю клавишу
             guard let alts = near[chars[i]] else { continue }
             let orig = chars[i]
             for alt in alts {
