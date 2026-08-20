@@ -35,8 +35,8 @@ private final class KeyboopUpdateUserDriver: NSObject, SPUUserDriver {
             pendingChoice = { continuation.resume(returning: $0) }
             let version = item.displayVersionString
             AppBanner.shared.show(
-                title: String(format: L10n.t("upd.notifyTitle"), version),
-                body: L10n.t("upd.notifyBody"),
+                title: String(format: L10n.t("upd.availableTitle"), version),
+                body: L10n.t("upd.availableBody"),
                 actions: [
                     .init(title: L10n.t("upd.now"), coral: false) { [weak self] in
                         self?.resolve(.install)
@@ -109,11 +109,11 @@ private final class KeyboopUpdateUserDriver: NSObject, SPUUserDriver {
 
 /// Автообновления через Sparkle.
 ///
-/// Поведение (security review 15.06 + выбор автора): проверка ВКЛ по умолчанию, но скачивание и
-/// установка — только после выбора пользователя в нашем уведомлении.
+/// Поведение: проверка, предварительное скачивание и тихая установка — три отдельных уровня.
+/// Без предварительного скачивания крестик возвращает Sparkle `.skip` до загрузки файла.
 ///   • «Обновить сейчас» → ставим эту версию.
-///   • «Обновлять автоматически» → `silentAutoUpdate=true`; дальше ставим ТИХО в простое (когда юзер
-///     отошёл), не мешая. Так пользователь сам выбирает тихий режим — молча у всех мы не ставим.
+///   • «Мгновенные обновления» → Sparkle скачивает заранее и поэтому установит файл при выходе.
+///   • «Обновлять автоматически» → дальше ставим ТИХО в простое (когда юзер отошёл), не мешая.
 ///
 /// Приватность: профайлинг выключен, `feedParametersForUpdater` НЕ реализован → ровно один GET за
 /// appcast + GET за DMG, без профиля/идентификатора. Подлинность — EdDSA + Developer ID.
@@ -122,7 +122,7 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
 
     private var updater: SPUUpdater?
     private var userDriver: KeyboopUpdateUserDriver?
-    private var pendingInstall: (() -> Void)?       // только явно разрешённая тихая установка
+    private var pendingInstall: (() -> Void)?       // установка уже скачанного мгновенного обновления
     private(set) var pendingVersion = ""
     private let idleThreshold: TimeInterval = 300    // 5 минут простоя для тихой установки
     private var lastDeferReason: String?             // чтобы не писать одну и ту же причину отказа в лог
@@ -143,8 +143,9 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
         // ⚠️ В dev-режиме отладки апдейтера (KEYBOOP_UPDATER=1) скачивание ЗАПРЕЩЕНО: пусть Sparkle
         // спрашивает фид и пишет в лог, но не приносит прод-DMG в dev-бандл (инцидент 23.07).
         let debugDev = (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
-        updater.automaticallyDownloadsUpdates = automaticChecks && AppSettings.shared.silentAutoUpdate && !debugDev
-        kbLog("updater: started (check=\(automaticChecks) silent=\(AppSettings.shared.silentAutoUpdate)"
+        updater.automaticallyDownloadsUpdates = automaticChecks && AppSettings.shared.instantUpdates && !debugDev
+        kbLog("updater: started (check=\(automaticChecks) instant=\(AppSettings.shared.instantUpdates)"
+              + " silent=\(AppSettings.shared.silentAutoUpdate)"
               + (debugDev ? ", DEV: скачивание запрещено" : "") + ")")
 
         // ПРОВЕРКА ПРИ ЗАПУСКЕ (просьба автора 30.07). Сам Sparkle этого не делает: он помнит время
@@ -177,7 +178,7 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
         get { updater?.automaticallyChecksForUpdates ?? true }
         set {
             updater?.automaticallyChecksForUpdates = newValue
-            updater?.automaticallyDownloadsUpdates = newValue && AppSettings.shared.silentAutoUpdate && !isDevBuild
+            updater?.automaticallyDownloadsUpdates = newValue && AppSettings.shared.instantUpdates && !isDevBuild
         }
     }
 
@@ -189,7 +190,7 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
     /// (фидбэк 16.06). Поэтому активируем приложение прямо перед проверкой.
     func checkNow() {
         NSApp.activate(ignoringOtherApps: true)
-        if pendingInstall != nil {
+        if pendingInstall != nil, AppSettings.shared.silentAutoUpdate {
             kbLog("updater: проверка вручную при тихо загруженном \(pendingVersion) — ставлю сейчас")
             installPendingNow()
             return
@@ -208,9 +209,18 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
 
     /// The banner's right button opts into future automatic downloads before installing this one.
     func enableSilentUpdates() {
+        AppSettings.shared.instantUpdates = true
         AppSettings.shared.silentAutoUpdate = true
         automaticChecks = true
         kbLog("updater: пользователь выбрал тихие автообновления")
+    }
+
+    /// The pre-download switch changes Sparkle's runtime behavior immediately. It cannot undo an
+    /// update that Sparkle has already downloaded; that update remains scheduled for app quit.
+    func noteInstantModeChanged() {
+        updater?.automaticallyDownloadsUpdates = automaticChecks && AppSettings.shared.instantUpdates && !isDevBuild
+        kbLog("updater: мгновенные обновления = \(AppSettings.shared.instantUpdates)")
+        if pendingInstall == nil { updater?.resetUpdateCycle() }
     }
 
     /// Тумблер «бета-версии» переключили — перезаводим цикл, иначе смена канала доедет только к
@@ -374,21 +384,48 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
         DispatchQueue.main.async { NotificationCenter.default.post(name: .updaterStatusChanged, object: nil) }
     }
 
-    /// Automatic updates were explicitly enabled, so hold Sparkle's immediate-install block until
-    /// five minutes of real idle time. Normal updates never reach this delegate before consent:
-    /// their choice is handled by `KeyboopUpdateUserDriver` while `.skip` is still available.
+    /// An update reaches this delegate only after the opt-in pre-download path has fetched it.
+    /// Sparkle will install that file on quit. We retain the immediate block so the banner can
+    /// install now, or the silent mode can wait for five minutes of real idle time.
     @objc(updater:willInstallUpdateOnQuit:immediateInstallationBlock:)
     func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
                  immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
         pendingVersion = item.displayVersionString
         let silent = AppSettings.shared.silentAutoUpdate
         kbLog("updater: \(pendingVersion) скачан, готов к установке (silent=\(silent))")
-        guard silent else { return false }
-        // Юзер выбрал «авто» → ставим тихо, когда отошёл (5 мин без ввода, не идёт диктовка/окно).
         pendingInstall = immediateInstallHandler
-        kbLog("updater: жду 5 минут простоя, чтобы поставить \(pendingVersion) тихо")
-        IdleMonitor.shared.waitForIdle(threshold: idleThreshold) { [weak self] in self?.installWhenClear() }
+        if silent {
+            kbLog("updater: жду 5 минут простоя, чтобы поставить \(pendingVersion) тихо")
+            IdleMonitor.shared.waitForIdle(threshold: idleThreshold) { [weak self] in self?.installWhenClear() }
+        } else {
+            showReadyBanner()
+        }
         return true
+    }
+
+    private func showReadyBanner() {
+        AppBanner.shared.show(
+            title: String(format: L10n.t("upd.notifyTitle"), pendingVersion),
+            body: L10n.t("upd.notifyBody"),
+            actions: [
+                .init(title: L10n.t("upd.now"), coral: false) { [weak self] in self?.installPendingNow() },
+                .init(title: L10n.t("upd.autoShort"), coral: true) { [weak self] in
+                    self?.enableSilentUpdates()
+                    self?.installPendingNow()
+                }
+            ],
+            onClose: { [weak self] in self?.deferDownloadedUpdate() },
+            onDismiss: { [weak self] in self?.deferDownloadedUpdate() }
+        )
+    }
+
+    /// Closing or replacing the ready banner cannot cancel Sparkle's install-on-quit commitment.
+    /// Release our immediate handler and resume the cycle; the setting explains this consequence.
+    private func deferDownloadedUpdate() {
+        guard pendingInstall != nil else { return }
+        pendingInstall = nil
+        kbLog("updater: готовое обновление отложено до выхода из Keyboop")
+        updater?.resetUpdateCycle()
     }
 
     /// Тихая установка только когда реально никто не мешает.
@@ -428,8 +465,9 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
     /// Тумблер тихих обновлений выключили — гасим ожидание простоя.
     func cancelSilentWait() {
         IdleMonitor.shared.stop()
-        updater?.automaticallyDownloadsUpdates = false
+        updater?.automaticallyDownloadsUpdates = automaticChecks && AppSettings.shared.instantUpdates && !isDevBuild
         lastDeferReason = nil
+        if pendingInstall != nil { showReadyBanner() }
     }
 
     /// Тумблер «обновлять тихо» включили при уже показанном или загруженном апдейте: видимый вопрос

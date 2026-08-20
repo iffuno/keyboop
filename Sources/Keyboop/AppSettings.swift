@@ -523,6 +523,12 @@ final class AppSettings {
     /// Версия прошлого запуска — для подсказки про Accessibility после обновления (смена подписи →
     /// доступ протух). Пусто на первом запуске. Сравниваем с текущей в AppDelegate.
     var lastRunVersion: String { get { d.string(forKey: "lastRunVersion") ?? "" } set { d.set(newValue, forKey: "lastRunVersion") } }
+    /// Pre-downloads updates so the banner can install immediately. Sparkle owns a downloaded
+    /// update and will install it when the app quits, so this is deliberately opt-in.
+    var instantUpdates: Bool {
+        get { silentAutoUpdate || d.bool(forKey: "instantUpdates") }
+        set { d.set(newValue, forKey: "instantUpdates") }
+    }
     /// Ставить обновления тихо, без вопроса (opt-in). По умолчанию FALSE — спрашиваем уведомлением
     /// «Обновить сейчас / Обновлять автоматически». Пользователь жмёт «авто» → ставим тихо в простое.
     var silentAutoUpdate: Bool { get { d.bool(forKey: "silentAutoUpdate") } set { d.set(newValue, forKey: "silentAutoUpdate") } }

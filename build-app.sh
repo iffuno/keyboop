@@ -214,8 +214,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>NSPrincipalClass</key>        <string>NSApplication</string>
     <key>NSHumanReadableCopyright</key><string>Keyboop — free &amp; open source</string>
     <!-- Sparkle (автообновления). Проверка включена, но скачивание и установка по умолчанию
-         выключены: выбор делается в нашем уведомлении через SPUUserDriver. Тихо скачиваем и ставим
-         только после явного выбора «Обновлять автоматически». Профайлинг off. -->
+         выключены: выбор делается в нашем уведомлении через SPUUserDriver. Предварительное
+         скачивание и тихая установка включаются отдельными opt-in настройками. Профайлинг off. -->
     <key>SUFeedURL</key>                       <string>https://keyboop.com/appcast.xml</string>
     <key>SUPublicEDKey</key>                   <string>JHgcY6qatoAU6Tdo02B7mHgfceMyfdPWXqwWQiMESmY=</string>
     <key>SUEnableAutomaticChecks</key>         <true/>
