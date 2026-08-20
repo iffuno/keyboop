@@ -47,6 +47,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(languageChanged),
             name: .keyboopLanguageChanged, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(screenParametersChanged),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -61,6 +64,12 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // не изменилось. Сбрасываем метку, и ближайший тик перепишет её на новом языке.
         shownIconState = nil
         buildMenu()
+    }
+
+    @objc private func screenParametersChanged() {
+        // Главное меню могло переехать между встроенным экраном с вырезом и внешним дисплеем.
+        // Пересобираем и картинку, и baseline текста для экрана, где теперь живёт status item.
+        applyIconStyle()
     }
 
     // MARK: - Выравнивание своих картинок по системной линии значков
@@ -81,12 +90,29 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// ⚠️ ЛЕЧИТЬ ИМЕННО КОРОБКОЙ, А НЕ РАЗМЕРОМ. Первым делом хочется уменьшить флаг, но замер это
     /// опровергает: высота чернил на положение центра не влияет вовсе. И размер флага — отдельное
     /// решение автора от 25.07 («чтобы флаг не выглядел мелким»), его трогать нельзя.
-    private static let menuBarInkDrop: CGFloat = 1.5
+    private enum MenuBarAlignment: Hashable {
+        case original
+        case preLiquidGlassNotchless
 
-    /// Опустить готовую картинку на `menuBarInkDrop`, дорисовав поле сверху. Всё остальное
-    /// (шаблонность, подпись для VoiceOver) переносится как есть.
-    private static func dropped(_ img: NSImage) -> NSImage {
-        let size = NSSize(width: img.size.width, height: img.size.height + menuBarInkDrop * 2)
+        var imageDrop: CGFloat { self == .preLiquidGlassNotchless ? 0.5 : 1.5 }
+    }
+
+    private var menuBarAlignment: MenuBarAlignment = .original
+
+    /// Поправка 0.5/-1 pt измерена на macOS 14.8.4 и MacBook Air M1 без выреза. На macOS 26
+    /// AppKit сменил оформление строки меню, а у экранов с камерой отличается её геометрия, поэтому
+    /// там сохраняем прежние 1.5/0 pt, пока не появится отдельный замер на таком железе.
+    private static func alignment(for screen: NSScreen?) -> MenuBarAlignment {
+        if #available(macOS 26.0, *) { return .original }
+        guard let screen, screen.safeAreaInsets.top == 0 else { return .original }
+        return .preLiquidGlassNotchless
+    }
+
+    /// Опустить готовую картинку на величину выбранного режима, дорисовав поле сверху. Всё
+    /// остальное (шаблонность, подпись для VoiceOver) переносится как есть.
+    private static func dropped(_ img: NSImage, alignment: MenuBarAlignment) -> NSImage {
+        let drop = alignment.imageDrop
+        let size = NSSize(width: img.size.width, height: img.size.height + drop * 2)
         let out = NSImage(size: size)
         out.lockFocus()
         NSGraphicsContext.current?.imageInterpolation = .high
@@ -101,9 +127,23 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         applyIconStyle()
     }
 
+    private func setStatusTitle(_ title: String, on button: NSButton) {
+        // Сначала всегда задаём обычный title: это снимает attributed baseline, если строка меню
+        // переехала на экран/ОС, где должна работать исходная раскладка AppKit.
+        button.title = title
+        guard menuBarAlignment == .preLiquidGlassNotchless, !title.isEmpty else { return }
+        let shifted = NSMutableAttributedString(attributedString: button.attributedTitle)
+        shifted.addAttribute(.baselineOffset, value: -1.0,
+                             range: NSRange(location: 0, length: shifted.length))
+        button.attributedTitle = shifted
+    }
+
     /// «Фирменный знак» для покоя строки меню: тот же логотип (template), что и в waveform.
     /// Масштабируем под высоту строки меню (~16pt), рендерим как template → системная тонировка.
-    private static let brandStatusImage: NSImage? = {
+    private static var brandStatusImageCache: [MenuBarAlignment: NSImage] = [:]
+
+    private static func brandStatusImage(alignment: MenuBarAlignment) -> NSImage? {
+        if let cached = brandStatusImageCache[alignment] { return cached }
         guard let src = markImage else { return nil }
         let h: CGFloat = 15, w = h * (src.size.width / max(src.size.height, 1))
         let img = NSImage(size: NSSize(width: w, height: h))
@@ -112,8 +152,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                  from: .zero, operation: .sourceOver, fraction: 1)
         img.unlockFocus()
         img.isTemplate = true
-        return dropped(img)                    // на системную линию значков, см. menuBarInkDrop
-    }()
+        let out = dropped(img, alignment: alignment)
+        brandStatusImageCache[alignment] = out
+        return out
+    }
 
     /// ФЛАГ ЯЗЫКА в строке меню — как когда-то в Punto Switcher (просьба пользователей 25.07).
     ///
@@ -127,7 +169,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// треть картинки уходила в пустоту под и над флагом.
     ///
     /// `isTemplate` обязательно false: template схлопнул бы флаг в монохромный силуэт.
-    private static var flagCache: [String: NSImage] = [:]
+    private struct FlagCacheKey: Hashable {
+        let language: String
+        let alignment: MenuBarAlignment
+    }
+    private static var flagCache: [FlagCacheKey: NSImage] = [:]
 
     /// Целевая высота флага. Строка меню — 24pt, системные значки ~16–18pt: выше делать нельзя,
     /// иначе macOS обрежет картинку.
@@ -147,8 +193,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     /// Флаг как NSImage под высоту строки меню. Кэш по языку: раскладку опрашиваем каждые полсекунды —
     /// пересоздавать картинку незачем.
-    static func flagImage(lang: String) -> NSImage? {
-        if let cached = flagCache[lang] { return cached }
+    private static func flagImage(lang: String, alignment: MenuBarAlignment) -> NSImage? {
+        let key = FlagCacheKey(language: lang, alignment: alignment)
+        if let cached = flagCache[key] { return cached }
         guard let emoji = flagByLang[lang] else { return nil }
         // Кегль подбираем так, чтобы РИСУНОК флага (а не строка с отбивками) вышел нужной высоты.
         // Эмодзи рисуется примерно на 0.78 кегля, поэтому берём с запасом и обрезаем по факту.
@@ -172,8 +219,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         img.unlockFocus()
         img.isTemplate = false
         img.accessibilityDescription = lang
-        let out = dropped(img)                 // на системную линию значков, см. menuBarInkDrop
-        flagCache[lang] = out
+        let out = dropped(img, alignment: alignment)
+        flagCache[key] = out
         return out
     }
 
@@ -200,7 +247,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     /// Флаг для языка, а если такого флага у нас нет — обычный значок клавиатуры.
     private func flagOrKeyboard(_ lang: String) -> NSImage? {
-        Self.flagImage(lang: lang)
+        Self.flagImage(lang: lang, alignment: menuBarAlignment)
             ?? NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Keyboop")
     }
 
@@ -213,9 +260,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // Пункт исчезает из строки меню, только если НЕТ и значка, и языка.
         statusItem.isVisible = !(style == "hidden" && !showLang)
         guard statusItem.isVisible, voiceState == .idle, let button = statusItem.button else { return }
+        menuBarAlignment = Self.alignment(for: button.window?.screen ?? NSScreen.main)
         switch style {
         case "brand":
-            button.image = Self.brandStatusImage ?? NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Keyboop")
+            button.image = Self.brandStatusImage(alignment: menuBarAlignment)
+                ?? NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Keyboop")
             button.imagePosition = .imageLeading
         case "flag":
             let lang = layout.currentCodeLive()
@@ -272,7 +321,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         guard !parts.isEmpty else { button.title = ""; return }
         let text = parts.joined(separator: " ")
         // Без значка (hidden) подпись без ведущего пробела; со значком — с отступом от него.
-        button.title = settings.menuBarStyle == "hidden" ? text : " \(text)"
+        setStatusTitle(settings.menuBarStyle == "hidden" ? text : " \(text)", on: button)
     }
 
     /// Индикатор диктовки в статус-баре: запись / распознавание / покой.
@@ -295,7 +344,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             // В режиме «без значка» код языка на время записи НЕ прячем: он там единственное, что
             // человек согласился видеть, и его исчезновение читалось бы как ещё одна поломка.
             let bare = settings.menuBarStyle == "hidden"
-            button.title = (bare && settings.menuBarShowLanguage) ? layout.currentCodeLive() : ""
+            setStatusTitle((bare && settings.menuBarShowLanguage) ? layout.currentCodeLive() : "", on: button)
             button.imagePosition = bare ? .imageLeading : .imageOnly
             button.image?.accessibilityDescription = L10n.t("a11y.recording")
             startWave()
