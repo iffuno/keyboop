@@ -1178,7 +1178,14 @@ final class DetailVC: NSViewController {
         // Ширину колонки это не ломает: полоса рисуется в своём жёлобе, и наши 600 пунктов
         // содержимого остаются нетронутыми (в этом и разница `.legacy` от `.overlay`, где полоса
         // ложится ПОВЕРХ текста).
-        scroll.autohidesScrollers = !showsScroller
+        // ⚠️ ПОЛОСА ПРЯЧЕТСЯ ТАМ, ГДЕ ПРОКРУЧИВАТЬ НЕЧЕГО (отзыв #147 @whpstr, решение автора 20.08).
+        // Держать её всегда — исходное требование автора от 16.08, и оно остаётся: без неё человек не
+        // догадывается, что ниже есть продолжение. Но в разделах, которые помещаются целиком, ниже
+        // ничего нет, и полоса там была чистым шумом: «везде появились бесячие скроллбары, которые
+        // не исчезают». `autohidesScrollers` в AppKit значит ровно «скрыть, когда содержимое влезло»,
+        // а НЕ «прятать во время прокрутки», так что стиль `.legacy` (полоса занимает своё место и не
+        // тает) продолжает работать там, где прокрутка есть.
+        scroll.autohidesScrollers = true
         if showsScroller { scroll.scrollerStyle = .legacy }
         scroll.translatesAutoresizingMaskIntoConstraints = false
         docView.translatesAutoresizingMaskIntoConstraints = false
@@ -1590,15 +1597,24 @@ final class DetailVC: NSViewController {
         // опции, чтобы всё смотрелось как одна красивая панель»). В Pro карточки группируют настройки
         // по смыслу, и их там много. Здесь строк четыре, и группировать нечего: рамка вокруг каждой
         // делила экран на куски там, где делить не надо.
+        // ⚠️ ТРИ ПОЛЯ ВЫБОРА ХОТКЕЯ ОДНОЙ ШИРИНЫ (автор 21.08.2026: «почему-то начать диктовку
+        // больше»). Каждый из этих контролов задаёт себе ТОЛЬКО минимум в 230 и дальше растёт под
+        // самый длинный пункт своего списка — а списки у них разные, поэтому и ширины выходили
+        // разные. Связываем их равенством: ширину выберет самый широкий, остальные подтянутся.
+        // Ставить общее ЧИСЛО нельзя: длина пунктов зависит от языка интерфейса, и число, верное
+        // для русского, обрежет английский (или наоборот).
+        let manualKey = HotkeyControl()
+        let voiceKey = VoiceHotkeyControl()
+        let translateKey = TranslateHotkeyControl()
         var rows: [NSView] = [
-            controlRow(L10n.t("root.manual"), HotkeyControl(), subtitle: L10n.t("root.manualSub"),
+            controlRow(L10n.t("root.manual"), manualKey, subtitle: L10n.t("root.manualSub"),
                        help: L10n.t("switch.manualHelp"), key: "switch.manual", wraps: true),
-            controlRow(L10n.t("root.voiceKey"), VoiceHotkeyControl(),
+            controlRow(L10n.t("root.voiceKey"), voiceKey,
                        subtitle: L10n.t(settings.voiceHoldMode == "toggle" ? "root.voiceKeySub"
                                                                           : "root.voiceKeySubHold"),
                        help: L10n.t("root.voiceKeyHelp"), key: "voice.hotkey", wraps: true)
         ]
-        rows.append(controlRow(L10n.t("root.tr"), TranslateHotkeyControl(), enabled: translateAvailable,
+        rows.append(controlRow(L10n.t("root.tr"), translateKey, enabled: translateAvailable,
                                subtitle: L10n.t("root.trSub"), help: L10n.t("root.trHelp"),
                                key: "tr.hotkey", wraps: true))
 
@@ -1609,7 +1625,15 @@ final class DetailVC: NSViewController {
         var items: [NSView] = [group(headerRoom), card(rows, vPad: 8)]
         if !translateAvailable { items += [group(6), hint(L10n.t("wel.trNeedOS"))] }
         items += [group(6), rootFooter()]
-        return vstack(items)
+        let root = vstack(items)
+
+        // ⚠️ СВЯЗЫВАЕМ ШИРИНЫ ТОЛЬКО ПОСЛЕ СБОРКИ ДЕРЕВА. Связь между двумя видами требует общего
+        // предка НА МОМЕНТ ВКЛЮЧЕНИЯ: включённая раньше, она роняет приложение исключением
+        // Auto Layout прямо на открытии настроек (поймано сборкой 21.08, приложение не поднималось).
+        for c in [voiceKey as NSView, translateKey as NSView] {
+            c.widthAnchor.constraint(equalTo: manualKey.widthAnchor).isActive = true
+        }
+        return root
     }
 
     /// Подвал: единственное место, где приложение говорит, что оно для тебя сделало.
@@ -1670,7 +1694,8 @@ final class DetailVC: NSViewController {
                 switchRow(L10n.t("switch.dev"), L10n.t("switch.devSub"), settings.developerMode, #selector(toggleDev),
                           help: L10n.t("switch.devHelp"), key: "switch.dev"),
                 controlRow(L10n.t("switch.manual"), HotkeyControl(),
-                           subtitle: L10n.t("switch.manualSub"), help: L10n.t("switch.manualHelp"),
+                           subtitle: manualCapsFailure() ?? L10n.t("switch.manualSub"),
+                           help: L10n.t("switch.manualHelp"),
                            key: "switch.manual"),
                 groupConvertRow()            // «переключать несколько слов» — сразу после ручного хоткея
             ]),
@@ -2745,6 +2770,21 @@ final class DetailVC: NSViewController {
                                                     mods: settings.instantSwitchMods)
         guard let shadowed else { return hint(L10n.t("is.onClean")) }
         return hint(String(format: L10n.t("is.onShadow"), shadowed))
+    }
+
+    /// Caps отдан ручному переключению, но ремап не состоялся — сказать об этом ЗДЕСЬ.
+    ///
+    /// ⚠️ ЧУЖОЕ ПРЕДУПРЕЖДЕНИЕ НЕ ГОДИТСЯ. Такая же строка есть у мгновенного переключения, и её
+    /// условие (`CapsRemap.wanted`) теперь истинно и для нашего случая — но живёт она в ДРУГОМ
+    /// разделе и говорит, что сломана смена языка. Человек, назначивший Caps на конверсию, увидел
+    /// бы жалобу не про свою настройку, а в разделе, куда он не заходил.
+    /// Сам молчаливый отказ уже стоил нам живого случая: женщина написала в Директ, что не смогла
+    /// назначить Caps, и по логу нельзя было отличить «не нашла настройку» от «нашла, а она молча
+    /// не сработала».
+    private func manualCapsFailure() -> String? {
+        guard settings.hotkeyMode == "modkey", settings.hotkeyKeyCode == 57,
+              let f = CapsRemap.failure else { return nil }
+        return L10n.t(f == .foreignMapping ? "is.capsForeign" : "is.capsFailed")
     }
 
     /// СПАСАТЕЛЬНАЯ СТРОКА ДЛЯ ОСИРОТЕВШЕЙ 🌐 (задача 96).

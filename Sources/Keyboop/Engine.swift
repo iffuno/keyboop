@@ -253,7 +253,8 @@ final class Engine: EventTapHandler {
             refreshFrontmostAppCache()
             TextReplacer.warmUpInline()   // холодный первый burst стоил 23мс (замер 25.07) → греем заранее
             // Точная таблица символов из реальной раскладки (кавычки, Shift-ряд и т.д.).
-            DynamicKeymap.rebuild()
+            DynamicKeymap.rebuild(preferLat: AppSettings.shared.lastLayoutLat,
+                                  preferCyr: AppSettings.shared.lastLayoutCyr)
             KeyboardLayoutCache.refreshOnMain()
             // ДВЕ нотификации, а не одна: Enabled…Changed = изменился СПИСОК раскладок,
             // Selected…Changed = переключили активную. Раньше слушали только первую — при обычном
@@ -271,7 +272,8 @@ final class Engine: EventTapHandler {
                     // правда уже установлена из выбранного объекта — молчим; внешние смены
                     // (без недавнего своего select) обрабатываем как раньше.
                     guard self?.layout.withinOwnSelectGrace != true else { return }
-                    DynamicKeymap.rebuild()
+                    DynamicKeymap.rebuild(preferLat: AppSettings.shared.lastLayoutLat,
+                                  preferCyr: AppSettings.shared.lastLayoutCyr)
                     KeyboardLayoutCache.refreshOnMain()
                     self?.layout.noteExternalLayoutChange()   // память о раскладке — свежим чтением
                     // Человек переключился сам — запоминаем ИМЕННО эту раскладку как его выбор с
@@ -1392,6 +1394,14 @@ final class Engine: EventTapHandler {
         // недействителен. Авто (manual=false) НЕ трогаем — оно не должно стирать якорь набираемого
         // следующего слова (ревью 2026-06-19, закрытие residual-гэпа #2).
         if manual { liveFixLast = "" }
+        // ⚠️ ПЕРВОЕ НАЖАТИЕ ОТМЕНЯЕТ НАШУ ПРАВКУ ТЕКСТА, И ТОЛЬКО ПОТОМ РАБОТАЕТ КОНВЕРСИЯ
+        // (просьба автора 20.08, повод — отзыв #156). Человек набрал «iOS», мы сделали «Ios», он нажал
+        // привычное «верни как было» и получил «Шщы»: сочетание честно переключило раскладку, только
+        // вернуть он хотел не раскладку, а наше вмешательство.
+        //
+        // Порядок именно такой: сначала отмена, потом всё остальное. Пока на слове висит наша
+        // правка, человек почти наверняка целится в неё; когда правки нет, поведение прежнее.
+        if manual, undoLastTextFix() { return }
         // ПОРЯДОК ВАЖЕН (фикс бага #39): если буфер НЕ пуст (только что печатали) — чиним именно
         // набранное слово, выделение НЕ трогаем. Иначе Cmd+C в редакторах/терминалах при ПУСТОМ
         // выделении копирует ЦЕЛУЮ СТРОКУ → раньше конвертило 150 символов вместо последнего слова.
@@ -1522,6 +1532,23 @@ final class Engine: EventTapHandler {
         "iphone", "ipad", "ipod", "imac", "icloud", "itunes", "imessage", "ibooks", "iwork", "ebay",
     ]
 
+    /// Имена, которые пишутся со строчной первой буквы НАМЕРЕННО, в их каноническом написании.
+    ///
+    /// ⚠️ ЗДЕСЬ НЕ СТОП-СПИСОК, А СЛОВАРЬ ПРАВИЛЬНОГО НАПИСАНИЯ, и это разные вещи (поймал автор
+    /// 20.08.2026, вопрос «а почему мы теперь не трогаем mACOS?»). Первая версия правки по отзыву
+    /// #156 сравнивала слово в НИЖНЕМ регистре, поэтому защищала заодно и поломку: «mACOS» это как
+    /// раз слово, набранное с прилипшим Caps Lock, и оставлять его как есть неправильно.
+    ///
+    /// Правильное поведение: «iOS» не трогаем вовсе (оно уже каноническое), а «mACOS» приводим к
+    /// «macOS» — то есть к тому, что человек и хотел написать. Прежняя правка дала бы «Macos», что
+    /// не лучше поломки.
+    static let brandSpelling: [String: String] = [
+        "ios": "iOS", "ipados": "iPadOS", "macos": "macOS", "watchos": "watchOS",
+        "tvos": "tvOS", "visionos": "visionOS", "iphone": "iPhone", "ipad": "iPad",
+        "imac": "iMac", "icloud": "iCloud", "itunes": "iTunes", "imessage": "iMessage",
+        "ebay": "eBay", "esim": "eSIM", "iot": "IoT",
+    ]
+
     /// ДВЕ ЗАГЛАВНЫЕ ПОДРЯД в начале слова: «КОгда» → «Когда» (задача T28, просьба #14).
     /// Выключено по умолчанию — это правка ТЕКСТА, а не раскладки, и включать её людям за спиной
     /// нельзя: у кого-то «ФБр» осмысленно.
@@ -1583,20 +1610,70 @@ final class Engine: EventTapHandler {
     private func fixCapsLockWord(word: String, item: (word: String, tail: String, deleteCount: Int)) -> Bool {
         guard settings.typoFix else { return false }
         let ch = Array(word)
-        guard ch.count >= 3, ch.allSatisfy({ $0.isLetter }) else { return false }
+        // ⚠️ ОТ ПЯТИ БУКВ, А НЕ ОТ ТРЁХ (отзыв #156, 20.08.2026). Условие «первая строчная, остальные
+        // заглавные» задумывалось под «пРИВЕТ», но ровно под него же попадает «iOS»: i строчная, O и
+        // S заглавные, три буквы, одна письменность. Человек писал «iOS», получал «Ios» и не понимал,
+        // при чём тут выключенная у него настройка про две заглавные (это соседнее правило, а живёт
+        // оно в общей настройке исправления опечаток).
+        //
+        // Порог выбран так: слово, набранное с прилипшим Caps Lock, почти всегда длиннее — это
+        // обычное слово языка, а не аббревиатура. А вот коротких имён вида «iOS», «eBay», «iOS 26»
+        // в латинице полно, и все они выглядят для правила одинаково.
+        guard ch.count >= 5, ch.allSatisfy({ $0.isLetter }) else { return false }
         guard ch[0].isLowercase, ch.dropFirst().allSatisfy({ $0.isUppercase }) else { return false }
         guard word.hasCyrillic != word.hasLatinLetter else { return false }
         guard !ExceptionStore.shared.ignored.contains(word.lowercased()) else { return false }
-        let fixed = String(ch[0]).uppercased() + String(ch.dropFirst()).lowercased()
-        guard fixed != word else { return false }
+        // Известное имя: приводим к КАНОНИЧЕСКОМУ написанию, а не к «первая заглавная, остальные
+        // строчные». Если человек уже написал канонически — не трогаем вовсе (guard ниже отсеет
+        // совпадение), а если сломал Caps Lock'ом — чиним туда, куда он и целился.
+        let canonical = Self.brandSpelling[word.lowercased()]
+        let fixed = canonical ?? (String(ch[0]).uppercased() + String(ch.dropFirst()).lowercased())
+        guard fixed != word else { return false }   // уже написано правильно — молчим
         muted = true
         kbLog("caps lock: \(item.deleteCount) симв. развёрнуто")   // без контента (принцип №2)
         UndoLearner.shared.noteConversion(original: word, converted: fixed)
+        lastTextFix = (word, fixed)                                           // чтобы хоткей мог вернуть
         TextReplacer.replace(deleteCount: item.deleteCount, with: fixed + item.tail) { [weak self] in
             guard let self else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
         }
         buffer.applyCompletedConversion(converted: fixed)
+        return true
+    }
+
+    /// ПОСЛЕДНЯЯ ПРАВКА ТЕКСТА (не раскладки): что было и что стало.
+    ///
+    /// ⚠️ Нужна для отмены хоткеем ручного переключения (просьба автора 20.08, повод — отзыв #156:
+    /// человек набрал «iOS», мы сделали «Ios», он нажал привычное сочетание «верни как было» и
+    /// получил «Шщы», то есть конверсию раскладки поверх нашей же ошибки).
+    ///
+    /// ⚠️ ЖИВЁТ ДО ГРАНИЦЫ СЛОВА, а не по таймеру. Пока человек не ушёл с этого слова, отмена
+    /// осмысленна; ушёл — сочетание снова означает «переключи раскладку», как и раньше. Таймер тут
+    /// был бы хуже: он делает поведение непредсказуемым ровно в тот момент, когда человек торопится.
+    private var lastTextFix: (original: String, fixed: String)?
+
+    /// Вернуть слово, которое мы только что «исправили». true — отмена случилась.
+    ///
+    /// ⚠️ СРАВНИВАЕМ С ТЕМ, ЧТО СЕЙЧАС В БУФЕРЕ. Если человек успел дописать или стереть, наша
+    /// память устарела и отменять нечего: молча уходим в обычную конверсию, а не портим текст
+    /// второй раз.
+    ///
+    /// ⚠️ ОТМЕНУ ЗАПОМИНАЕТ `UndoLearner`. Это тот же сигнал, что и ручной откат: слово получает
+    /// защиту на сессию, и мы перестаём трогать его снова и снова. Иначе человек отменял бы одну и
+    /// ту же правку до конца дня.
+    private func undoLastTextFix() -> Bool {
+        guard let fix = lastTextFix, let item = buffer.wordForConversion() else { return false }
+        guard item.word == fix.fixed else { lastTextFix = nil; return false }
+        muted = true
+        kbLog("отмена правки: \(item.deleteCount) симв. возвращено")   // без контента (принцип №2)
+        _ = UndoLearner.shared.noteManualConvert(from: fix.fixed, to: fix.original)
+        lastTextFix = nil
+        TextReplacer.replace(deleteCount: item.deleteCount, with: fix.original + item.tail) { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
+        }
+        buffer.applyCompletedConversion(converted: fix.original)
+        playSound()
         return true
     }
 
@@ -1607,6 +1684,7 @@ final class Engine: EventTapHandler {
         muted = true
         kbLog("опечатка: \(item.deleteCount) симв. исправлено")   // без контента (принцип №2)
         UndoLearner.shared.noteConversion(original: word, converted: fixed)   // откат научит нас навсегда
+        lastTextFix = (word, fixed)                                           // чтобы хоткей мог вернуть
         TextReplacer.replace(deleteCount: item.deleteCount, with: fixed + item.tail) { [weak self] in
             guard let self else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }

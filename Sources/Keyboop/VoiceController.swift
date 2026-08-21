@@ -284,6 +284,10 @@ final class VoiceController {
         if streamingActive { streamEnd(); return }   // потоковый путь: финализируем стрим
         noteSendGesture()         // правый ⌘ в момент отпускания = «отправить» (задача 124)
         let samples = recorder.stop()
+        // Отсчёт «сколько человек ждал»: от отпускания клавиши до текста в поле. Время самого
+        // whisper пишет WhisperBridge, но оно отвечает лишь за часть ожидания, а спрашивают всегда
+        // про всё ожидание целиком.
+        stopStamp = CFAbsoluteTimeGetCurrent()
         VoiceGate.set(false)      // ЗАПИСЬ окончена → можно сразу начинать НОВУЮ (транскрипция идёт в фоне)
         playCue(stopSound)    // нисходящее «тук-тук» — запись остановлена (до транскрипции)
         let rms = samples.isEmpty ? 0 : (samples.map { $0 * $0 }.reduce(0, +) / Float(samples.count)).squareRoot()
@@ -781,6 +785,9 @@ final class VoiceController {
         return String(ch)
     }
 
+    /// Когда закончилась запись. Нужно только для строки «ожидание=…мс» в логе.
+    private var stopStamp: CFAbsoluteTime?
+
     private func deliver(_ text: String, historyOnly: Bool = false, audio: String? = nil, wave: [UInt8]? = nil) {
         // Фразы-призраки Whisper («Субтитры создавал…», «Продолжение следует») — отсекаем ДО всего
         // остального, чтобы они не попали ни в поле, ни в историю, ни в статистику. См. WhisperGhosts.
@@ -825,6 +832,10 @@ final class VoiceController {
         // движке. Корень исследован (whisper «no-punctuation mode» / Parakeet не эмитит знак-токены на
         // тихих хвостах). Коррелировать с длительностью/noSpeechMax из строк выше.
         let punct = clean.reduce(0) { $0 + (".,!?;:…—–".contains($1) ? 1 : 0) }
+        if let t0 = stopStamp {
+            kbLog("voice: ожидание от конца записи до текста \(Int((CFAbsoluteTimeGetCurrent() - t0) * 1000))мс")
+            stopStamp = nil
+        }
         kbLog("voice: распознано \(clean.count) симв., пунктуация=\(punct)")
         noteVoiceStats(clean)
         // Пробел в конце — чтобы следующая фраза не слиплась с этой (предложил пользователь).

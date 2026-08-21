@@ -28,9 +28,17 @@ enum CapsRemap {
         #"{"UserKeyMapping":[{"HIDKeyboardModifierMappingSrc":0x700000039,"HIDKeyboardModifierMappingDst":0x700000090}]}"#
 
     /// Нужен ли ремап при текущих настройках?
+    ///
+    /// ⚠️ ДВЕ ФУНКЦИИ, А НЕ ОДНА (21.08.2026, отзыв #160 и ещё несколько до него). Caps Lock можно
+    /// отдать либо мгновенной смене языка, либо ручному переключению последнего слова — механизм у
+    /// них общий, отличается только то, кого зовём на LANG1. Одновременно两 не бывает: страж
+    /// комбинаций (`HotkeyGuard`) сравнивает голые модификаторы по keyCode и не даст назначить
+    /// одну клавишу двум функциям.
     static var wanted: Bool {
         let s = AppSettings.shared
-        return s.instantSwitchEnabled && s.instantSwitchMode == "modkey" && s.instantSwitchKeyCode == 57
+        let instant = s.instantSwitchEnabled && s.instantSwitchMode == "modkey" && s.instantSwitchKeyCode == 57
+        let manual  = s.hotkeyMode == "modkey" && s.hotkeyKeyCode == 57
+        return instant || manual
     }
 
     /// Привести состояние системы к настройкам. Звать: на старте, после изменения настроек

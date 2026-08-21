@@ -489,7 +489,14 @@ final class HotkeyControl: NSView {
         ("2× ⌥  (DoubleOption)",       "doubletap", 58, CGEventFlags.maskAlternate.rawValue),
         // 🌐/Fn как хоткей КОНВЕРСИИ (просьба автора 24.07 — «мало ли кому так удобно»). Событие
         // глотаем в EventTap, поэтому системное действие клавиши не сработает параллельно.
-        ("🌐  Globe / Fn",             "modkey",    63, CGEventFlags.maskSecondaryFn.rawValue)
+        ("🌐  Globe / Fn",             "modkey",    63, CGEventFlags.maskSecondaryFn.rawValue),
+        // ⇪ как хоткей КОНВЕРСИИ (отзыв #160 от 21.08.2026 и ещё несколько просьб до него: «капс
+        // практически никогда не нужен, а в Punto на винде так было можно»). Механизм готов и уже
+        // работает для мгновенной смены языка: ремап Caps→LANG1 через hidutil, см. CapsRemap —
+        // проглотить событие тапом нельзя, замок включается НИЖЕ него.
+        // ⚠️ Пока Caps занят конверсией, настоящий капс-замок делается через ⇧+Caps. Это не наша
+        // выдумка, так устроен тот же механизм у мгновенного переключения.
+        ("⇪  Caps Lock",               "modkey",    57, CGEventFlags.maskAlphaShift.rawValue)
     ]
     /// Локализованный лейбл пресета (modkey → L10n; остальные — статический символ+англ.).
     private static func presetLabel(_ p: (String, String, Int, UInt64)) -> String {
@@ -497,6 +504,7 @@ final class HotkeyControl: NSView {
             switch p.2 {
             case 61: return L10n.t("hk.rOpt"); case 58: return L10n.t("hk.lOpt")
             case 54: return L10n.t("hk.rCmd"); case 59: return L10n.t("hk.lCtrl")
+            case 57: return "⇪  Caps Lock"
             default: break
             }
         }
@@ -552,6 +560,9 @@ final class HotkeyControl: NSView {
             settings.hotkeyKeyCode = p.2
             settings.hotkeyModifiers = p.3
             settings.hotkeyKeyLabel = ""
+            // Caps живёт через hidutil-ремап, а не через тап: сменили комбинацию — ремап должен
+            // догнать выбор. Зовём БЕЗУСЛОВНО, потому что уход С Caps так же важен, как приход на него.
+            CapsRemap.reconcile()
             rebuild()
         } else if i == pop.numberOfItems - 1 {
             startRecording()          // последняя строка — «Назначить свою…» (есть ВСЕГДА)
@@ -616,6 +627,7 @@ final class HotkeyControl: NSView {
                 guard let s = self?.settings else { return }
                 s.hotkeyMode = "key"; s.hotkeyKeyCode = kc
                 s.hotkeyModifiers = mods.rawValue; s.hotkeyKeyLabel = label
+                CapsRemap.reconcile()   // см. выбор пресета: уход с Caps так же важен, как приход
             }
             // Мягкий конфликт показываем ВМЕСТЕ с кандидатом: кнопка «Назначить» остаётся живой,
             // человек решает сам (автор 06.08).
@@ -655,6 +667,7 @@ final class HotkeyControl: NSView {
                         guard let s = self?.settings else { return }
                         s.hotkeyMode = "combo"          // ⌥⇧ и т.п.
                         s.hotkeyKeyCode = -1; s.hotkeyModifiers = p.rawValue; s.hotkeyKeyLabel = ""
+                        CapsRemap.reconcile()   // см. выбор пресета: уход с Caps так же важен, как приход
                     }
                     freeze(HotkeyRecorderPanel.parts(mods: p))
                 } else if count(peak) == 1, peakKey >= 0 {
@@ -670,6 +683,7 @@ final class HotkeyControl: NSView {
                         guard let s = self?.settings else { return }
                         s.hotkeyMode = "modkey"
                         s.hotkeyKeyCode = pk; s.hotkeyModifiers = p.rawValue; s.hotkeyKeyLabel = ""
+                        CapsRemap.reconcile()   // см. выбор пресета: уход с Caps так же важен, как приход
                     }
                     freeze(HotkeyRecorderPanel.parts(mods: p))
                 } else { peak = []; peakKey = -1 }
@@ -1625,6 +1639,14 @@ final class ModePicker: NSView {
     // направо в стиле современных переключателей macOS». Перетекание это анимация геометрии, а
     // рисование в `draw` умеет только перерисовать всё разом, в новом положении. Со слоями бегунок
     // едет сам, а нам остаётся задать ему новый кадр.
+    /// Мягкий ореол ПОД капсулой: размывает то, что проезжает под переключателем.
+    ///
+    /// Идея автора 20.08.2026, после того как полосу размытия на весь заголовок он забраковал:
+    /// «давай по контуру нашего переключателя добавим такой блюр, чтобы слегка под ним свечение
+    /// было, когда под него заходят элементы настроек». Полоса на всё окно была слишком грубым
+    /// инструментом: она трогала и полосу прокрутки, и первую строку. Ореол по форме плашки решает
+    /// ту же задачу ровно там, где она есть.
+    private let halo = CALayer()
     private let track = CALayer()
     private let thumb = CALayer()
     private var labels: [CATextLayer] = []
@@ -1643,6 +1665,8 @@ final class ModePicker: NSView {
         self.titles = titles
         super.init(frame: .zero)
         wantsLayer = true
+        layer?.masksToBounds = false          // ореол шире капсулы и обязан выходить за её края
+        layer?.addSublayer(halo)
         layer?.addSublayer(track)
         track.addSublayer(thumb)
         for t in titles {
@@ -1678,12 +1702,69 @@ final class ModePicker: NSView {
     // ⚠️ ЯРКОСТЬ ДОБАВЛЯТЬ НЕЛЬЗЯ, МОЖНО ТОЛЬКО ОТНИМАТЬ (он же, тогда же). Включённая половина
     // держит обычную яркость интерфейса, выключенная приглушена. Обратный приём, подсветить
     // активное, делает из служебного переключателя главный предмет в окне.
-    private func ink(_ alpha: CGFloat) -> CGColor {
-        var c = NSColor.labelColor.withAlphaComponent(alpha).cgColor
+    /// ⚠️ ЦВЕТА СПЛОШНЫЕ, А НЕ ПРОЗРАЧНЫЕ (автор 20.08.2026: «переключатель всё равно остался
+    /// полупрозрачным, неактивный пункт как будто просвечивает; нужно, чтобы прозрачности не было,
+    /// просто был цвет»).
+    ///
+    /// Раньше здесь стоял `labelColor.withAlphaComponent(alpha)`, то есть КРАСКА С ДЫРКОЙ: сквозь
+    /// неё видно всё, что позади. Пока за контролом был ровный фон окна, это выглядело как оттенок
+    /// серого. Как только под титлбаром появилось размытое содержимое, сквозь дорожку и подписи
+    /// полезла картинка, и контрол перестал читаться как предмет.
+    ///
+    /// Тот же вид получается смешиванием: берём подложку и подмешиваем к ней долю `labelColor`.
+    /// Разница яркостей между дорожкой, бегунком и подписями сохраняется до уровня, а прозрачности
+    /// нет вовсе.
+    private func ink(_ alpha: CGFloat, over base: NSColor = .windowBackgroundColor) -> CGColor {
+        var c = base.cgColor
         effectiveAppearance.performAsCurrentDrawingAppearance {
-            c = NSColor.labelColor.withAlphaComponent(alpha).cgColor
+            c = (base.blended(withFraction: alpha, of: .labelColor) ?? base).cgColor
         }
         return c
+    }
+
+    /// Сплошной цвет как `NSColor` — нужен, чтобы подмешивать следующий слой поверх предыдущего:
+    /// бегунок лежит на дорожке, подписи лежат на бегунке и на дорожке.
+    private func inkColor(_ alpha: CGFloat, over base: NSColor = .windowBackgroundColor) -> NSColor {
+        var c = base
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            c = base.blended(withFraction: alpha, of: .labelColor) ?? base
+        }
+        return c
+    }
+
+    /// Геометрия и краска ореола. Зовётся из `restyle`, потому что размер контрола меняется вместе
+    /// с подписями (смена языка интерфейса).
+    ///
+    /// ⚠️ РАЗМЫТИЕ, А НЕ ТЕНЬ. Тень рисует своё пятно поверх фона и на светлой теме выглядит грязью.
+    /// `backgroundFilters` не добавляет ничего от себя: под плашкой просто теряет резкость то, что
+    /// там оказалось. Пока под переключателем пусто, ореола не видно вовсе, и это правильно.
+    ///
+    /// ⚠️ Маска РАДИАЛЬНАЯ, поэтому ореол гаснет во все стороны. Вертикальная, как у прежней полосы,
+    /// оставила бы резкие боковые кромки, а у капсулы кромок быть не должно.
+    private func layoutHalo() {
+        let pad: CGFloat = 7
+        let r = bounds.insetBy(dx: -pad, dy: -pad)
+        halo.frame = r
+        halo.cornerRadius = r.height / 2
+        halo.masksToBounds = true
+        if halo.backgroundFilters == nil || halo.backgroundFilters?.isEmpty == true {
+            if let blur = CIFilter(name: "CIGaussianBlur", parameters: [kCIInputRadiusKey: 5]) {
+                halo.backgroundFilters = [blur]
+            }
+        }
+        // Лёгкий тон тем же цветом, что фон окна: гасит свечение светлых букв, не меняя оттенка.
+        halo.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.45).cgColor
+        let mask = (halo.mask as? CAGradientLayer) ?? CAGradientLayer()
+        mask.type = .radial
+        mask.colors = [NSColor.black.cgColor,
+                       NSColor.black.withAlphaComponent(0.9).cgColor,
+                       NSColor.black.withAlphaComponent(0.45).cgColor,
+                       NSColor.clear.cgColor]
+        mask.locations = [0, 0.55, 0.8, 1]
+        mask.startPoint = CGPoint(x: 0.5, y: 0.5)
+        mask.endPoint = CGPoint(x: 1, y: 1)
+        mask.frame = halo.bounds
+        halo.mask = mask
     }
 
     private func restyle(animated: Bool) {
@@ -1693,16 +1774,19 @@ final class ModePicker: NSView {
             CATransaction.setAnimationDuration(0.22)
             CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
         }
+        layoutHalo()
         track.frame = bounds
         track.cornerRadius = bounds.height / 2
-        track.backgroundColor = ink(0.07)
+        let trackColor = inkColor(0.07)
+        let thumbColor = inkColor(0.13, over: trackColor)
+        track.backgroundColor = trackColor.cgColor
 
         // ⚠️ БЕГУНОК ВО ВСЮ ВЫСОТУ ДОРОЖКИ, БЕЗ ЗАЗОРА (автор 17.08: «выделение по высоте такое же,
         // как основная плашка, сейчас оно меньше и смотрится коряво»). Утопленный бегунок это язык
         // сегментного контрола iOS; в строке заголовка macOS он читался как кнопка внутри кнопки.
         thumb.frame = box(selected)
         thumb.cornerRadius = bounds.height / 2
-        thumb.backgroundColor = ink(0.13)
+        thumb.backgroundColor = thumbColor.cgColor
 
         let scale = window?.backingScaleFactor ?? 2
         for (i, l) in labels.enumerated() {
@@ -1711,7 +1795,9 @@ final class ModePicker: NSView {
             l.contentsScale = scale
             l.frame = NSRect(x: b.minX, y: ((b.height - lineH) / 2).rounded(),
                              width: b.width, height: lineH.rounded(.up))
-            l.foregroundColor = i == selected ? ink(0.85) : ink(hover == i ? 0.55 : 0.35)
+            // Подпись мешаем с ТЕМ, НА ЧЁМ ОНА ЛЕЖИТ: выбранная на бегунке, остальные на дорожке.
+            l.foregroundColor = i == selected ? ink(0.85, over: thumbColor)
+                                              : ink(hover == i ? 0.55 : 0.35, over: trackColor)
         }
         CATransaction.commit()
     }

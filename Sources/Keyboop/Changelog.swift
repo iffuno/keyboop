@@ -54,6 +54,74 @@ enum Changelog {
         // 0.4 «Axolotl» — СРАЗУ СТАБИЛЬНАЯ, без беты (решение автора 17.08). Обычно крупное уходит
         // бетой, но эта версия неделю проверялась ревью в четыре измерения, стендами и глазами:
         // двенадцать подтверждённых дефектов закрыты до релиза, а не после него.
+        // 0.4.2 — БЕТА. Пять починок по живым отзывам плюс отмена нашей правки хоткеем. Бетой по той
+        // же причине, что и 0.4.1: правки лежат в горячем пути набора, и две из них (отмена и правило
+        // прилипшего Caps Lock) живут в Engine, который не покрыт ни одним стендом.
+        // 0.4.3 — БЕТА. Выпуск про скорость и про «не навреди». Главное в нём не новая функция, а
+        // снятая лишняя работа: при автоопределении языка распознавание шло ДВАЖДЫ по одной записи.
+        // Бетой по протоколу: правки лежат в диктовке и в исправлении опечаток, то есть в горячем
+        // пути, а исправление опечаток вдобавок лишилось целого правила, и это стоит обкатать на тех,
+        // кто вызвался сам.
+        Release(version: "0.4.3",
+            ru: [
+                "Каждая диктовка стала быстрее примерно на полсекунды. При автоопределении языка Whisper обрабатывал запись дважды: сначала чтобы понять, на каком языке говорят, потом чтобы получить текст. Теперь эта работа делается один раз. На фразах короче десяти секунд это почти вдвое, на длинных выигрыш тот же по времени, просто на общем фоне его меньше видно.",
+                "Исправление опечаток больше почти не портит правильные слова. Мы убрали самое опасное правило, замену буквы на соседнюю по клавиатуре: именно оно превращало «бампу» в «лампу», а «нужде» в «нужду». На живом тексте порча упала в девять раз. Настоящие опечатки чинятся по-прежнему, а теперь ещё и лишняя буква, нажатая дважды: «приивет» становится «привет».",
+                "Список известных опечаток вырос с двухсот до пяти тысяч. Чаще всего в русском ошибаются в сдвоенных согласных, поэтому туда попали «програма», «акаунт», «искуство» и ещё несколько тысяч таких же.",
+                "Caps Lock можно назначить на ручное переключение. Просили не раз: по прямому назначению клавиша почти никому не нужна, а лежит удобно. Пока она занята, настоящий капс включается через Shift с Caps Lock.",
+                "Значок в строке меню встал вровень с буквами языка. В прошлый раз мы измерили его неправильно и сдвинули не в ту сторону; теперь разница меньше половины пикселя.",
+                "В простых настройках поля выбора сочетаний стали одной ширины. Раньше поле диктовки было шире соседних, потому что подстраивалось под самый длинный вариант своего списка.",
+            ],
+            en: [
+                "Every dictation is about half a second faster. With automatic language detection Whisper processed each recording twice: once to work out the language, then again to produce the text. That work now happens once. On phrases under ten seconds it is close to twice as fast; on longer ones the saving is the same, it just shows up less against the total.",
+                "Typo correction almost never breaks correctly typed words any more. We removed its most dangerous rule, swapping a letter for its keyboard neighbour: that is what turned «бампу» into «лампу». Measured on real text, the damage fell ninefold. Real typos are still fixed, and now a letter typed twice is fixed too: «приивет» becomes «привет».",
+                "The list of known typos grew from two hundred entries to five thousand. Russian spelling trips people up most on doubled consonants, so that is what went in.",
+                "Caps Lock can now be assigned to manual switching. People asked more than once: almost nobody needs the key for what it does, and it sits comfortably under the finger. While it is taken, real caps lock is Shift with Caps Lock.",
+                "The menu bar icon now lines up with the language letters. Last time we measured it wrongly and nudged it the wrong way; the gap is now under half a pixel.",
+                "In the simple settings the shortcut pickers are all the same width. The dictation one used to be wider because it sized itself to the longest entry in its own list.",
+            ],
+            announce: """
+                График не возвращается: увлекаюсь и сижу до утра. И скучаю по съёмкам, их стало \
+                сильно меньше. Снимаю я хорошо и люблю это едва ли не больше, чем код, так что \
+                если вам или кому-то из ваших нужно видео, напишите мне в личку: @iffun
+
+                А выпуск про скорость: диктовка, оказывается, распознавала каждую запись дважды.
+                """,
+            announceEnd: """
+                Бета сама не приедет: включите «Ставить бета-версии» и нажмите «Проверить обновления».
+
+                Звёзд на GitHub неприлично мало для приложения, которое каждый день спасает кого-то \
+                от «ghbdtn». Если спасло вас, поставьте одну: github.com/iffuno/keyboop
+
+                Спасибо тем, кто пишет и кто закидывает на чай: keyboop.com/tips
+                """),
+        Release(version: "0.4.2",
+            ru: [
+                "«iOS» больше не превращается в «Ios». Правило про прилипший Caps Lock («пРИВЕТ» → «Привет») считало «iOS» такой же опечаткой: первая буква строчная, остальные заглавные. Теперь короткие имена не трогаются вовсе, а «mACOS» чинится в «macOS», то есть туда, куда вы и целились.",
+                "Первое нажатие сочетания отменяет нашу правку, а не переключает раскладку. Если Keyboop исправил слово, а вы этого не хотели, нажмите привычное сочетание, и слово вернётся как было. Второе нажатие работает как раньше.",
+                "«’nj» наконец превращается в «это». В раскладке «США международная» клавиша с «э» мёртвая: она сама по себе не отдаёт символа, поэтому пара для «э» у нас не создавалась вовсе. Заодно понимаем типографские апострофы, которые подставляет система.",
+                "Знаки препинания встают на свои места у тех, у кого включены обе русские раскладки. Таблицу мы строили по первой попавшейся, а обычная русская раскладка и её ПК-вариант расходятся на четырёх клавишах, включая точку и запятую. Теперь берём ту, которой вы пользуетесь.",
+                "Полоса прокрутки исчезает там, где прокручивать нечего. В разделах, которые помещаются целиком, она была чистым шумом, а там, где список длинный, осталась на месте.",
+            ],
+            en: [
+                "«iOS» no longer turns into «Ios». The stuck-Caps-Lock rule («пРИВЕТ» → «Привет») treated «iOS» as the same mistake: first letter lowercase, the rest uppercase. Short names are now left alone, and «mACOS» becomes «macOS», which is what you meant.",
+                "The first press of the shortcut undoes our edit instead of switching the layout. If Keyboop fixed a word and you did not want that, press your usual shortcut and the word comes back. A second press behaves as before.",
+                "«’nj» finally becomes «это». In the «U.S. International» layout the key carrying «э» is a dead key: on its own it produces nothing, so the pair for «э» was never built. Typographic apostrophes are understood too.",
+                "Punctuation lands correctly for people with both Russian layouts enabled. The table was built from whichever layout came first, and the plain Russian layout and its PC variant differ on four keys, including the period and the comma.",
+                "The scrollbar disappears where there is nothing to scroll. In sections that fit entirely it was pure noise; where the list is long it stays.",
+            ],
+            announce: """
+                Сейчас работаю параллельно над кучей проектов, и это отдельное удовольствие: \
+                приложения для iOS, сервисы, сайты. На все мои увлечения и фантазии не хватает \
+                уже двух максимальных тарифов, на Claude Code и на Codex.
+
+                Этот выпуск снова про починку, и почти всё в нём сделано по вашим письмам.
+                """,
+            announceEnd: """
+                Бета сама не приедет: включите «Ставить бета-версии» и нажмите «Проверить обновления».
+
+                Спасибо тем, кто пишет: половина этого выпуска родилась из ваших сообщений, \
+                причём самых дотошных. Поддержать проект: keyboop.com/tips
+                """),
         // 0.4.1 — БЕТА. Выпуск целиком про починку, новых функций нет. Три правки, каждая принята
         // стендом: двойная загрузка модели распознавания (первая диктовка ждала под сорок секунд),
         // исправление опечаток, портившее правильные слова (порча 4.93% → 1.39% корпуса), и

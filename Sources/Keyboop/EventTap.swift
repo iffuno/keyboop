@@ -552,6 +552,22 @@ final class EventTap {
                 }
                 return swallowDown(keyCode)
             }
+            // Caps Lock, отданный РУЧНОМУ переключению (отзыв #160 и ещё несколько: «капс
+            // практически никогда не нужен, а в Punto так было можно»). Механизм тот же, что
+            // строкой выше, отличается только вызываемая функция: там смена языка, здесь конверсия
+            // последнего слова (она же отмена нашей автозамены).
+            // ⚠️ Ветка стоит ПОСЛЕ мгновенного переключения намеренно: если каким-то образом обе
+            // настройки указывают на Caps, выигрывает мгновенная смена языка, а не молчание.
+            if s.hotkeyMode == "modkey", s.hotkeyKeyCode == 57, keyCode == CapsRemap.lang1KeyCode {
+                if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                    if event.flags.contains(.maskShift) {
+                        onMain { RealCapsLock.toggle() }   // ⇧+Caps — единственный путь к настоящему замку
+                    } else {
+                        onMain { [weak self] in self?.handler?.handleSwitchHotkey() }
+                    }
+                }
+                return swallowDown(keyCode)
+            }
             // Диагностика допущения «LANG1 = keyCode 104»: если при активном caps-режиме прилетает
             // сосед по диапазону экзотических кодов — это ремапнутый Caps под другим номером.
             // ⚠️ ОДИН РАЗ НА ЗАПУСК (ревью 17.08): в диапазон 100…110 попадают обычные F8–F16, и у

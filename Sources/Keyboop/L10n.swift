@@ -241,7 +241,7 @@ enum L10n {
         "switch.dev":     [.ru: "Режим для разработчиков", .en: "Mode for developers"],
         "switch.devSub":  [.ru: "Бережёт код: одиночные буквы и короткие сочетания (переменные, команды) не трогаем нигде. В IDE и терминалах авто выключено целиком.",
                            .en: "Protects code: single letters and short combos (variables, commands) are left alone everywhere. In IDEs and terminals auto-switch is fully off."],
-        "switch.manual":  [.ru: "Ручное переключение", .en: "Manual switch"],
+        "switch.manual":  [.ru: "Ручное переключение и отмена", .en: "Manual switch and undo"],
         // ⚠️ ПОДПИСЬ И «i» ДОБАВЛЕНЫ 04.08.2026, ПОТОМУ ЧТО СТРОКА МОЛЧАЛА. У неё был только
         // заголовок и поле с комбинацией, то есть человек видел ЧТО назначено, но не ЗАЧЕМ. Двое
         // написали автору, что не разобрались, как переключить слово руками и как отменить автозамену.
@@ -249,8 +249,8 @@ enum L10n {
         // Коротко до предела: справа стоит поле с комбинацией, оно шире тумблера, и места под подпись
         // остаётся мало. Строки в настройках не переносятся принципиально (иначе едет вся сетка),
         // поэтому подпись обязана влезать целиком, а подробности живут в «i».
-        "switch.manualSub":  [.ru: "Переключить последнее слово, ею же отменить",
-                              .en: "Flip the last word, or undo with the same combo"],
+        "switch.manualSub":  [.ru: "Переключить последнее слово или отменить автозамену",
+                             .en: "Switch the last word, or undo an automatic switch"],
         "switch.hkPrefix":[.ru: "Хоткей:  ", .en: "Hotkey:  "],
         "switch.hkRecord":[.ru: "Нажми комбинацию…  (Esc — отмена)", .en: "Press a combo…  (Esc to cancel)"],
         "hk.custom":      [.ru: "Свой…", .en: "Custom…"],
@@ -1049,8 +1049,8 @@ enum L10n {
         // обучение на отмене, и почему не помогает стереть слово и набрать заново. Всё это правда, но
         // подсказка у строки отвечает на один вопрос — что делает ЭТА комбинация. Длинный текст в
         // маленьком поповере путает ровно того, кто уже не разобрался, а именно ради него он и писан.
-        "switch.manualHelp": [.ru: "Переключает последнее набранное слово в другую раскладку, ждать пробела не нужно. Если Keyboop переключил слово сам и зря, эта же комбинация вернёт его как было. А когда ничего не набрано, просто меняется язык, как обычным переключателем раскладки.",
-                              .en: "Flips the last word you typed into the other layout, no need to wait for a space. If Keyboop flipped a word by itself and got it wrong, the same combo puts it back. And when nothing is typed, it simply switches the language, like the system layout switcher."],
+        "switch.manualHelp": [.ru: "Переключает последнее набранное слово в другую раскладку, ждать пробела не нужно. ЭТИМ ЖЕ СОЧЕТАНИЕМ ОТМЕНЯЕТСЯ АВТОМАТИЧЕСКОЕ ПЕРЕКЛЮЧЕНИЕ: если Keyboop переключил слово сам, а вы этого не хотели, нажмите его, и слово вернётся как было. Именно поэтому в названии строки стоит «и отмена»: люди не догадывались, что отменять нужно тем же сочетанием, а не искать отдельное.",
+                             .en: "Switches the last typed word to the other layout, no need to wait for a space. THE SAME SHORTCUT UNDOES AN AUTOMATIC SWITCH: if Keyboop switched a word by itself and you did not want that, press it and the word comes back."],
         "switch.arrowsHelp": [.ru: "Речь о четырёх клавишах курсора. Пока вы печатаете слово, Keyboop держит его в памяти, чтобы починить. Стрелка означает, что курсор уехал и слово, скорее всего, уже не то — поэтому память сбрасывается. Выключите, если часто двигаете курсор посреди слова и хотите, чтобы починка всё равно сработала.\n\nВажная мелочь, о которой не говорит ни заголовок, ни подпись: вместе с памятью пропадает цель и у ручного сочетания. Нажали стрелку, потом ⌥⇧ — язык сменится, но слово уже не починится, потому что чинить нечего.",
                               .en: "This is about the four cursor keys. While you type a word, Keyboop keeps it in memory so it can fix it. An arrow means the caret moved and the word is probably no longer the one you meant, so the memory is dropped. Turn this off if you often move the caret mid-word and still want the fix.\n\nOne detail neither the title nor the subtitle mentions: the manual shortcut loses its target too. Press an arrow, then ⌥⇧, and the language will switch but the word will not be fixed — there is nothing left to fix."],
         "hist.lockHelp":  [.ru: "Окно истории будет спрашивать пароль при каждом открытии. Сам пароль хранится в связке ключей macOS, а записи шифруются — мы их не видим и восстановить не сможем. Защита от того, кто сядет за ваш незаблокированный Mac, а не от кражи диска.",
@@ -1189,7 +1189,7 @@ enum L10n {
                            .en: "Audio and recognition never leave the Mac. History is encrypted and stays only on this device."],
         "voice.hkRopt":   [.ru: "Правый ⌥  (right Option)", .en: "Right ⌥  (right Option)"],
         "voice.hkRcmd":   [.ru: "Правый ⌘  (right Command)", .en: "Right ⌘  (right Command)"],
-        "voice.hkTilde":  [.ru: "⌥`  (Option + ё/`)", .en: "⌥`  (Option + backtick)"],
+        "voice.hkTilde":  [.ru: "⌥`  (Option + клавиша под Esc)", .en: "⌥`  (Option + the key under Esc)"],
         "voice.mic":      [.ru: "Микрофон", .en: "Microphone"],
         "voice.micSystem":[.ru: "По умолчанию (система)", .en: "Default (system)"],
         // ⚠️ Было «Открыть настройки звука…», и это читалось как наш собственный звук записи,

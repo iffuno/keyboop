@@ -175,7 +175,10 @@ final class VoiceDictionary {
                   "си дэнс", "си данс", "sea dance", "си dance"] { out.append((h, "Seedance")) }
         for h in ["сидрим", "сидрем", "сидрым", "seedream", "seadream",
                   "си дрим", "си дрем", "sea dream", "си dream"] { out.append((h, "Seedream")) }
-        for h in ["клинг", "клингг", "клин г"] { out.append((h, "Kling")) }
+        // ⚠️ «klink» латиницей добавлен по просьбе автора 20.08: модель пишет имя именно так.
+        // Проверено по словарям: «clink» брать НЕЛЬЗЯ (это живое английское слово, плюс clinker,
+        // clinking), а русское «клинк» нельзя тем более — с него начинается «клинкер».
+        for h in ["клинг", "клингг", "клин г", "klink", "клинк г"] { out.append((h, "Kling")) }
         for h in ["хигсфилд", "хиггсфилд", "хигсвилд", "хиггсвилд", "хиксфилд", "хигзфилд",
                   "хигсфилт", "хиггсфилт", "higgsfield",
                   "хигс филд", "хиггс филд", "хигс вилд"] { out.append((h, "Higgsfield")) }
@@ -197,7 +200,7 @@ final class VoiceDictionary {
     /// (Claude Code 12.08, ChatGPT 13.08), значит будет и третий.
     private func mergeSeed2() {
         // Четвёртый заход: USDT (18.08). Номер обязан расти при каждом пополнении заготовок.
-        let mark = "voiceDictSeed7"   // + VPN и имена нейросетей (18.08)
+        let mark = "voiceDictSeed8"   // + Klink → Kling (20.08)
         guard !d.bool(forKey: mark) else { return }
         d.set(true, forKey: mark)
         guard !orderedPairs.isEmpty else { return }   // пустой список человек очистил намеренно
