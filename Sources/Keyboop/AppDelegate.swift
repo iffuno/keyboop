@@ -420,7 +420,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // внешний вид проверялся «на память». автор 06.08 нашёл там чужой зелёный цвет.
         if ProcessInfo.processInfo.environment["KEYBOOP_TOAST"] == "1" {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
-                VoiceIndicator.shared.showToast(L10n.t("menu.copyLastDone"))
+                // Текст берём из KEYBOOP_TOAST_KEY, если он задан: проверять надо ту строку, которую
+                // добавили сейчас, а не ту, что проверили в прошлый раз.
+                VoiceIndicator.shared.showToast(
+                    L10n.t(ProcessInfo.processInfo.environment["KEYBOOP_TOAST_KEY"] ?? "menu.copyLastDone"))
                 // ДВА кадра: середина дешифровки и устоявшийся текст. Одним кадром анимацию не
                 // увидеть, а смотреть на неё придётся каждый раз, когда трогаем плашку.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.13) {

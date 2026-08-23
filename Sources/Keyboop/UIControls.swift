@@ -556,6 +556,19 @@ final class HotkeyControl: NSView {
             if let busy = HotkeyGuard.ourBusy(mode: p.1, keyCode: p.2, mods: p.3, excluding: .convert) {
                 HotkeyGuard.busyAlert(busy); rebuild(); return
             }
+            // ⚠️ КЛАВИША, У КОТОРОЙ ЕСТЬ СВОЁ СИСТЕМНОЕ ДЕЙСТВИЕ, ОТБИРАЕТСЯ ТОЛЬКО С СОГЛАСИЯ.
+            // Caps Lock и 🌐 мы не проглатываем, а забираем у системы насовсем (hidutil-ремап и
+            // AppleFnUsageType), потому что их собственное действие живёт НИЖЕ нашего тапа. Значит
+            // человек теряет привычное поведение клавиши, и узнать об этом он должен ДО, а не после.
+            // Тот же диалог показывает мгновенное переключение с 24.07; здесь его не было.
+            if let shadowed = InstantSwitchControl.shadows(mode: p.1, keyCode: p.2, mods: p.3) {
+                let a = NSAlert()
+                a.messageText = L10n.t("is.warn.title")
+                a.informativeText = String(format: L10n.t("is.warn.body"), shadowed)
+                a.addButton(withTitle: L10n.t("is.warn.ok"))
+                a.addButton(withTitle: L10n.t("common.cancel"))
+                guard a.runModal() == .alertFirstButtonReturn else { rebuild(); return }
+            }
             settings.hotkeyMode = p.1
             settings.hotkeyKeyCode = p.2
             settings.hotkeyModifiers = p.3
@@ -563,6 +576,7 @@ final class HotkeyControl: NSView {
             // Caps живёт через hidutil-ремап, а не через тап: сменили комбинацию — ремап должен
             // догнать выбор. Зовём БЕЗУСЛОВНО, потому что уход С Caps так же важен, как приход на него.
             CapsRemap.reconcile()
+            GlobeKey.reconcile()    // 🌐 тоже: её системное действие живёт ниже тапа, см. GlobeKey.wanted
             rebuild()
         } else if i == pop.numberOfItems - 1 {
             startRecording()          // последняя строка — «Назначить свою…» (есть ВСЕГДА)
@@ -628,6 +642,7 @@ final class HotkeyControl: NSView {
                 s.hotkeyMode = "key"; s.hotkeyKeyCode = kc
                 s.hotkeyModifiers = mods.rawValue; s.hotkeyKeyLabel = label
                 CapsRemap.reconcile()   // см. выбор пресета: уход с Caps так же важен, как приход
+                GlobeKey.reconcile()
             }
             // Мягкий конфликт показываем ВМЕСТЕ с кандидатом: кнопка «Назначить» остаётся живой,
             // человек решает сам (автор 06.08).
@@ -668,6 +683,7 @@ final class HotkeyControl: NSView {
                         s.hotkeyMode = "combo"          // ⌥⇧ и т.п.
                         s.hotkeyKeyCode = -1; s.hotkeyModifiers = p.rawValue; s.hotkeyKeyLabel = ""
                         CapsRemap.reconcile()   // см. выбор пресета: уход с Caps так же важен, как приход
+                        GlobeKey.reconcile()
                     }
                     freeze(HotkeyRecorderPanel.parts(mods: p))
                 } else if count(peak) == 1, peakKey >= 0 {
@@ -684,6 +700,7 @@ final class HotkeyControl: NSView {
                         s.hotkeyMode = "modkey"
                         s.hotkeyKeyCode = pk; s.hotkeyModifiers = p.rawValue; s.hotkeyKeyLabel = ""
                         CapsRemap.reconcile()   // см. выбор пресета: уход с Caps так же важен, как приход
+                        GlobeKey.reconcile()
                     }
                     freeze(HotkeyRecorderPanel.parts(mods: p))
                 } else { peak = []; peakKey = -1 }
@@ -1371,7 +1388,11 @@ final class InstantSwitchControl: NSView {
         if mode == "key", keyCode == 49, f.contains(.maskCommand) { return L10n.t("is.shadow.spotlight") }
         if mode == "key", keyCode == 49, f.contains(.maskControl) { return L10n.t("is.shadow.inputSrc") }
         if mode == "modkey", keyCode == 57 { return L10n.t("is.shadow.caps") }
-        if mode == "globe" { return L10n.t("is.shadow.globe") }
+        // ⚠️ 🌐 ПРИХОДИТ СЮДА В ДВУХ ВИДАХ. У мгновенного переключения это отдельный режим "globe",
+        // а в списке ручного переключения та же клавиша записана обычным modkey с кодом 63. Пока эта
+        // строка знала только про первый вид, ручное переключение забирало клавишу молча (отзыв
+        // 21.08.2026), хотя её системное действие при этом отключается точно так же.
+        if mode == "globe" || (mode == "modkey" && keyCode == 63) { return L10n.t("is.shadow.globe") }
         return nil
     }
 

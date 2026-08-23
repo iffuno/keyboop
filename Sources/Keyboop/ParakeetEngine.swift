@@ -123,8 +123,21 @@ final class ParakeetEngine {
     /// ⚠️ `nil` здесь означает НЕ автоопределение, а ВЫКЛЮЧЕННЫЙ фильтр (TdtDecoderV3: needsTopK =
     /// language != nil). Поэтому для «Авто» мы честно передаём nil: сказать модели «определи сам»
     /// нечем, а фильтровать письменность, не зная языка, не по чему.
-    func transcribe(samples: [Float], language: String) async -> String {
-        guard let mgr = manager else { return "" }
+    /// Расшифровка. ⚠️ ВОЗВРАЩАЕТ nil ПРИ ОТКАЗЕ ДВИЖКА, а пустую строку — когда человек промолчал.
+    /// Раньше и то и другое было пустой строкой, и различить их снаружи было нельзя. Цена этой
+    /// неразличимости: отзыв #161 от 21.08.2026, где CoreML на каждой диктовке падал по таймауту
+    /// («E5RT: Submit Async failed … Encoder_main__Op8_Cast has timed out»), а человек девять часов
+    /// видел только крутящееся «Распознаю» и пустоту после него.
+    func transcribe(samples: [Float], language: String) async -> String? {
+        // Проверить запасной путь, не имея сломанной машины под рукой: KEYBOOP_PARAKEET_FAIL=1
+        // заставляет движок «отказать». Отказ здесь редкий и зависит от версии macOS, то есть
+        // воспроизвести его на своей машине нельзя вовсе, а непроверенный запасной путь это ровно
+        // такая же тишина, только на этаж ниже.
+        if ProcessInfo.processInfo.environment["KEYBOOP_PARAKEET_FAIL"] == "1" {
+            kbLog("parakeet: ОТКАЗ ПО КРЮЧКУ KEYBOOP_PARAKEET_FAIL — проверяем запасной путь")
+            return nil
+        }
+        guard let mgr = manager else { return nil }
         do {
             var state = TdtDecoderState.make(decoderLayers: decoderLayers)
             // Коды у нас те же ISO, что у движка («ru», «en»), поэтому маппинг прямой.
@@ -134,7 +147,7 @@ final class ParakeetEngine {
             return result.text
         } catch {
             kbLog("parakeet: ошибка транскрипции: \(error)")
-            return ""
+            return nil
         }
     }
 
@@ -268,7 +281,7 @@ final class ParakeetEngine {
     func loadIfNeeded() async -> Bool { false }
     // Сигнатура обязана совпадать с arm64-версией: universal-сборка компилирует ОБЕ ветки,
     // и расхождение уронит именно x86-проход, то есть поддержку Intel.
-    func transcribe(samples: [Float], language: String) async -> String { "" }
+    func transcribe(samples: [Float], language: String) async -> String? { nil }
     func download(progress: @escaping (Double) -> Void) async -> Bool {
         kbLog("parakeet: недоступен на Intel (нет Neural Engine)"); return false
     }

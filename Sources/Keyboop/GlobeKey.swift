@@ -121,15 +121,32 @@ enum GlobeKey {
     }
     private static func clearReceipt() { try? FileManager.default.removeItem(at: receiptURL) }
 
+    /// Нужна ли нам сама клавиша 🌐, то есть надо ли отбирать у неё системное действие.
+    ///
+    /// ⚠️ ДВЕ ФУНКЦИИ, А НЕ ОДНА (отзыв 21.08.2026: «если для ручного переключения выбран глобус, то
+    /// переключения последнего слова нет, меняется только раскладка»). 🌐 можно назначить и на
+    /// мгновенную смену языка, и на ручное переключение слова, но забирали мы её только в первом
+    /// случае. Во втором система оставляла клавише её собственное действие «сменить источник ввода»,
+    /// и оно срабатывало ВМЕСТО нашего: человек видел смену раскладки и никакой конверсии.
+    ///
+    /// ⚠️ ПОЧЕМУ НЕЛЬЗЯ БЫЛО ОБОЙТИСЬ ПРОГЛАТЫВАНИЕМ В ТАПЕ, как обещал комментарий у пресета.
+    /// Системное действие 🌐 живёт НИЖЕ session-тапа, ровно как замок у Caps Lock: проглоченное
+    /// событие мы прячем от чужих программ, но система своё дело уже сделала. Единственный путь —
+    /// отобрать у клавиши роль через AppleFnUsageType, что `take()` и делает.
+    static var wanted: Bool {
+        let s = AppSettings.shared
+        let instant = s.instantSwitchEnabled && s.instantSwitchMode == "globe"
+        let manual  = s.hotkeyMode == "modkey" && s.hotkeyKeyCode == 63
+        return instant || manual
+    }
+
     /// ⚠️ КЛАВИША ЗАБРАНА, НО НЕ НАМИ — то есть осиротела (задача 96).
     ///
     /// Так выглядит след аварии, которую сторож не застал: он появился только в 0.4, а до него
     /// каждое падение и каждое `kill -9` оставляли `AppleFnUsageType = 0` навсегда. Сюда же попадает
     /// человек, у которого Keyboop когда-то стоял, забрал клавишу и был удалён.
     static var looksOrphaned: Bool {
-        let s = AppSettings.shared
-        let ours = s.instantSwitchEnabled && s.instantSwitchMode == "globe"
-        return current == .nothing && !ours
+        return current == .nothing && !wanted
     }
 
     /// Вернуть 🌐 системное действие по кнопке в настройках.
@@ -154,7 +171,7 @@ enum GlobeKey {
     /// При выключении фичи (или смене комбинации с 🌐 на другую) честно возвращаем «как было».
     static func reconcile() {
         let s = AppSettings.shared
-        if s.instantSwitchEnabled && s.instantSwitchMode == "globe" {
+        if wanted {
             if current != .nothing {    // уже свободна — забирать нечего
                 let prev = s.globePrevFnUsage == -1 ? (rawValue() ?? -2) : s.globePrevFnUsage
                 s.globePrevFnUsage = prev

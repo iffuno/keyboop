@@ -329,7 +329,7 @@ final class EventTap {
     /// системой, а с ним — «ввод не проходит нигде» (инцидент 21.07).
     @inline(__always) private func onMain(_ b: @escaping () -> Void) { DispatchQueue.main.async(execute: b) }
 
-    fileprivate func handle(type: CGEventType, event: CGEvent, proxy: CGEventTapProxy) -> Unmanaged<CGEvent>? {
+    func handle(type: CGEventType, event: CGEvent, proxy: CGEventTapProxy) -> Unmanaged<CGEvent>? {
         // Инструментовка: если колбэк вдруг стал медленным — увидим это ДО того, как система вырубит
         // тап, а не по факту потерянных нажатий.
         // ⚠️ МЕРЯЕМ ВОЗРАСТ СОБЫТИЯ, А НЕ ТЕЛО ОБРАБОТЧИКА (31.07). Прежний замер брал время от входа

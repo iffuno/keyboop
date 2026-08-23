@@ -198,6 +198,27 @@ final class Engine: EventTapHandler {
     /// поступать надо противоположно. Снимается при первом же решении, см. convert-путь ниже.
     private var caretJumpedSinceClear = false
 
+    /// Что стояло слева от каретки в момент последнего её прыжка (задача 187).
+    ///
+    /// Спрашивается У СИСТЕМЫ в фоне, сразу на клике, и к моменту решения ответ уже готов. Зачем не
+    /// в момент решения — см. `SelectionText.caretLeftAsync`: решение принимается в главном потоке,
+    /// где живёт runloop перехватчика, и обращаться оттуда к Accessibility нельзя.
+    private var caretLeftAtJump: CaretLeft = .unknown
+    /// Поколение пробы: ответ на ПРОШЛЫЙ клик, пришедший после нового, должен быть выброшен.
+    private var caretProbeGen = 0
+    /// Программы, про которые ответ пробы уже записан (по одной строке на программу).
+    private var caretProbeSeenApps = Set<String>()
+
+    /// Была ли ПОСЛЕ прыжка каретки правка стирания (обычный Backspace).
+    ///
+    /// Это второй слой той же задачи 187, и работает он ТАМ, ГДЕ ACCESSIBILITY СЛЕП. Замер 22.08:
+    /// в Electron-приложениях (ChatGPT, редакторы, чаты) проба каретки не отвечает вовсе, а именно
+    /// там человек и печатает больше всего. Backspace же виден нам всегда, из своего же потока.
+    /// Смысл сигнала прямой: чтобы заменить букву ВНУТРИ написанного слова, неверную сначала стирают.
+    /// Опасный случай 02.08 («поставил правильную г, а мы вернули u») без Backspace невозможен, а
+    /// «кликнул в пустое поле и начал фразу с одиночной А» — наоборот, без него и происходит.
+    private var backspaceSinceJump = false
+
     /// Мягкий отложенный сброс контекста (активация чужого приложения — каретка не двигалась):
     /// перед следующим нажатием забываем завершённое слово/группу, НО сохраняем currentWord.
     /// Полный clear (pendingContextClear) «сиротил» набираемое окончание → «ть»→«nm» (баг 29.06).
@@ -357,6 +378,7 @@ final class Engine: EventTapHandler {
         // Каретка прыгнула: слева на экране может стоять целое слово, которого мы не увидим. Для
         // одиночных букв это решающее отличие от чистого начала ввода (см. LayoutDetector, w.count == 1).
         caretJumpedSinceClear = true
+        backspaceSinceJump = false
         buffer.clear()
         UndoLearner.shared.resetContext()
         antiResonance.resetHistory()      // новый контекст — история конверсий неактуальна (заморозка по таймеру сама истечёт)
@@ -369,10 +391,42 @@ final class Engine: EventTapHandler {
         // Клик/навигация двигает курсор — групповая история недействительна даже под muted (G10):
         // нашу синтетику мы шлём только с клавиатуры, mouse-down — всегда намерение пользователя.
         buffer.invalidateGroupHistory()
+        probeCaretLeft()
         if muted { pendingContextClear = true; return }   // клик двигал каретку: очистка не теряется, а ждёт следующего нажатия (аудит-гэп)
         // НЕ чистим буфер ЗДЕСЬ (этот колбэк прилетает с async-монитора ПОЗЖЕ первого нажатия и съедал
         // бы первый символ) — помечаем на ленивую очистку перед следующим нажатием (см. handleKeyDown).
         pendingContextClear = true
+    }
+
+    /// Спросить в фоне, что слева от каретки. Зовётся на КАЖДОМ прыжке каретки, а используется
+    /// только в одном редком случае: первая одиночная буква после этого прыжка (см. `afterJump`).
+    /// Стоит это одного фонового запроса на клик и ничего не стоит главному потоку.
+    private func probeCaretLeft() {
+        caretLeftAtJump = .unknown
+        caretProbeGen &+= 1
+        let gen = caretProbeGen
+        SelectionText.caretLeftAsync { [weak self] answer in
+            DispatchQueue.main.async {
+                guard let self, self.caretProbeGen == gen else { return }   // ответ на прошлый клик — в топку
+                self.caretLeftAtJump = answer
+                // ⚠️ ПЕРВЫЕ ТРИ ОТВЕТА ПИШЕМ В ЛОГ, ДАЛЬШЕ МОЛЧИМ. Проба новая, и без этих строк
+                // нельзя отличить «Accessibility отвечает, слева буква» от «Accessibility молчит
+                // вовсе»: снаружи оба выглядят одинаково — правило прыжка не снялось. Клик бывает
+                // сотни раз за час, поэтому строк ровно три на запуск, этого хватает на проверку.
+                // ⚠️ ОДНА СТРОКА НА ПРОГРАММУ, А НЕ ТРИ НА ЗАПУСК. Первый вариант съедал все три слота
+                // одним приложением (22.08: три подряд от ChatGPT), и про остальные мы не узнавали
+                // ничего. А вопрос тут ровно «где именно Accessibility слеп»: в Electron он молчит,
+                // в нативном поле отвечает, и лечится это по-разному.
+                let appName = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
+                if !self.caretProbeSeenApps.contains(appName) {
+                    self.caretProbeSeenApps.insert(appName)
+                    let what = answer == .letter ? "слева буква" : (answer == .boundary ? "слева пусто/знак" : "Accessibility не ответил")
+                    // Имя программы обязательно: без него «не ответил» неотличимо у Electron, у web
+                    // и у нативного поля, а лечится это в каждом случае по-разному.
+                    kbLog("проба каретки: \(what) · \(appName)")
+                }
+            }
+        }
     }
 
     // Голосовой ввод (hold-to-talk) — делегируем оркестратору.
@@ -430,6 +484,7 @@ final class Engine: EventTapHandler {
             } else {
                 buffer.backspace()
                 wordEdited = true                    // юзер правит слово внутри → live-fix молчит до границы
+                if caretJumpedSinceClear { backspaceSinceJump = true }   // правка после клика, см. задачу 187
                 UndoLearner.shared.observe(current: buffer.currentWord)   // U2: следим за стиранием нашего вывода
             }
         case 49, 48, 36: // Space, Tab, Return — граница слова
@@ -1730,8 +1785,29 @@ final class Engine: EventTapHandler {
         // Флаг ОДНОРАЗОВЫЙ: снимаем его прямо здесь, при первом же решении после прыжка каретки.
         // Дальше он не нужен и был бы вреден — человек кликает постоянно, и застрявший флаг молча
         // отключил бы починку одиночных предлогов в начале следующей фразы.
-        let afterJump = caretJumpedSinceClear
+        var afterJump = caretJumpedSinceClear
         caretJumpedSinceClear = false
+        // ⚠️ ЗДЕСЬ МЫ ПЕРЕСТАЁМ ГАДАТЬ И НАЧИНАЕМ СМОТРЕТЬ (задача 187, наблюдение автора 22.08.2026).
+        // Правило «после прыжка каретки одиночную букву не трогаем» защищает букву, вписанную ВНУТРЬ
+        // уже написанного слова. Но оно слепое: в пустом поле оно молчит ровно так же, хотя чинить
+        // там безопасно, и человек видит «первый раз не сработало, второй сработал».
+        // Ответ пробы получен заранее, на самом клике, поэтому здесь это чтение поля, а не запрос.
+        if afterJump, word.count == 1 {
+            switch caretLeftAtJump {
+            case .boundary:
+                afterJump = false
+                kbLog("одиночная буква после клика: слева пусто (Accessibility) — правило прыжка снято")
+            case .letter:
+                break   // слева стои́т слово — это тот самый опасный случай, молчим
+            case .unknown:
+                // Accessibility слеп (Electron, web). Судим по Backspace: правка буквы ВНУТРИ слова
+                // без стирания неверной невозможна, а начало фразы с одиночной буквы — наоборот.
+                if !backspaceSinceJump {
+                    afterJump = false
+                    kbLog("одиночная буква после клика: стираний не было — считаю началом ввода")
+                }
+            }
+        }
         switch LayoutDetector.decide(word: word, exceptions: ExceptionStore.shared, prev: prevW,
                                      afterCaretJump: afterJump) {
         case .keep:

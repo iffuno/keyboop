@@ -356,8 +356,43 @@ final class VoiceController {
                 // языка в настройках для этого движка не делал НИЧЕГО. Он и сейчас не выбирает
                 // язык (модель этого не умеет), но включает фильтр по письменности — см. подробный
                 // комментарий в ParakeetEngine.transcribe.
-                let text = ok ? await ParakeetEngine.shared.transcribe(samples: samples, language: lang) : ""
-                kbLog("voice: parakeet(готов=\(ok), язык=\(lang)) → \(text.count) симв.")
+                let out = ok ? await ParakeetEngine.shared.transcribe(samples: samples, language: lang) : nil
+                var text = out ?? ""
+                kbLog("voice: parakeet(готов=\(ok), язык=\(lang)) → \(out.map { "\($0.count) симв." } ?? "ОТКАЗ")")
+                // ⚠️ ОТКАЗ ДВИЖКА → ДОКАНЧИВАЕМ ЗАПИСЬ ВТОРЫМ ДВИЖКОМ, А НЕ ОТДАЁМ ПУСТОТУ.
+                // Отзыв #161 (21.08.2026): у человека на macOS 14 модель Parakeet падала в CoreML на
+                // КАЖДОЙ диктовке («Encoder_main__Op8_Cast has timed out»), и все девять часов он
+                // видел только «Распознаю» и пустоту после. Записанный звук при этом целый, второй
+                // движок у нас есть, и молчать в такой ситуации нечем оправдать.
+                // Настройку человека НЕ трогаем: движок остаётся выбранным, подменяем только эту
+                // попытку. Выбор движка это его решение, а не наше.
+                if out == nil {
+                    // ⚠️ ВТОРАЯ МОДЕЛЬ МОЖЕТ БЫТЬ ПРОСТО НЕ СКАЧАНА, и тогда «подмена» это та же
+                    // тишина этажом ниже (замечание автора 21.08). Whisper весит от 466 МБ до 1.6 ГБ,
+                    // тянуть их за человека без спроса нельзя: это его трафик и его диск.
+                    if await MainActor.run(body: { self.modelInstalled }) {
+                        text = await withCheckedContinuation { (c: CheckedContinuation<String, Never>) in
+                            self.transcribeQueue.async { [weak self] in
+                                guard let self else { return c.resume(returning: "") }
+                                self.loadModelIfNeeded()
+                                let t = self.whisper?.transcribe(samples: samples, language: lang) ?? ""
+                                kbLog("voice: parakeet отказал — доканчиваю whisper'ом, \(t.count) симв.")
+                                c.resume(returning: t)
+                            }
+                        }
+                    } else {
+                        kbLog("voice: parakeet отказал, а модели Whisper на диске нет — говорю человеку")
+                    }
+                    // ⚠️ ОДИН РАЗ ЗА ЗАПУСК, А НЕ НА КАЖДУЮ ДИКТОВКУ. Отказ этот постоянный (зависит
+                    // от версии macOS), и тост на каждую фразу превратился бы в травлю. Но сказать
+                    // ОДИН раз обязательно: подмена молча делает распознавание в разы медленнее, и
+                    // человек имеет право знать, почему.
+                    if !Self.parakeetFallbackTold {
+                        Self.parakeetFallbackTold = true
+                        let key = text.isEmpty ? "voice.parakeetNoAlt" : "voice.parakeetFell"
+                        await MainActor.run { VoiceIndicator.shared.showToast(L10n.t(key)) }
+                    }
+                }
                 // Кодируем и шифруем ЗДЕСЬ, в фоне, а не в deliver: тот работает на главном потоке,
                 // где живёт runloop нашего event-tap, и подмораживать его ради AAC нельзя (цену этого
                 // мы уже платили на startRunning, см. AudioRecorder).
@@ -866,6 +901,9 @@ final class VoiceController {
     }
 
     /// Отложенная выгрузка модели Whisper из памяти (см. scheduleModelRelease).
+    /// Сказали ли мы уже про отказ Parakeet. Статический: живёт до конца запуска, см. место вызова.
+    private static var parakeetFallbackTold = false
+
     private var modelIdleRelease: DispatchWorkItem?
 
     private func loadModelIfNeeded() {
