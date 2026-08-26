@@ -415,6 +415,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 HotkeyRecorderPanel.shared.render(parts: ["⌘", "⇧", "K"], complete: true)
             }
         }
+        // Dev-хук: проба Secure Input (KEYBOOP_SECUREPROBE=1, путь к холдеру в
+        // KEYBOOP_SECUREPROBE_HOLDER). Отвечает на вопрос, ради которого заведён весь стенд:
+        // доходит ли наша запись до ОБЫЧНОГО поля, пока флаг держит чужая программа. Живёт
+        // здесь, а не отдельным бинарём, ровно по одной причине — постинг событий требует
+        // Accessibility, и это разрешение есть у Keyboop, а у свежесобранного стенда его нет.
+        // ⚠️ ЛЮБОЕ НЕПУСТОЕ ЗНАЧЕНИЕ, А НЕ РОВНО "1". Режимов два ("1" и "manual"), и сравнение
+        // с единицей молча отключало ручной режим целиком: скрипт исправно запускал приложение,
+        // приложение исправно ничего не делало, а человека дважды попросили нажать клавишу впустую.
+        kbLog("хук пробы: KEYBOOP_SECUREPROBE=«\(ProcessInfo.processInfo.environment["KEYBOOP_SECUREPROBE"] ?? "нет")» HOLDER=«\(ProcessInfo.processInfo.environment["KEYBOOP_SECUREPROBE_HOLDER"] ?? "нет")»")
+        if let mode = ProcessInfo.processInfo.environment["KEYBOOP_SECUREPROBE"], !mode.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                SecureInputProbe.run(holder: ProcessInfo.processInfo.environment["KEYBOOP_SECUREPROBE_HOLDER"])
+            }
+        }
         // Dev-хук: показать тост (KEYBOOP_TOAST=1). Тост живёт две секунды и появляется по
         // действию, которое руками к моменту снимка уже не повторить, поэтому без хука его
         // внешний вид проверялся «на память». автор 06.08 нашёл там чужой зелёный цвет.

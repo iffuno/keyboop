@@ -613,14 +613,18 @@ final class VoiceController {
                 self.streamStep(final, commit: true)           // ЕДИНСТВЕННОЕ место, где стрим печатает
                 let clean = self.typedTail.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !clean.isEmpty {
-                    if TextReplacer.secureInputActive {
+                    if !SecureInputPolicy.canWrite("хвост стриминга") {
                         // Финал пришёлся на поле пароля: хвост не досылаем (streamStep выше уже
                         // пропущен гвардом в TextReplacer), текст сохраняем и честно говорим.
                         kbLog("voice: secure input на финале стриминга — текст в истории")
                         VoiceIndicator.shared.showToast(L10n.t("voice.securePwd"))
                     } else {
+                        // Время НАЧАЛА вставки едет вместе с сообщением: получатель по нему поймёт,
+                        // печатал ли человек ПОСЛЕ нас (см. наблюдателя в Engine).
+                        let insertT0 = ProcessInfo.processInfo.systemUptime
                         TextReplacer.insert(" ") {                  // пробел в конце, как в батч-deliver()
-                            NotificationCenter.default.post(name: .keyboopVoiceInserted, object: nil)
+                            NotificationCenter.default.post(name: .keyboopVoiceInserted, object: nil,
+                                                            userInfo: ["startedAt": insertT0])
                         }
                     }
                     VoiceHistory.shared.add(clean, audio: clip?.id, wave: clip?.wave)  // в историю — ОДИН раз, на финале
@@ -855,8 +859,8 @@ final class VoiceController {
         }
         // Поле пароля/системный диалог украли фокус (инцидент 23.07.2026): печатать нельзя,
         // но распознанное НЕ теряем — история + честный тост вместо молчаливой пропажи.
-        if TextReplacer.secureInputActive {
-            kbLog("voice: активен secure input — не печатаю \(clean.count) симв., текст в истории")
+        if !SecureInputPolicy.canWrite("диктовка \(clean.count) симв.") {
+            kbLog("voice: писать нельзя — не печатаю \(clean.count) симв., текст в истории")
             VoiceHistory.shared.add(clean, audio: audio, wave: wave)
             noteVoiceStats(clean)
             VoiceIndicator.shared.showToast(L10n.t("voice.securePwd"))
@@ -885,9 +889,13 @@ final class VoiceController {
         let autoEnter = settings.voiceAutoEnter || sendGestureArmed
         sendGestureArmed = false
         let out = Self.applyOutputOptions(clean) + ((settings.voiceTrailingSpace && !autoEnter) ? " " : "")
+        // См. второй post ниже по файлу: время НАЧАЛА вставки нужно получателю, чтобы отличить
+        // «человек ещё ничего не печатал» от «человек уже набрал слово, пока мы печатали своё».
+        let insertT0 = ProcessInfo.processInfo.systemUptime
         TextReplacer.insert(out, thenReturn: autoEnter,
                             returnMods: CGEventFlags(rawValue: settings.voiceAutoEnterMods)) {
-            NotificationCenter.default.post(name: .keyboopVoiceInserted, object: nil)
+            NotificationCenter.default.post(name: .keyboopVoiceInserted, object: nil,
+                                            userInfo: ["startedAt": insertT0])
         }
         VoiceHistory.shared.add(clean, audio: audio, wave: wave)
     }

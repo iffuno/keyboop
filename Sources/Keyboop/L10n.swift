@@ -285,7 +285,9 @@ enum L10n {
         // Зачин выбран КОРОТКИМ намеренно: длина зачина и место под имя это одна величина, и при
         // «где-то открыто поле пароля: » имени оставалось бы четыре символа. Обрезка имени по
         // ширине живёт в AppHealth.problem(rowWidth:).
-        "health.secureInput":     [.ru: "Скрытый ввод в другой программе", .en: "Hidden input in another app"],
+        "health.secureInput":     [.ru: "Клавиатуру скрыла другая программа", .en: "Another app hid the keyboard"],
+        "health.secureInputTip":  [.ru: "Какая-то программа включила защищённый ввод macOS, и клавиши скрыты системно — от нас и от любой другой программы. Переключение раскладки сейчас не работает, диктовка работает. Обычно отпускает само. Если нет, помогает заблокировать и разблокировать экран.",
+                                   .en: "Some app turned on macOS secure keyboard entry, so keystrokes are hidden system-wide, from us and from every other app. Layout switching is off for now, dictation still works. It usually clears by itself. If it doesn't, locking and unlocking the screen helps."],
         "health.secureInputHolder": [.ru: "Скрытый ввод: %@", .en: "Hidden input: %@"],
         // Подсказки значка (P3.4). Эти две ЦЕЛЫЕ фразы, а не фрагменты общего ряда, потому что
         // висят сами по себе при наведении. Про паузу отдельной строки нет намеренно: её текст
@@ -952,7 +954,7 @@ enum L10n {
         "voice.log":      [.ru: "Системный лог", .en: "System log"],
         "voice.logHint":  [.ru: "Если диктовка вдруг не сработала — открой лог (локальный, без текста распознавания) и пришли его на hi@keyboop.com.",
                            .en: "If dictation ever misfires — open the log (local, without recognized text) and send it to hi@keyboop.com."],
-        "voice.securePwd": [.ru: "Поле пароля — печатать не буду. Текст сохранён в истории.",
+        "voice.securePwd": [.ru: "Сюда печатать не буду. Текст сохранён в истории.",
                             .en: "Password field — won't type here. Your text is saved to history."],
         "voice.deadBundle": [.ru: "Файлы Keyboop изменились на диске — перезапусти приложение, и микрофон вернётся.",
                              .en: "Keyboop's files changed on disk — relaunch the app to get the mic back."],

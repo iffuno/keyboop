@@ -135,6 +135,11 @@ enum TextReplacer {
     /// подтвердить чужой диалог (инцидент 23.07.2026 — диалог пароля украл фокус в конце диктовки).
     /// Carbon-флаг глобален и честен для всей системы. Проверяем в момент ПОСТИНГА (на synthQueue),
     /// а не постановки в очередь — окно гонки минимально.
+    ///
+    /// ⚠️ САМ ПО СЕБЕ ЭТОТ ФЛАГ БОЛЬШЕ НЕ РЕШАЕТ, ПИСАТЬ ИЛИ НЕТ (25.08.2026). Он сессионный, и его
+    /// поднимает любая программа на своём поле пароля, делая нас мёртвыми во всех остальных сразу.
+    /// Решение принимает `SecureInputPolicy.canWrite`, которая спрашивает САМО ПОЛЕ под кареткой.
+    /// Здесь остался сырой признак — он ещё нужен там, где вопрос именно «флаг поднят?».
     static var secureInputActive: Bool { IsSecureEventInputEnabled() }
 
     /// Впечатать текст без удаления (для голосового ввода / перевода).
@@ -146,8 +151,8 @@ enum TextReplacer {
     static func insert(_ text: String, thenReturn: Bool = false, returnMods: CGEventFlags = [],
                        completion: (() -> Void)? = nil) {
         synthQueue.async {
-            guard !secureInputActive else {
-                kbLog("synth: активен secure input — insert(\(text.count) симв.) пропущен")
+            guard SecureInputPolicy.canWrite("insert \(text.count) симв.") else {
+                kbLog("synth: писать нельзя — insert(\(text.count) симв.) пропущен")
                 if let completion { DispatchQueue.main.async(execute: completion) }
                 return
             }
@@ -219,10 +224,10 @@ enum TextReplacer {
         let tEnq = ProcessInfo.processInfo.systemUptime
         synthQueue.async {
             let tStart = ProcessInfo.processInfo.systemUptime
-            guard !secureInputActive else {
+            guard SecureInputPolicy.canWrite("replace -\(deleteCount)+\(text.count)") else {
                 // Глотаем ВСЁ задание, включая thenReturn: синтетический Enter в диалог
                 // аутентификации мог бы его подтвердить — потерянный Enter безопаснее.
-                kbLog("synth: активен secure input — replace(-\(deleteCount)+\(text.count)) пропущен")
+                kbLog("synth: писать нельзя — replace(-\(deleteCount)+\(text.count)) пропущен")
                 if let completion { DispatchQueue.main.async(execute: completion) }
                 return
             }

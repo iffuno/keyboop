@@ -13,7 +13,10 @@ protocol EventTapHandler: AnyObject {
     func handleSwitchHotkey()
     /// ТОЛЬКО смена языка (RU↔EN), без конвертации набранного — действие клавиши 🌐/Fn.
     func handleLayoutSwitchOnly()
-    func handleContextReset()
+    /// `at` — время САМОГО клика (секунды с загрузки, та же база, что systemUptime), а не
+    /// время доставки: монитор мыши асинхронный, и разница между ними бывает больше, чем интервал
+    /// между двумя нажатиями клавиш. См. Engine.applyPendingContextClear.
+    func handleContextReset(at eventTime: TimeInterval)
     /// Человек выбрал сниппет цифрой в списке (задача 17). Текст вставляется как есть,
     /// удалять нечего: триггер никто не печатал.
     func handleSnippetPicked(_ text: String)
@@ -284,8 +287,9 @@ final class EventTap {
         if mouseMonitor == nil {
             mouseMonitor = NSEvent.addGlobalMonitorForEvents(
                 matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
-            ) { [weak self] _ in
+            ) { [weak self] ev in
                 guard let self else { return }
+                let clickAt = ev.timestamp
                 // ⚠️ КЛИК СНИМАЕТ ВЗВОД ЖЕСТА ПО МОДИФИКАТОРУ (05.08.2026). Раньше клик только чистил
                 // набранное слово, а взвод оставался, и получалось вот что: перехватчик слушает
                 // ТОЛЬКО клавиатуру (keyDown/flagsChanged/keyUp), мышь в маску не входит. Значит
@@ -308,7 +312,7 @@ final class EventTap {
                 if SnippetPicker.shared.isOpen { onMain { SnippetPicker.shared.hide() } }
                 self.otherKeyBetweenTaps = true
                 self.otherKeyDuringCombo = true
-                self.handler?.handleContextReset()
+                self.handler?.handleContextReset(at: clickAt)
             }
         }
         return true
@@ -780,9 +784,16 @@ final class EventTap {
             }
             fnArmed = false
             modkeyArmed = false
-            voiceModArmed = false
             otherKeyBetweenTaps = true    // «между тапами что-то было» — доказать обратное нечем
             otherKeyDuringCombo = true    // то же для комбинации
+            // ⚠️ ДИКТОВКУ СО ВЗВОДА НЕ СНИМАЕМ (25.08.2026, отзывы #163, #166, #173, #185, #189).
+            // Разоружение выше защищает от НАСТОЯЩЕГО бага: жест смены языка нельзя доказать
+            // чистым, пока обычные клавиши скрыты, и человек получал «переключает после первой
+            // буквы» (#46). Но у диктовки цена ошибки другая и несравнимо меньше: ложный старт
+            // человек видит сразу по плашке и отменяет, ничего не испортив. А цена молчания
+            // оказалась высокой — под чужим залипшим флагом умирала ровно диктовка, и именно её
+            // люди хоронили словами «программка просто умирает».
+            // Писать ей теперь тоже есть куда: `SecureInputPolicy` пускает запись в обычное поле.
         }
         // ⚠️ Гасим взвод одиночного модификатора ПЕРВЫМ ДЕЛОМ (ревью 28.07 — репорт #17 был закрыт
         // лишь наполовину). Если вторая клавиша комбинации это клавиша мгновенного переключения,

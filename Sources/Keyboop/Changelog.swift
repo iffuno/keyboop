@@ -62,6 +62,39 @@ enum Changelog {
         // Бетой по протоколу: правки лежат в диктовке и в исправлении опечаток, то есть в горячем
         // пути, а исправление опечаток вдобавок лишилось целого правила, и это стоит обкатать на тех,
         // кто вызвался сам.
+        // 0.4.4 — БЕТА. Выпуск про то, чтобы приложение не умирало целиком из-за чужого поля
+        // пароля. Бетой по протоколу и без вариантов: правки лежат в перехватчике событий и в
+        // путях записи, то есть в самом горячем месте проекта.
+        Release(version: "0.4.4",
+            ru: [
+                "Диктовка больше не умирает из-за чужого поля пароля. Когда любая программа включает защищённый ввод macOS, система прячет клавиши от всех сразу, и у нас замолкало вообще всё. По отзывам такое устраивали Почта, Chrome, Safari, Telegram и терминалы, у одного человека это случалось несколько раз в день. Теперь мы смотрим не на общий признак, а на само поле под курсором: если это поле пароля, молчим как раньше, а если обычное, диктовка работает.",
+                "Значок больше не гаснет, когда работать всё-таки можно. Потухший значок с треугольником читался однозначно: программа умерла. Заодно мы перестали называть в меню виноватую программу, потому что система сообщает её имя неточно и мы регулярно обвиняли невиновных. Вместо этого в подсказке значка написано, что происходит, что при этом работает и что помогает.",
+                "В мягком режиме короткие сочетания больше не превращаются в слова. В видеоредакторах и монтажках горячие клавиши это одиночные буквы, а пробел это воспроизведение, и две команды подряд складывались для нас в «до», «на» или «то» со всеми последствиями. Теперь в таких программах мы трогаем только слова длиннее двух букв и только набранные слитно.",
+                "Глобус и Fn наконец работают на ручном переключении. Раньше при таком назначении менялась только раскладка, а слово оставалось как было. Правка была готова к прошлому выпуску, но в него не попала.",
+                "После диктовки не пропадает слово, которое вы успели набрать сами. Уборка за диктовкой чистила буфер целиком, и если вы начинали печатать, пока текст ещё вставлялся, ваше слово исчезало вместе с чужим контекстом.",
+            ],
+            en: [
+                "Dictation no longer dies because of someone else's password field. When any app turns on macOS secure keyboard entry, the system hides keystrokes from everybody at once, and everything here went quiet. Reports named Mail, Chrome, Safari, Telegram and terminals; one person hit it several times a day. We now look at the field under the cursor rather than at the global flag: a password field still gets silence, an ordinary one gets your dictation.",
+                "The icon no longer dims while the app can still do its job. A dimmed icon with a warning triangle read as one thing only: the app is dead. We also stopped naming the app that is holding the keyboard, because the system reports that name unreliably and we kept accusing the innocent. The icon tooltip now explains what is happening, what still works and what helps.",
+                "In soft mode short key sequences no longer turn into words. In video editors the shortcuts are single letters and the space bar is playback, so two commands in a row added up to a valid Russian preposition and got converted. In those apps we now touch only words longer than two letters, and only ones typed as typing rather than pressed as commands.",
+                "Globe and Fn finally work for manual switching. Assigned that way they used to change only the layout and leave the word alone. The fix was ready for the previous release and missed it.",
+                "A word you typed yourself no longer disappears after a dictation. The cleanup after dictation wiped the whole buffer, so if you started typing while the text was still being inserted, your word went with it.",
+            ],
+            announce: """
+                Ездил на пару дней к родителям, ноутбук специально не брал. Помогал по \
+                хозяйству, не до кода было. Вернулся, а отзывов гора. Сел разбирать, и вот к \
+                ночи выпуск.
+
+                Оказалось, Keyboop умел умирать от чужого пароля. Любая программа открывает поле \
+                пароля, macOS прячет клавиатуру ото всех сразу, и мы честно замолкали. Люди так и \
+                писали: «программка просто умирает». Теперь не умирает.
+                """,
+            announceEnd: """
+                Бета сама не приедет: включите «Ставить бета-версии» и нажмите «Проверить обновления».
+
+                Спасибо всем, кто в эти дни писал про «скрытый ввод» и присылал логи. Без ваших \
+                отчётов я бы полгода думал, что это редкий случай: keyboop.com/tips
+                """),
         Release(version: "0.4.3",
             ru: [
                 "Каждая диктовка стала быстрее примерно на полсекунды. При автоопределении языка Whisper обрабатывал запись дважды: сначала чтобы понять, на каком языке говорят, потом чтобы получить текст. Теперь эта работа делается один раз. На фразах короче десяти секунд это почти вдвое, на длинных выигрыш тот же по времени, просто на общем фоне его меньше видно.",

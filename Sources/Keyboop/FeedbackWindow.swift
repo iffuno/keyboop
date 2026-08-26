@@ -341,6 +341,7 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         macOS \(ProcessInfo.processInfo.operatingSystemVersionString) · \(model) · \(arch)
         состояние: \(health)
         доступы: Accessibility=\(Permissions.isTrusted()) · InputMonitoring=\(Permissions.inputMonitoringGranted()) · движок запущен=\(AppHealth.engineRunning) · secure input сейчас=\(AppHealth.secureInputOn)
+        secure input держатель (ИМЯ НЕНАДЁЖНО, поле застревает на первом за сессию): \(AppHealth.secureInputHolder ?? "—")
         запущено из: \(Permissions.launchLocationForDiagnostics())
         раскладки: \(layouts.isEmpty ? "—" : layouts)
         движок: \(s.voiceEngine) · parakeet установлен=\(ParakeetEngine.modelInstalled) · whisper-модель=\(s.voiceModel)

@@ -77,15 +77,13 @@ enum AppHealth {
         if !engineRunning {
             return Permissions.isTrusted() ? L10n.t("health.engineDown") : L10n.t("health.noAccessibility")
         }
-        if secureInputForDisplay {
-            guard let h = secureInputHolder else { return L10n.t("health.secureInput") }
-            let fmt = L10n.t("health.secureInputHolder")
-            guard let budget = rowWidth else { return String(format: fmt, h) }
-            // Сколько остаётся имени, считаем от САМОЙ строки, а не от числа в коде: у английского
-            // текста зачин другой длины, и зашитая константа врала бы ровно наполовину случаев.
-            let room = budget - width(String(format: fmt, ""))
-            return String(format: fmt, fit(h, into: room))
-        }
+        // ⚠️ ИМЯ ДЕРЖАТЕЛЯ ЧЕЛОВЕКУ БОЛЬШЕ НЕ ПОКАЗЫВАЕМ (25.08.2026). Оно берётся из
+        // `kCGSSessionSecureInputPID`, а тот застревает на ПЕРВОМ, кто включил Secure Input за
+        // сессию: в замере с собственным процессом-держателем поле назвало постороннее приложение
+        // и продолжало называть его после снятия флага. То есть строка «Скрытый ввод: Почта»
+        // обвиняла программу, которая могла быть ни при чём, и человек шёл закрывать не то.
+        // В диагностику отзыва имя по-прежнему уходит (там оно улика, и там сказано, что ненадёжна).
+        if secureInputForDisplay { return L10n.t("health.secureInput") }
         return nil
     }
 
@@ -142,10 +140,15 @@ enum AppHealth {
     /// состоянии живы, а у того, кто держит авто выключенным намеренно, вечно приглушённый значок за
     /// неделю превратится в фон и перестанет что-либо значить. Тогда он не сработает и в тот раз,
     /// когда сломается по-настоящему, а это единственное, ради чего он заводится.
+    /// ⚠️ ПОД SECURE INPUT ЗНАЧОК БОЛЬШЕ НЕ ГАСИМ (25.08.2026, отзывы #173, #185, #187–189).
+    /// Гашение означает «молчит ВСЁ», и это перестало быть правдой: диктовка под чужим флагом
+    /// теперь работает (взвод ей больше не снимают, а запись в обычное поле разрешена политикой).
+    /// Прежний потушенный значок с треугольником люди читали однозначно — «программка умерла», и
+    /// писали нам именно этими словами.
     static func iconDimmed(_ s: IconState) -> Bool {
         switch s {
-        case .ok, .autoOff:                                  return false
-        case .tapSuspended, .engineDown, .secureInput, .paused: return true
+        case .ok, .autoOff, .secureInput:        return false
+        case .tapSuspended, .engineDown, .paused: return true
         }
     }
 
@@ -159,7 +162,12 @@ enum AppHealth {
             guard let until = Pause.until else { return L10n.t("health.ok") }
             let f = DateFormatter(); f.dateFormat = "HH:mm"
             return String(format: L10n.t("menu.pausedUntil"), f.string(from: until))
-        case .tapSuspended, .engineDown, .secureInput:
+        case .secureInput:
+            // Здесь, в отличие от строки меню, места хватает — объясняем и что происходит, и что
+            // при этом ЖИВО, и что с этим делать. Строка меню коротка по необходимости, а человеку
+            // с потухшим переключением нужен именно этот абзац.
+            return L10n.t("health.secureInputTip")
+        case .tapSuspended, .engineDown:
             // Берём ТУ ЖЕ строку, что показывает меню: один симптом — одно объяснение.
             // Регистр не трогаем: с 07.08 строки health.* написаны с заглавной прямо в каталоге,
             // потому что каждая стоит самостоятельной строкой меню, а не фрагментом общего ряда.

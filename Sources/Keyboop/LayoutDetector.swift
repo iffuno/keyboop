@@ -204,10 +204,27 @@ enum LayoutDetector {
         }
         let coreRaw = String(coreSub)
         let w = coreRaw.lowercased()
-        // ДЕФИСНЫЕ термины (e-ink, wi-fi, t-shirt…): обычный гейт ниже отбивает их (дефис ≠ буква),
-        // а посегментный авто-разбор уперся бы в краеугольный принцип («у» в «у-штл» — валидный
-        // предлог). Поэтому конвертим ЦЕЛИКОМ строго по allowlist: swapped-форма ∈ ExtraWords.hyphenTerms.
-        // Любое другое дефисное слово (из-за, что-то, по-русски) → .keep здесь же, ниже не идём.
+        // ДЕФИСНЫЕ СЛОВА. Обычный путь ниже для них бесполезен по устройству: он требует, чтобы
+        // результат целиком состоял из букв, а дефис буквой не является. Даже ослабив это, мы
+        // упрёмся в словарь, где слов с дефисом РОВНО НОЛЬ (замер 22.08.2026: ru=0, en=0).
+        //
+        // Раньше здесь был только allowlist (e-ink, wi-fi, t-shirt), а «что-то», «из-за», «по-моему»
+        // честно отбивались. автор 21.08.2026: «xnj-nj не переключается, хотя должно, таких слов в
+        // русском немало». Добавлен разбор ПО ЧАСТЯМ, и он же снимает возражение, записанное в
+        // прежнем комментарии («у» в «у-штл» — валидный предлог): части короче двух букв мы не
+        // рассматриваем вовсе, поэтому одиночный предлог сюда не попадает.
+        //
+        // Правило симметрично, и это его главное свойство:
+        //   • все части ИСХОДНИКА — слова текущего языка → живое составное слово, не трогаем.
+        //     Так защищены и «dry-run», «real-time», «well-known», и русское «что-то», набранное
+        //     по-русски: оно не уедет в латиницу;
+        //   • иначе все части ПОСЛЕ смены раскладки обязаны быть словами другого языка
+        //     («xnj-nj» → «что» + «то», обе в словаре) → конвертируем;
+        //   • всё остальное → молчим.
+        //
+        // Покрытие замерено на живых словах: у 13 из 15 частых русских слов с дефисом обе части в
+        // словаре. «Тёмно-синий» и «по-русски» останутся неисправленными («тёмно» и «русски» в
+        // словаре нет), и это принятая цена: пропустить лучше, чем испортить.
         if w.contains("-") {
             let segs = w.split(separator: "-", omittingEmptySubsequences: false)
             if segs.count >= 2, segs.allSatisfy({ !$0.isEmpty && $0.allSatisfy(Self.isLayoutLetter) }),
@@ -215,6 +232,16 @@ enum LayoutDetector {
                 let toCyr = !w.hasCyrillic
                 let swapped = Keymap.convert(coreRaw, toCyrillic: toCyr).lowercased()
                 if ExtraWords.hyphenTerms.contains(swapped) { return .convert(toCyrillic: toCyr) }
+                let src = segs.map(String.init)
+                let dst = swapped.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
+                if src.count == dst.count, src.allSatisfy({ $0.count >= 2 }),
+                   dst.allSatisfy({ $0.count >= 2 && $0.allSatisfy({ $0.isLetter }) }) {
+                    let data = LayoutData.shared
+                    let dictSrc = w.hasLatinLetter ? data.wordsEn : data.wordsRu
+                    let dictDst = w.hasLatinLetter ? data.wordsRu : data.wordsEn
+                    if src.allSatisfy({ dictSrc.contains($0) }) { return .keep }
+                    if dst.allSatisfy({ dictDst.contains($0) }) { return .convert(toCyrillic: toCyr) }
+                }
             }
             return .keep
         }

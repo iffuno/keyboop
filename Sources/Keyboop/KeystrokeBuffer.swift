@@ -19,9 +19,28 @@ final class KeystrokeBuffer {
     private var lastActivity = Date()
     private let groupMaxIdle: TimeInterval = 8
 
+    /// САМАЯ ДЛИННАЯ ПАУЗА МЕЖДУ БУКВАМИ ВНУТРИ СЛОВА — отличает набор от нажатия команд.
+    ///
+    /// Заведено 23.08.2026 по наблюдению автора в Adobe Premiere: там горячие клавиши голые (C, V,
+    /// N, Y, T), а пробел это воспроизведение. Для нас это выглядит буква-буква-граница, то есть
+    /// в точности как набранное слово, и отличить одно от другого по БУКВАМ невозможно: «yf», «lj»,
+    /// «nj» — законные русские предлоги и законные команды монтажа одновременно.
+    ///
+    /// Отличается не состав, а ритм. Слово набирают слитно, десятые доли секунды между буквами;
+    /// команды разделены взглядом на экран и результатом предыдущей команды. Меряем поэтому паузу,
+    /// а не длину.
+    private(set) var currentWordGap: TimeInterval = 0
+    /// То же для ЗАВЕРШЁННОГО слова: решение о конверсии принимается уже после boundary(), когда
+    /// слово переехало в lastWord, поэтому его ритм обязан переехать вместе с ним.
+    private(set) var lastWordGap: TimeInterval = 0
+
     func append(_ s: String) {
+        let now = Date()
+        // Пауза считается только МЕЖДУ буквами одного слова: перед первой буквой человек думал,
+        // и эта пауза про предыдущее слово, а не про это.
+        if !currentWord.isEmpty { currentWordGap = max(currentWordGap, now.timeIntervalSince(lastActivity)) }
         currentWord += s
-        lastActivity = Date()
+        lastActivity = now
     }
 
     func backspace() {
@@ -34,6 +53,9 @@ final class KeystrokeBuffer {
                 lastTail = ""
                 // и групповая история ненадёжна (стёрли через границу) — рвём её, single-word живёт
                 sessionWords.removeAll()
+                // слова больше нет — его ритм тоже. Иначе следующее слово унаследует чужую паузу
+                // и мягкий режим замолчит на ровном месте.
+                currentWordGap = 0
             }
         } else if !lastTail.isEmpty {
             // Курсор стои́т ЗА завершённым словом: стираем его концевой пробел/таб — ужимаем хвост,
@@ -46,12 +68,13 @@ final class KeystrokeBuffer {
             // был clear() (буфер забывал слово) → на границе конвертилось ЛИШЬ дописанное окончание —
             // баг «переключается только окончание» (workflow-диагностика 2026-06-28).
             currentWord = lastWord
+            currentWordGap = lastWordGap   // слово вернулось из завершённых — вместе со своим ритмом
             if !sessionWords.isEmpty { sessionWords.removeLast() }
             lastWord = sessionWords.last?.word ?? ""
             lastTail = sessionWords.last?.tail ?? ""
             currentWord.removeLast()
             if currentWord.isEmpty {
-                lastWord = ""; lastTail = ""; sessionWords.removeAll()
+                lastWord = ""; lastTail = ""; sessionWords.removeAll(); currentWordGap = 0
             }
         } else {
             // редактируем что-то раньше (буфер пуст) — безопаснее забыть контекст
@@ -67,6 +90,8 @@ final class KeystrokeBuffer {
             lastWord = currentWord
             lastTail = whitespace
             currentWord = ""
+            lastWordGap = currentWordGap
+            currentWordGap = 0
         } else if !lastWord.isEmpty {
             lastTail += whitespace
             // хвост последнего завершённого слова растёт вместе с lastTail (консистентность группы)
@@ -74,11 +99,26 @@ final class KeystrokeBuffer {
         }
     }
 
-    func clear() {
+    /// ⚠️ ОЧИСТКА НЕПУСТОГО БУФЕРА ПИШЕТСЯ В ЛОГ ВМЕСТЕ С ВИНОВНИКОМ (23.08.2026).
+    ///
+    /// Повод: жалоба «кликнул в поле, набрал букву, не переключается», и в логе каждый раз стояло
+    /// «на границе слова буфер пуст». То есть слово исчезало У НАС, а не у человека, но кто именно
+    /// его стёр, было не видно: `clear()` зовётся из полутора десятков мест, и все они законны по
+    /// отдельности. Две попытки диагноза по косвенным уликам (запоздалый клик, вклинившаяся
+    /// синтетика) не подтвердились — обе оставили бы свою строку, а её не было.
+    ///
+    /// Пустой буфер чистят постоянно и это шум, поэтому пишем только когда чистить БЫЛО ЧТО.
+    /// Аргументы по умолчанию подставляют МЕСТО ВЫЗОВА, а не место объявления.
+    func clear(_ caller: String = #function, _ line: Int = #line) {
+        if !currentWord.isEmpty || !lastWord.isEmpty {
+            kbLog("буфер очищен из \(caller):\(line) — было «\(currentWord.count) симв. + завершённое \(lastWord.count)»")
+        }
         currentWord = ""
         lastWord = ""
         lastTail = ""
         sessionWords.removeAll()
+        currentWordGap = 0
+        lastWordGap = 0
     }
 
     /// Мягкий сброс контекста: забываем ЗАВЕРШЁННОЕ слово + группу, но НЕ трогаем currentWord —
