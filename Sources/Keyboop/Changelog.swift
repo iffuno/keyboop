@@ -12,6 +12,12 @@ enum Changelog {
         let version: String
         let ru: [String]
         let en: [String]
+        /// Версия вышла бетой. ⚠️ ТОЛЬКО ДЛЯ ЗАГОЛОВКА ЗАПИСИ, И ЭТО ВАЖНО (задача 189, автор 26.08).
+        /// Заголовок записи историчен: версия действительно вышла бетой, и это остаётся правдой
+        /// навсегда. А вот в шапке меню и «О программе» такой флаг начал бы врать: при переводе
+        /// в стабильные `promote-to-stable.sh` бинарь НЕ пересобирает, меняется только метка канала
+        /// в appcast, и зашитое в сборку слово «бета» пережило бы само событие.
+        var beta: Bool = false
         var announce: String? = nil
         var announceEnd: String? = nil
     }
@@ -65,6 +71,37 @@ enum Changelog {
         // 0.4.4 — БЕТА. Выпуск про то, чтобы приложение не умирало целиком из-за чужого поля
         // пароля. Бетой по протоколу и без вариантов: правки лежат в перехватчике событий и в
         // путях записи, то есть в самом горячем месте проекта.
+        // 0.4.5 — про то, чтобы человек ВИДЕЛ: свой текст в форме отзыва, объяснение про скрытый
+        // ввод там, где его ищут, и канал версии в самом списке изменений. Кода в горячем пути нет.
+        Release(version: "0.4.5",
+            ru: [
+                "Форма отзыва больше не прячет ваш текст. У трети отправителей поле ввода оказывалось вдвое шире окна, и строки обрезались по правому краю: из фразы просто выпадала середина. Жалоба жила с июля и пережила две починки, потому что на большинстве машин всё выглядело нормально. Нашли по диагностике, которую сами же и приложили к отзывам месяц назад.",
+                "Подпись у галочки диагностики перестала обрезаться на середине слова. Она делила строку с кнопкой «показать, что уйдёт», и не помещалась. Расшифровка, что именно уходит, и так стоит строкой ниже.",
+                "Скрытый ввод теперь объясняется словами, а не одной строчкой в меню. Когда какая-то программа включает защищённый ввод macOS, система прячет клавиши ото всех сразу, и переключение раскладки перестаёт работать у всех приложений разом. Раньше мы просто сообщали об этом и оставляли человека гадать. Теперь в настройках, в разделе «Приватность», появляется объяснение: что происходит, кто это обычно делает, что с этим делать и что при этом всё равно работает. Пока всё в порядке, раздел выглядит как раньше.",
+                "В списке изменений видно, что версия бета. Раньше пометка стояла в заголовке поста и на GitHub, а в самом приложении её не было, и просьба «включите бета-версии» выглядела загадочно.",
+            ],
+            en: [
+                "The feedback form no longer hides your text. For a third of senders the input field ended up twice as wide as its window, so lines were cut at the right edge and the middle of a sentence simply went missing. The complaint had been alive since July and survived two fixes, because on most machines everything looked fine. We found it in the diagnostics we ourselves had attached to reports a month earlier.",
+                "The diagnostics checkbox label no longer gets cut mid-word. It shared a row with the «see what's sent» button and did not fit. What exactly is sent is spelled out on the line below anyway.",
+                "Hidden input is now explained in words, not just announced in one line. When some app turns on macOS secure keyboard entry, the system hides keystrokes from everybody at once, and layout switching stops working across all apps. We used to report that and leave you guessing. Now Settings → Privacy explains what is happening, who usually does it, what to do about it and what still works meanwhile. While everything is fine, the section looks the way it always did.",
+                "The changelog now shows when a version is a beta. The mark used to be in the post title and on GitHub, but not inside the app, which made «turn on betas» read like a riddle.",
+            ],
+            beta: true,
+            announce: """
+                Личное. Я вообще оператор: снимаю давно, у меня продакшн полного цикла. Но спрос \
+                упал, и я ищу, чем заниматься дальше. За последнее время напридумывал и сделал \
+                столько продуктов, что ответ вроде очевиден: хочу делать продукты и дальше. Если \
+                знаете, где такие нужны, или можете посоветовать, напишите: @iffun
+
+                Этот выпуск про то, чтобы вы видели, что происходит: свой текст в форме отзыва, \
+                объяснение про скрытый ввод там, где его ищут, и честную пометку беты в самом списке.
+                """,
+            announceEnd: """
+                Бета сама не приедет: включите «Ставить бета-версии» и нажмите «Проверить обновления».
+
+                Спасибо всем, кто в эти дни присылал логи и скриншоты. Половину этого выпуска \
+                нашли именно по ним: keyboop.com/tips
+                """),
         Release(version: "0.4.4",
             ru: [
                 "Диктовка больше не умирает из-за чужого поля пароля. Когда любая программа включает защищённый ввод macOS, система прячет клавиши от всех сразу, и у нас замолкало вообще всё. По отзывам такое устраивали Почта, Chrome, Safari, Telegram и терминалы, у одного человека это случалось несколько раз в день. Теперь мы смотрим не на общий признак, а на само поле под курсором: если это поле пароля, молчим как раньше, а если обычное, диктовка работает.",
@@ -80,6 +117,7 @@ enum Changelog {
                 "Globe and Fn finally work for manual switching. Assigned that way they used to change only the layout and leave the word alone. The fix was ready for the previous release and missed it.",
                 "A word you typed yourself no longer disappears after a dictation. The cleanup after dictation wiped the whole buffer, so if you started typing while the text was still being inserted, your word went with it.",
             ],
+            beta: true,
             announce: """
                 Ездил на пару дней к родителям, ноутбук специально не брал. Помогал по \
                 хозяйству, не до кода было. Вернулся, а отзывов гора. Сел разбирать, и вот к \

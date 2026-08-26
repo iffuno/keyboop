@@ -120,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         engine = Engine()
         menuBar = MenuBarController(layout: engine.layout)
         menuBar.onOpenSettings = { [weak self] in self?.openSettings() }
+        menuBar.onOpenPrivacy = { [weak self] in self?.openSettings(section: .privacy) }
         menuBar.onShowVoiceHistory = { [weak self] in self?.openVoiceHistory() }
         menuBar.onQuickDictate = { [weak self] in self?.engine.toggleVoiceFromMenu() }
         // Правду о доступах меню берёт в момент открытия, а не помнит с запуска (см.
@@ -427,6 +428,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let mode = ProcessInfo.processInfo.environment["KEYBOOP_SECUREPROBE"], !mode.isEmpty {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 SecureInputProbe.run(holder: ProcessInfo.processInfo.environment["KEYBOOP_SECUREPROBE_HOLDER"])
+            }
+        }
+        // Dev-хук: окно «что такое скрытый ввод» (KEYBOOP_SIHELP=1). Текст длинный, пять абзацев,
+        // и увидеть его иначе можно только поймав настоящий Secure Input в момент открытия меню.
+        if ProcessInfo.processInfo.environment["KEYBOOP_SIHELP"] == "1" {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                self?.openSettings(section: .privacy)
             }
         }
         // Dev-хук: показать тост (KEYBOOP_TOAST=1). Тост живёт две секунды и появляется по

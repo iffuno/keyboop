@@ -18,6 +18,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private var waveTimer: Timer?
 
     var onOpenSettings: (() -> Void)?
+    /// Открыть настройки сразу на «Приватности» — туда ведёт строка про скрытый ввод.
+    var onOpenPrivacy: (() -> Void)?
     var onShowVoiceHistory: (() -> Void)?
     /// Старт диктовки из быстрого действия (задача 21).
     var onQuickDictate: (() -> Void)?
@@ -627,6 +629,21 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             let warn = NSMenuItem(title: problem, action: nil, keyEquivalent: "")
             warn.isEnabled = false
             warn.image = icon("exclamationmark.triangle.fill", color: .systemOrange)
+            // ⚠️ У СКРЫТОГО ВВОДА СТРОКА ЖИВАЯ, А НЕ ПРОСТО КРАСНАЯ (автор 26.08.2026, просьба
+            // повторилась семь раз: #159, #163, #167, #185, #189, #196, #197). Люди видят «клавиатуру
+            // скрыла другая программа» и не понимают ни что это, ни что нажать. Объяснение у нас
+            // было, но жило в подсказке значка в строке меню, а её никто не наводит.
+            //
+            // Пункт делаем ВКЛЮЧЁННЫМ намеренно, по двум причинам. Во-первых, у выключенных пунктов
+            // macOS показывает toolTip не всегда, и подсказка «по наведению» могла тихо не появиться
+            // ни у кого. Во-вторых, #197 просил ровно кликабельность: «чтобы я мог получить сразу
+            // дополнительную информацию». Так одно решение закрывает обе просьбы.
+            if AppHealth.iconState == .secureInput {
+                warn.toolTip = L10n.t("health.secureInputWho")
+                warn.isEnabled = true
+                warn.target = self
+                warn.action = #selector(showSecureInputHelp)
+            }
             menu.addItem(warn)
             menu.addItem(.separator())
         }
@@ -782,6 +799,15 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         RunLoop.main.add(timer, forMode: .common)
         pollTimer = timer
     }
+
+    /// Клик по строке про скрытый ввод открывает «Приватность» — там объяснение и живёт.
+    ///
+    /// ⚠️ ЗДЕСЬ БЫЛО МОДАЛЬНОЕ ОКНО, И ОНО ОТВЕРГНУТО (автор 26.08.2026): «мне просто не нравится
+    /// отдельно всплывающее окно, большое с длинным текстом, странно выглядит». Пять абзацев в
+    /// NSAlert это стена, которую закрывают не читая, и у неё нет своего места в интерфейсе.
+    /// В «Приватности» тот же текст стоит там, куда человек и так приходит с вопросом «что эта
+    /// программа видит и почему она молчит», и исчезает оттуда, когда мешать перестало.
+    @objc private func showSecureInputHelp() { onOpenPrivacy?() }
 
     @objc private func toggleAuto() {
         let newValue = !settings.autoEnabled

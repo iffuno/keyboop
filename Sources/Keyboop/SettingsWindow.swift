@@ -776,6 +776,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     /// статус моделей, если открыт раздел «Голос», чтобы «Установлена/Скачать» отражали реальность на диске.
     func windowDidBecomeKey(_ notification: Notification) {
         detail.revalidateVoiceIfShown()
+        detail.revalidatePrivacyIfShown()
     }
     /// Обновить поля (напр. список «Выученные» после обучения на отмене), если окно открыто.
     func reload() { if window?.isVisible == true { detail.reload() } }
@@ -1507,6 +1508,18 @@ final class DetailVC: NSViewController {
     /// каждую активацию окна прогонял SwiftUI-графы всех контролов раздела по 2–3 раза за открытие
     /// и умножал частоту PAC-краша на macOS 26 в разы (см. RowMetrics). Фикс 16.07 при этом цел:
     /// удалили модель в Finder → сигнатура другая → пересборка происходит.
+    /// Скрытый ввод мог наладиться (или начаться), пока окно было в фоне. Раздел «Приватность»
+    /// показывает объяснение по состоянию, значит состояние надо пере-спрашивать: иначе человек
+    /// видит инструкцию про уже снятую блокировку или, наоборот, не видит про текущую.
+    private var lastSecureShown: Bool?
+    func revalidatePrivacyIfShown() {
+        guard currentSection == .privacy else { return }
+        let now = AppHealth.iconState == .secureInput
+        guard now != lastSecureShown else { return }
+        lastSecureShown = now
+        reshow()
+    }
+
     func revalidateVoiceIfShown() {
         guard currentSection == .voice else { return }
         let sig = modelsSignature()
@@ -2317,8 +2330,28 @@ final class DetailVC: NSViewController {
             // необъяснённый второй процесс у программы, которая читает клавиатуру, выглядит ровно
             // так, как выглядят вещи, из-за которых люди боятся ставить переключатели раскладки.
             globeGuardNote(),
+            secureInputNote(),
             group(6),
             hint(L10n.t("priv.foot"))
+        ])
+    }
+
+    /// Объяснение скрытого ввода — ТОЛЬКО когда он реально мешает (решение автора 26.08.2026).
+    ///
+    /// Сначала это было отдельным модальным окном по клику в меню, и автор его отверг: «мне просто не
+    /// нравится отдельно всплывающее окно, большое с длинным текстом, странно выглядит». И он прав:
+    /// пять абзацев в NSAlert это стена, которую закрывают не читая.
+    ///
+    /// Здесь у текста есть свой дом. Раздел «Приватность» человек открывает именно с вопросом «что
+    /// эта программа видит и почему», и объяснение про защищённый ввод отвечает ровно на него. А
+    /// пока всё в порядке, блока нет вовсе: постоянная плашка про то, чего сейчас не происходит,
+    /// за неделю превращается в фон.
+    private func secureInputNote() -> NSView {
+        guard AppHealth.iconState == .secureInput else { return group(0) }
+        return vstack([
+            group(8),
+            blockTitle("health.secureInput"),
+            sub(L10n.t("health.secureInputWho"))
         ])
     }
 
@@ -3158,7 +3191,10 @@ final class DetailVC: NSViewController {
         let body: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.secondaryLabelColor]
         let gap: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 6)]
         for r in Changelog.releases {
-            s.append(NSAttributedString(string: "v\(r.version)\n", attributes: hdr))
+            // Пометка канала прямо в заголовке: человек читает «включите Ставить бета-версии» и
+            // должен видеть, что перед ним и есть та самая бета (задача 189).
+            let mark = r.beta ? (isRu ? "-бета" : " beta") : ""
+            s.append(NSAttributedString(string: "v\(r.version)\(mark)\n", attributes: hdr))
             for item in (isRu ? r.ru : r.en) {
                 s.append(NSAttributedString(string: "  •  \(item)\n", attributes: body))
             }

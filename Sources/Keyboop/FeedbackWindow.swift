@@ -56,6 +56,7 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         // крошечная высота здесь = диагноз, без переписки и догадок.
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            self.syncTextWidth()   // окно уже разложено — приводим ширину к видимой области
             let f = self.textView.frame, c = self.textView.textContainer?.containerSize ?? .zero
             // ⚠️ Высота контейнера при переносе по ширине равна `.greatestFiniteMagnitude`, а `%.0f`
             // печатает её числом в 309 цифр. Строка распирала лог, который человек присылает нам
@@ -65,6 +66,17 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
                   + "контейнер \(dim(c.width))×\(dim(c.height)), "
                   + "скролл \(dim(self.textScroll.frame.width))×\(dim(self.textScroll.frame.height))")
         }
+    }
+
+    /// Ширина поля ввода = ширина видимой области скролла. Единственное место, где она задаётся.
+    /// Контейнер подтягивается сам (`widthTracksTextView`), поэтому его трогаем только вместе с
+    /// вью, чтобы у переноса не появилось второго источника правды.
+    private func syncTextWidth() {
+        let w = textScroll.contentSize.width
+        guard w > 1, abs(textView.frame.width - w) > 0.5 else { return }
+        textView.frame.size.width = w
+        textView.textContainer?.containerSize =
+            NSSize(width: w - textView.textContainerInset.width * 2, height: CGFloat.greatestFiniteMagnitude)
     }
 
     private func build() {
@@ -116,9 +128,33 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
-        textView.autoresizingMask = [.width]
-        textView.textContainer?.containerSize = NSSize(width: 468, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
+
+        // ⚠️ ШИРИНУ ПОЛЯ ЗАДАЁМ САМИ, А НЕ ЧЕРЕЗ `autoresizingMask = [.width]` (26.08.2026).
+        //
+        // Здесь была причина жалобы «не видно текст», которая пережила две «починки» (репорты
+        // #12, #20, #25, #26) и вернулась скриншотом автора: строки обрезаны по правому краю,
+        // середина фразы просто отсутствует.
+        //
+        // Разбор по диагностикам, 72 отчёта с геометрией: контейнер НИКОГДА не шире поля, то есть
+        // перенос настроен верно. Но у 23 отчётов из 72 (31%) поле оказывалось вдвое шире своего
+        // окна: «поле 906×148, контейнер 894×∞, скролл 440×150». Текст переносится по 894, видно
+        // 440, остальное за краем.
+        //
+        // Арифметика называет виновника без догадок: сломанные ширины это РОВНО 468 + нормальная
+        // (468+423=891, 468+438=906). Авторесайз ПРИБАВЛЯЕТ дельту роста скролла к жёстко заданной
+        // стартовой ширине, а не заменяет её. Сработает это или нет, зависит от того, успел ли
+        // скролл получить размер до назначения documentView — то есть от порядка проходов Auto
+        // Layout. Отсюда и «у одних работает, у других нет» на одной и той же версии.
+        //
+        // Лечится тем, что у ширины появляется ОДИН хозяин: мы синхронизируем её с видимой областью
+        // при каждом изменении размера. Ни стартовое значение, ни порядок проходов больше не важны.
+        textView.autoresizingMask = []
+        textScroll.contentView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification,
+                                               object: textScroll.contentView, queue: .main) { [weak self] _ in
+            self?.syncTextWidth()
+        }
 
         textScroll.documentView = textView
         textScroll.hasVerticalScroller = true

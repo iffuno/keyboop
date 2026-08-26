@@ -286,6 +286,51 @@ enum L10n {
         // «где-то открыто поле пароля: » имени оставалось бы четыре символа. Обрезка имени по
         // ширине живёт в AppHealth.problem(rowWidth:).
         "health.secureInput":     [.ru: "Клавиатуру скрыла другая программа", .en: "Another app hid the keyboard"],
+        // ⚠️ ТЕКСТ ОПИРАЕТСЯ НА ЗАМЕР, А НЕ НА ОЩУЩЕНИЕ (26.08.2026). По 120 диагностикам чужой
+        // держатель встретился в 25 отчётах у 21 человека, и две трети это браузеры: Chrome 9,
+        // Safari 6, Yandex 2. Дальше по одному-двум: 1Password, Viscosity, Slack, Почта, Telegram,
+        // терминалы. Поэтому в подсказке названы именно браузеры, а не «какая-то программа вообще».
+        // Версия macOS ни при чём: доля ровная 14–29% от 14.8 до 27.0.
+        "health.secureInputWho": [
+            .ru: """
+                 Что происходит. Какая-то программа включила защищённый ввод macOS. Пока он включён, \
+                 система прячет нажатия клавиш ото ВСЕХ программ сразу, не только от Keyboop. \
+                 Переключение раскладки в это время не работает ни у кого и починить это изнутри нельзя.
+
+                 Кто это обычно. Чаще всего браузер, в котором осталось в фокусе поле пароля: по нашим \
+                 отчётам две трети случаев это Chrome, Safari и Яндекс. Реже менеджеры паролей, \
+                 VPN-клиенты, мессенджеры и терминалы с включённым «Secure Keyboard Entry». \
+                 Ещё это всегда включается на заблокированном экране, и вот это нормально.
+
+                 Почему мы не называем виновника. macOS сообщает имя держателя ненадёжно: оно \
+                 застревает на первом, кто включил защиту за сеанс. Мы проверяли, и там регулярно \
+                 оказывается посторонняя программа. Обвинять невиновного хуже, чем промолчать.
+
+                 Что делать. Обычно отпускает само. Если нет: закройте окно или вкладку, где вы \
+                 вводили пароль, либо заблокируйте и разблокируйте экран.
+
+                 Что работает прямо сейчас. Диктовка: ей клавиатура не нужна, она пишет текст сама.
+                 """,
+            .en: """
+                 What is happening. Some app has turned on macOS secure keyboard entry. While it is on, \
+                 the system hides keystrokes from EVERY app at once, not just from Keyboop. Layout \
+                 switching cannot work for anyone during that time, and no app can fix it from inside.
+
+                 Who usually does it. Most often a browser with a password field left focused: in our \
+                 reports two thirds of cases are Chrome, Safari and Yandex. Less often password managers, \
+                 VPN clients, messengers, and terminals with Secure Keyboard Entry on. It also always \
+                 turns on while the screen is locked, and that part is normal.
+
+                 Why we do not name the culprit. macOS reports the holder unreliably: the name sticks to \
+                 whoever turned the protection on first in the session. We measured it, and it regularly \
+                 points at an app that has nothing to do with it. Accusing the innocent is worse than \
+                 saying nothing.
+
+                 What to do. It usually clears by itself. If it does not: close the window or tab where \
+                 you typed a password, or lock and unlock the screen.
+
+                 What still works. Dictation: it does not need the keyboard, it types the text itself.
+                 """],
         "health.secureInputTip":  [.ru: "Какая-то программа включила защищённый ввод macOS, и клавиши скрыты системно — от нас и от любой другой программы. Переключение раскладки сейчас не работает, диктовка работает. Обычно отпускает само. Если нет, помогает заблокировать и разблокировать экран.",
                                    .en: "Some app turned on macOS secure keyboard entry, so keystrokes are hidden system-wide, from us and from every other app. Layout switching is off for now, dictation still works. It usually clears by itself. If it doesn't, locking and unlocking the screen helps."],
         "health.secureInputHolder": [.ru: "Скрытый ввод: %@", .en: "Hidden input: %@"],
@@ -1126,8 +1171,11 @@ enum L10n {
         // значит расставлять ожидания, которые он не собирается выполнять. Осталась честная причина.
         "fb.contactWhy":  [.ru: "Без него я прочитаю, но ответить будет некуда.",
                            .en: "Without it I'll still read this, but I'll have nowhere to reply."],
-        "fb.diag":        [.ru: "Приложить диагностику (версия, настройки, хвост лога)",
-                           .en: "Attach diagnostics (version, settings, log tail)"],
+        // ⚠️ КОРОТКО, ПОТОМУ ЧТО РЯДОМ КНОПКА. Подпись живёт в одном ряду с «показать, что уйдёт»,
+        // и длинный вариант «(версия, настройки, хвост лога)» обрезался многоточием прямо на
+        // середине слова (скриншот автора 26.08.2026). Расшифровка и так стоит строкой ниже, в
+        // `fb.hint`, целиком и без обрезки, так что в самой галочке она была лишней.
+        "fb.diag":        [.ru: "Приложить диагностику", .en: "Attach diagnostics"],
         "fb.diagShow":    [.ru: "показать, что уйдёт", .en: "see what's sent"],
         "fb.diagTitle":   [.ru: "Что уйдёт вместе с отзывом", .en: "What goes along with your feedback"],
         "fb.hint":        [.ru: "Улетает на keyboop.com и разработчику в Telegram. Текст ввода и речь в диагностику не попадают — там только версии, настройки и служебный лог.",
