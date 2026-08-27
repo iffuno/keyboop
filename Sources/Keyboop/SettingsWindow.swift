@@ -2898,21 +2898,24 @@ final class DetailVC: NSViewController {
     }
 
     /// Обновления — ОТДЕЛЬНЫЙ раздел (раньше тонули в «Общих» → реальный пользователь не нашёл, где
-    /// обновлять). Зависимость: «Ставить сразу без вопросов» требует включённой проверки, поэтому при
-    /// нём тумблер «Проверять обновления» форсится ВКЛ и НЕДОСТУПЕН (нельзя выключить, не сняв silent).
+    /// обновлять). Мгновенные обновления требуют проверки, а тихая установка — ещё и заранее
+    /// скачанного файла. Поэтому зависимые тумблеры форсятся ВКЛ и недоступны.
     private func buildUpdates() -> NSView {
         let checkBtn = NSButton(title: L10n.t("upd.check"), target: self, action: #selector(checkForUpdates))
         checkBtn.bezelStyle = .rounded; checkBtn.controlSize = .regular
 
         let silent = settings.silentAutoUpdate
-        let checkOn = silent ? true : UpdaterController.shared.automaticChecks   // при silent — форс ВКЛ
+        let instant = settings.instantUpdates
+        let checkOn = instant ? true : UpdaterController.shared.automaticChecks
         return vstack([
             blockTitle("upd.title"),
             sub(L10n.t("upd.sub")),
             group(8),
             card([
-                switchRow(L10n.t("upd.check2"), L10n.t("upd.check2Sub"), checkOn, #selector(toggleAutoCheck), enabled: !silent,
+                switchRow(L10n.t("upd.check2"), L10n.t("upd.check2Sub"), checkOn, #selector(toggleAutoCheck), enabled: !instant,
                           help: L10n.t("upd.check2Help"), key: "upd.check2"),
+                switchRow(L10n.t("upd.instant"), L10n.t("upd.instantSub"), instant, #selector(toggleInstantUpdates), enabled: !silent,
+                          help: L10n.t("upd.instantHelp"), key: "upd.instant"),
                 switchRow(L10n.t("upd.silent"), L10n.t("upd.silentSub"), silent, #selector(toggleSilentUpdate),
                           help: L10n.t("upd.silentHelp"), key: "upd.silent"),
                 switchRow(L10n.t("upd.beta"), L10n.t("upd.betaSub"), settings.betaChannel, #selector(toggleBetaChannel),
@@ -2997,11 +3000,17 @@ final class DetailVC: NSViewController {
         DispatchQueue.main.async { [weak self] in self?.reshow() }
     }
     @objc private func toggleAutoCheck(_ s: NSSwitch) { UpdaterController.shared.automaticChecks = (s.state == .on) }
+    @objc private func toggleInstantUpdates(_ s: NSSwitch) {
+        settings.instantUpdates = (s.state == .on)
+        if settings.instantUpdates { UpdaterController.shared.automaticChecks = true }
+        UpdaterController.shared.noteInstantModeChanged()
+        DispatchQueue.main.async { [weak self] in self?.reshow() }
+    }
     @objc private func toggleSilentUpdate(_ s: NSSwitch) {
         settings.silentAutoUpdate = (s.state == .on)
-        // silent требует проверки → при включении форсим её ВКЛ; reshow перерисует раздел, и тумблер
-        // «Проверять обновления» станет вкл+серым (а при выключении silent — снова доступным).
+        // Тихая установка требует и проверки, и заранее скачанного файла.
         if settings.silentAutoUpdate {
+            settings.instantUpdates = true
             UpdaterController.shared.automaticChecks = true
             // Апдейт мог быть уже скачан и ждать нашего уведомления — в тихом режиме его не будет,
             // поэтому запускаем ожидание простоя прямо сейчас (иначе он висит до перезапуска).

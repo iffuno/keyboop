@@ -1,38 +1,151 @@
 import AppKit
 import Sparkle
 
+/// Sparkle's normal progress and error UI, with only the update decision replaced by our banner.
+/// The decision is returned to Sparkle while it can still persist `.skip`; after downloading there
+/// is no supported way to cancel installation-on-quit.
+@MainActor
+private final class KeyboopUpdateUserDriver: NSObject, SPUUserDriver {
+    private let standard = SPUStandardUserDriver(hostBundle: .main, delegate: nil)
+    weak var owner: UpdaterController?
+    private var pendingChoice: ((SPUUserUpdateChoice) -> Void)?
+    private var installApproved = false
+
+    func show(_ request: SPUUpdatePermissionRequest) async -> SUUpdatePermissionResponse {
+        await standard.show(request)
+    }
+
+    func showUserInitiatedUpdateCheck(cancellation: @escaping () -> Void) {
+        standard.showUserInitiatedUpdateCheck(cancellation: cancellation)
+    }
+
+    func showUpdateFound(with item: SUAppcastItem, state: SPUUserUpdateState) async -> SPUUserUpdateChoice {
+        // Informational-only releases have a link instead of an install payload; keep Sparkle's UI.
+        guard !item.isInformationOnlyUpdate else {
+            return await standard.showUpdateFound(with: item, state: state)
+        }
+
+        // A manual check may have opened Sparkle's small checking window. It must go away before
+        // our decision banner appears; later progress is intentionally quiet until relaunch.
+        standard.dismissUpdateInstallation()
+        return await withCheckedContinuation { continuation in
+            // Defensive only: Sparkle should never ask twice in one session. Resolving the earlier
+            // question avoids leaving an update cycle parked if that invariant ever changes.
+            resolve(.dismiss)
+            pendingChoice = { continuation.resume(returning: $0) }
+            let version = item.displayVersionString
+            AppBanner.shared.show(
+                title: String(format: L10n.t("upd.availableTitle"), version),
+                body: L10n.t("upd.availableBody"),
+                actions: [
+                    .init(title: L10n.t("upd.now"), coral: false) { [weak self] in
+                        self?.resolve(.install)
+                    },
+                    .init(title: L10n.t("upd.autoShort"), coral: true) { [weak self] in
+                        self?.owner?.enableSilentUpdates()
+                        self?.resolve(.install)
+                    }
+                ],
+                onClose: { [weak self] in self?.resolve(.skip) },
+                onDismiss: { [weak self] in self?.resolve(.dismiss) }
+            )
+        }
+    }
+
+    /// Used when the automatic-update setting is enabled while an update question is visible.
+    func approvePresentedUpdate() -> Bool {
+        guard pendingChoice != nil else { return false }
+        resolve(.install)
+        AppBanner.shared.dismiss()
+        return true
+    }
+
+    private func resolve(_ choice: SPUUserUpdateChoice) {
+        guard let reply = pendingChoice else { return }
+        pendingChoice = nil
+        installApproved = (choice == .install)
+        reply(choice)
+    }
+
+    func showUpdateReleaseNotes(with data: SPUDownloadData) {}
+    func showUpdateReleaseNotesFailedToDownloadWithError(_ error: Error) {}
+    func showUpdateNotFoundWithError(_ error: Error) async { await showResult(error) }
+    func showUpdaterError(_ error: Error) async { await showResult(error) }
+    func showDownloadInitiated(cancellation: @escaping () -> Void) {}
+    func showDownloadDidReceiveExpectedContentLength(_ length: UInt64) {}
+    func showDownloadDidReceiveData(ofLength length: UInt64) {}
+    func showDownloadDidStartExtractingUpdate() {}
+    func showExtractionReceivedProgress(_ progress: Double) {}
+    func showReadyToInstallAndRelaunch() async -> SPUUserUpdateChoice {
+        installApproved ? .install : await standard.showReadyToInstallAndRelaunch()
+    }
+    func showInstallingUpdate(withApplicationTerminated terminated: Bool,
+                              retryTerminatingApplication: @escaping () -> Void) {}
+    func showUpdateInstalledAndRelaunched(_ relaunched: Bool) async {}
+    func dismissUpdateInstallation() {
+        resolve(.dismiss)
+        installApproved = false
+        AppBanner.shared.dismiss()
+        standard.dismissUpdateInstallation()
+    }
+    func showUpdateInFocus() { NSApp.activate(ignoringOtherApps: true) }
+
+    private func showResult(_ error: Error) async {
+        standard.dismissUpdateInstallation()
+        let e = error as NSError
+        let body = e.localizedRecoverySuggestion ?? e.localizedFailureReason ?? ""
+        await withCheckedContinuation { continuation in
+            var finished = false
+            let finish = {
+                guard !finished else { return }
+                finished = true
+                continuation.resume()
+            }
+            AppBanner.shared.show(title: e.localizedDescription, body: body, autoDismiss: 8,
+                                  onClose: finish, onDismiss: finish)
+        }
+    }
+}
+
 /// Автообновления через Sparkle.
 ///
-/// Поведение (security review 15.06 + выбор автора): проверка и фоновое скачивание ВКЛ по умолчанию,
-/// но УСТАНОВКА по умолчанию — с согласия пользователя. Sparkle качает апдейт тихо и зовёт делегат
-/// `willInstallUpdateOnQuit`; мы его перехватываем (return true, держим install-блок) и вместо тихой
-/// подмены показываем СВОЁ уведомление «Обновить сейчас / Обновлять автоматически».
+/// Поведение: проверка, предварительное скачивание и тихая установка — три отдельных уровня.
+/// Без предварительного скачивания крестик возвращает Sparkle `.skip` до загрузки файла.
 ///   • «Обновить сейчас» → ставим эту версию.
-///   • «Обновлять автоматически» → `silentAutoUpdate=true`; дальше ставим ТИХО в простое (когда юзер
-///     отошёл), не мешая. Так пользователь сам выбирает тихий режим — молча у всех мы не ставим.
+///   • «Мгновенные обновления» → Sparkle скачивает заранее и поэтому установит файл при выходе.
+///   • «Обновлять автоматически» → дальше ставим ТИХО в простое (когда юзер отошёл), не мешая.
 ///
 /// Приватность: профайлинг выключен, `feedParametersForUpdater` НЕ реализован → ровно один GET за
 /// appcast + GET за DMG, без профиля/идентификатора. Подлинность — EdDSA + Developer ID.
 final class UpdaterController: NSObject, SPUUpdaterDelegate {
     static let shared = UpdaterController()
 
-    private var controller: SPUStandardUpdaterController?
-    private var pendingInstall: (() -> Void)?       // immediateInstallHandler от Sparkle, ждёт решения
+    private var updater: SPUUpdater?
+    private var userDriver: KeyboopUpdateUserDriver?
+    private var pendingInstall: (() -> Void)?       // установка уже скачанного мгновенного обновления
     private(set) var pendingVersion = ""
     private let idleThreshold: TimeInterval = 300    // 5 минут простоя для тихой установки
     private var lastDeferReason: String?             // чтобы не писать одну и ту же причину отказа в лог
 
-    /// Колбэк в AppDelegate: показать наше уведомление, что версия `$0` готова к установке.
-    var onUpdateReady: ((String) -> Void)?
-
     func start() {
-        guard controller == nil else { return }
-        controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: self, userDriverDelegate: nil)
+        guard updater == nil else { return }
+        let driver = KeyboopUpdateUserDriver()
+        driver.owner = self
+        let updater = SPUUpdater(hostBundle: .main, applicationBundle: .main, userDriver: driver, delegate: self)
+        userDriver = driver
+        self.updater = updater
+        do { try updater.start() }
+        catch {
+            kbLog("updater: не запустился — \(error.localizedDescription)")
+            self.updater = nil; userDriver = nil
+            return
+        }
         // ⚠️ В dev-режиме отладки апдейтера (KEYBOOP_UPDATER=1) скачивание ЗАПРЕЩЕНО: пусть Sparkle
         // спрашивает фид и пишет в лог, но не приносит прод-DMG в dev-бандл (инцидент 23.07).
         let debugDev = (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev")
-        controller?.updater.automaticallyDownloadsUpdates = automaticChecks && !debugDev
-        kbLog("updater: started (check=\(automaticChecks) silent=\(AppSettings.shared.silentAutoUpdate)"
+        updater.automaticallyDownloadsUpdates = automaticChecks && AppSettings.shared.instantUpdates && !debugDev
+        kbLog("updater: started (check=\(automaticChecks) instant=\(AppSettings.shared.instantUpdates)"
+              + " silent=\(AppSettings.shared.silentAutoUpdate)"
               + (debugDev ? ", DEV: скачивание запрещено" : "") + ")")
 
         // ПРОВЕРКА ПРИ ЗАПУСКЕ (просьба автора 30.07). Сам Sparkle этого не делает: он помнит время
@@ -46,7 +159,7 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
         // установкой тапа, лезть туда же с сетью незачем. Пользователь этой секунды не замечает.
         guard automaticChecks else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in
-            guard let u = self?.controller?.updater, u.automaticallyChecksForUpdates else { return }
+            guard let u = self?.updater, u.automaticallyChecksForUpdates else { return }
             // Не дублируем Sparkle. Если интервал к моменту запуска уже истёк, он проверяет сам, и
             // тогда наша проверка была бы вторым запросом за полминуты (наблюдалось при отладке
             // 30.07: его проверка в 08:55:47, наша в 08:56:12). Спрашиваем у него самого, когда он
@@ -62,12 +175,14 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
 
     /// Мастер-тумблер «Проверять обновления» (Sparkle хранит стейт в UserDefaults сам).
     var automaticChecks: Bool {
-        get { controller?.updater.automaticallyChecksForUpdates ?? true }
+        get { updater?.automaticallyChecksForUpdates ?? true }
         set {
-            controller?.updater.automaticallyChecksForUpdates = newValue
-            controller?.updater.automaticallyDownloadsUpdates = newValue
+            updater?.automaticallyChecksForUpdates = newValue
+            updater?.automaticallyDownloadsUpdates = newValue && AppSettings.shared.instantUpdates && !isDevBuild
         }
     }
+
+    private var isDevBuild: Bool { (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev") }
 
     /// Проверить вручную («Проверить сейчас» / меню). Sparkle сам показывает окно «Проверяю…» → результат
     /// («Установлена последняя версия» либо предложение обновиться). НО мы — LSUIElement-агент без иконки
@@ -75,145 +190,44 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
     /// (фидбэк 16.06). Поэтому активируем приложение прямо перед проверкой.
     func checkNow() {
         NSApp.activate(ignoringOtherApps: true)
-        // ⚠️ ЕСЛИ АПДЕЙТ УЖЕ У НАС НА РУКАХ, кнопка обязана показать ЕГО, а не уходить в Sparkle.
-        //
-        // Воспроизведено на реальной машине 09.08 (0.3.16): 0.3.17 скачана в 10:23, тихая установка
-        // отложена в 11:00 («открыто окно»), и с тех пор нажатие «Проверить сейчас» не делает
-        // РОВНО НИЧЕГО: ни окна, ни строки в логе. Причина та же, что у задачи 110: вернув `true`
-        // из `willInstallUpdateOnQuit`, мы забрали цикл себе, и `checkForUpdates` внутри Sparkle
-        // становится пустышкой. Человек при этом видит мёртвую кнопку и идёт качать с сайта.
-        //
-        // Кнопка, которая молчит, хуже кнопки, которой нет.
-        if pendingInstall != nil {
-            kbLog("updater: проверка вручную при готовом \(pendingVersion) — показываю плашку вместо пустого запроса")
-            silentFallback?.cancel(); silentFallback = nil
-            IdleMonitor.shared.stop()
-            armPendingSafety()
-            onUpdateReady?(pendingVersion)
+        if pendingInstall != nil, AppSettings.shared.silentAutoUpdate {
+            kbLog("updater: проверка вручную при тихо загруженном \(pendingVersion) — ставлю сейчас")
+            installPendingNow()
             return
         }
-        controller?.checkForUpdates(nil)
+        updater?.checkForUpdates()
     }
 
-    /// Как долго держим у себя право установить, если человек не нажал ни одной кнопки в плашке.
-    /// По истечении — отпускаем и перезаводим цикл Sparkle, иначе плановые проверки не возобновятся
-    /// (см. большой комментарий в делегате). Десять минут: плашка живёт на экране куда меньше.
-    private let pendingTTL: TimeInterval = 600
-    private var pendingSafety: DispatchWorkItem?
-
-    /// Сколько ждём удобного момента в ТИХОМ режиме, прежде чем перестать молчать.
-    ///
-    /// ⚠️ Час, а не десять минут: тихая установка ждёт пяти минут без ввода, и у человека, который
-    /// весь день за компьютером, такой паузы может не случиться до вечера. Ронять её раньше значит
-    /// показывать плашку тем, кто явно попросил его не трогать.
-    private let silentFallbackTTL: TimeInterval = 3600
-    private var silentFallback: DispatchWorkItem?
-
-    /// ⚠️ ГЛАВНАЯ ПОЧИНКА 09.08.2026: в тихом режиме апдейт мог зависнуть НАВСЕГДА.
-    ///
-    /// Возврат `true` из `willInstallUpdateOnQuit` означает «установку беру на себя», и Sparkle в
-    /// ответ паркует не только этот цикл, но и ВСЕ будущие проверки. В обычном режиме от этого
-    /// защищает `armPendingSafety()`, и рядом с ним прямо написано «без неё не возвращать true».
-    /// А тихая ветка возвращала `true` БЕЗ всякой страховки. Дальше достаточно, чтобы пяти минут
-    /// простоя не случилось (человек работает, окно открыто, идёт диктовка), и апдейт оставался
-    /// скачанным, но не поставленным, а проверки не возобновлялись уже никогда. Ровно это люди и
-    /// описывают словами «само не обновляется, скачал с сайта руками».
-    ///
-    /// Симптом воспроизведён на реальной машине 09.08: 0.3.17 скачана в 10:23, и после строки
-    /// «готов к установке (silent=true)» в логе НЕТ НИ ОДНОЙ строки про обновления. Не потому что
-    /// всё хорошо, а потому что состояние стало невидимым.
-    ///
-    /// Что делаем по истечении часа: перестаём молчать и показываем обычную плашку. Это честнее
-    /// тишины, и человек получает кнопку. Заодно взводим `armPendingSafety()`, то есть дальше
-    /// работает обычный десятиминутный предохранитель.
-    private func armSilentFallback() {
-        silentFallback?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.pendingInstall != nil else { return }
-            kbLog("updater: тихо поставить \(self.pendingVersion) не вышло за \(Int(self.silentFallbackTTL / 60)) мин — показываю плашку")
-            IdleMonitor.shared.stop()
-            self.armPendingSafety()
-            self.onUpdateReady?(self.pendingVersion)
-        }
-        silentFallback = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + silentFallbackTTL, execute: work)
-    }
-
-    /// Страховка от «плашку закрыли, а установку никто не позвал». Без неё возврат `true` из делегата
-    /// убивает ВСЕ будущие проверки обновлений — тот самый механизм, из-за которого люди сидят на
-    /// 0.2.69 до сих пор.
-    private func armPendingSafety() {
-        pendingSafety?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.pendingInstall != nil else { return }
-            self.pendingInstall = nil
-            kbLog("updater: плашку \(self.pendingVersion) не тронули за \(Int(self.pendingTTL / 60)) мин — "
-                  + "отпускаю установку и перезавожу расписание")
-            self.controller?.updater.resetUpdateCycle()
-        }
-        pendingSafety = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + pendingTTL, execute: work)
-    }
-
-    /// ОТКАЗ: человек закрыл плашку крестиком (отзыв #125, 11.08.2026).
-    ///
-    /// Раньше крестик значил «спрятать»: обработчик установки оставался у нас, через `pendingTTL`
-    /// страховка его отпускала, и обновление приезжало при следующем выходе. С точки зрения человека
-    /// это «я отказался, а оно всё равно поставилось» — и он прав. Для программы, которая читает
-    /// клавиатуру, доверие дороже свежести версии.
-    ///
-    /// Что делаем: обработчик НЕ отпускаем (пока он у нас, Sparkle не поставит апдейт при выходе), а
-    /// страховку от вечной парковки перезаводим на сутки вместо десяти минут. То есть отказ работает
-    /// как отказ, но расписание не умирает: через сутки цикл оживёт и предложит снова.
-    ///
-    /// ⚠️ Именно перезавести, а не отменить. Ветка «держим обработчик без страховки» уже стоила нам
-    /// людей, застрявших на 0.2.69 навсегда, и об этом написано этажом выше.
-    func declinePending() {
-        guard pendingInstall != nil else { return }
-        kbLog("updater: \(pendingVersion) отклонён крестиком — при выходе НЕ ставим, вернусь через сутки")
-        pendingSafety?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.pendingInstall != nil else { return }
-            self.pendingInstall = nil
-            kbLog("updater: сутки после отказа прошли — перезавожу расписание обновлений")
-            self.controller?.updater.resetUpdateCycle()
-        }
-        pendingSafety = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 24 * 3600, execute: work)
-    }
-
-    /// Поставить отложенный апдейт сейчас (левая кнопка плашки, «Обновить»).
-    ///
-    /// Обработчик установки у нас на руках в ЛЮБОМ режиме (см. делегат), поэтому ставим и
-    /// перезапускаемся сразу, без второго окна и без повторного вопроса. Ветка с `checkNow()` ниже
-    /// остаётся только на случай, когда обработчика нет: например плашка провисела дольше pendingTTL
-    /// и мы уже отпустили установку, а человек нажал кнопку на старой плашке.
-    func installPendingNow() {
-        pendingSafety?.cancel(); pendingSafety = nil
-        silentFallback?.cancel(); silentFallback = nil
+    /// Install an update Sparkle downloaded through the explicitly enabled automatic path.
+    private func installPendingNow() {
         IdleMonitor.shared.stop()
-        guard let block = pendingInstall else {
-            kbLog("updater: показываю штатное окно установки \(pendingVersion)")
-            checkNow()
-            return
-        }
+        guard let block = pendingInstall else { return }
         pendingInstall = nil
-        kbLog("updater: ставлю \(pendingVersion) по запросу пользователя")
+        kbLog("updater: ставлю \(pendingVersion) в тихом режиме")
         block()
     }
 
-    /// Включить тихий режим и поставить текущий (кнопка «Обновлять автоматически»).
-    func enableSilentAndInstall() {
+    /// The banner's right button opts into future automatic downloads before installing this one.
+    func enableSilentUpdates() {
+        AppSettings.shared.instantUpdates = true
         AppSettings.shared.silentAutoUpdate = true
+        automaticChecks = true
         kbLog("updater: пользователь выбрал тихие автообновления")
-        installPendingNow()
+    }
+
+    /// The pre-download switch changes Sparkle's runtime behavior immediately. It cannot undo an
+    /// update that Sparkle has already downloaded; that update remains scheduled for app quit.
+    func noteInstantModeChanged() {
+        updater?.automaticallyDownloadsUpdates = automaticChecks && AppSettings.shared.instantUpdates && !isDevBuild
+        kbLog("updater: мгновенные обновления = \(AppSettings.shared.instantUpdates)")
+        if pendingInstall == nil { updater?.resetUpdateCycle() }
     }
 
     /// Тумблер «бета-версии» переключили — перезаводим цикл, иначе смена канала доедет только к
     /// следующей плановой проверке (а у агента в строке меню она может быть через сутки).
     func noteChannelChanged() {
         kbLog("updater: канал = \(AppSettings.shared.betaChannel ? "beta" : "стабильный")")
-        controller?.updater.resetUpdateCycle()
+        updater?.resetUpdateCycle()
     }
 
     // MARK: SPUUpdaterDelegate
@@ -346,7 +360,7 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
     /// Когда в последний раз проверка ЗАВЕРШИЛАСЬ УСПЕШНО (неважно, нашла обновление или нет).
     /// По ней считаем «давно не проверялось»: одиночный сбой это шум, две недели тишины это поломка.
     static var lastSuccessfulCheck: Date? {
-        UpdaterController.shared.controller?.updater.lastUpdateCheckDate
+        UpdaterController.shared.updater?.lastUpdateCheckDate
     }
 
     /// Сколько дней тишины считаем поводом сказать вслух. Неделя: при интервале в два часа это
@@ -370,57 +384,48 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
         DispatchQueue.main.async { NotificationCenter.default.post(name: .updaterStatusChanged, object: nil) }
     }
 
-    /// Sparkle скачал апдейт и готов ставить. Перехватываем: либо тихо в простое (если юзер выбрал
-    /// «авто»), либо спрашиваем нашим уведомлением.
-    ///
-    /// ⚠️ ВОЗВРАЩАЕМОЕ ЗНАЧЕНИЕ ЗДЕСЬ РЕШАЕТ СУДЬБУ ВСЕХ БУДУЩИХ ПРОВЕРОК (найдено ревью 28.07,
-    /// подтверждено хедером `SPUUpdaterDelegate.h:424-431`). Раньше мы возвращали `true` ВСЕГДА,
-    /// а по документации это значит «я беру установку на себя», и Sparkle в ответ
-    /// «stalls the current update cycle and prevents future update cycles from running».
-    /// То есть у человека с настройками ПО УМОЛЧАНИЮ (тихая установка выключена) всё выглядело так:
-    /// скачался один апдейт, показалась плашка, он её закрыл — и плановые проверки прекратились
-    /// НАВСЕГДА. Приложение живёт в строке меню неделями, так что молча застревало на той версии.
-    /// Комментарий «переспросит на следующей проверке» в AppDelegate обещал ровно то, чего уже не
-    /// могло случиться.
-    ///
-    /// Теперь по документации: `true` только когда мы действительно держим установку у себя
-    /// (тихий режим). В обычном режиме `false` — плашку показываем свою, но расписание остаётся за
-    /// Sparkle: он и переспросит сам, и критические апдейты покажет сразу.
-    /// `immediateInstallHandler` при `false` использовать НЕЛЬЗЯ (хедер, строка 437), поэтому в этой
-    /// ветке мы его даже не сохраняем — кнопка «Обновить сейчас» идёт через обычную проверку.
-    /// ⚠️ Селектор пришпилен, как и у `allowedChannels`, и по той же причине: метод необязательный,
-    /// зовётся через ObjC. Разъедься имя на букву — компилятор смолчит, Sparkle поставит апдейт
-    /// молча при выходе, а наше уведомление «Обновить сейчас» не покажется никогда. Симптом при этом
-    /// ровно тот, с которым к нам приходят: «оно не обновляется само».
+    /// An update reaches this delegate only after the opt-in pre-download path has fetched it.
+    /// Sparkle will install that file on quit. We retain the immediate block so the banner can
+    /// install now, or the silent mode can wait for five minutes of real idle time.
     @objc(updater:willInstallUpdateOnQuit:immediateInstallationBlock:)
     func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
                  immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
         pendingVersion = item.displayVersionString
         let silent = AppSettings.shared.silentAutoUpdate
         kbLog("updater: \(pendingVersion) скачан, готов к установке (silent=\(silent))")
-        guard silent else {
-            // ⚠️ ТЕПЕРЬ ДЕРЖИМ УСТАНОВКУ У СЕБЯ И В ОБЫЧНОМ РЕЖИМЕ (30.07, просьба автора).
-            // Раньше здесь было `pendingInstall = nil; return false`, и кнопка «Обновить» в нашей
-            // плашке не могла поставить апдейт сама — она отдавала человека штатному окну Sparkle,
-            // где надо было нажать «обновить» ВТОРОЙ раз. автор прошёл этот путь вживую и попросил
-            // убрать лишний шаг: одна кнопка, одно нажатие, приложение перезапускается.
-            //
-            // Но `true` здесь означает «я беру установку на себя», и Sparkle в ответ паркует не
-            // только текущий цикл, но и ВСЕ БУДУЩИЕ проверки. Именно так люди застревали на 0.2.69
-            // навсегда: плашку закрыли, обработчик никто не позвал, расписание умерло. Поэтому
-            // держать обработчик можно ТОЛЬКО вместе со страховкой, которая ниже: не позвали за
-            // pendingTTL — отпускаем установку и перезаводим цикл. Без неё не возвращать true.
-            pendingInstall = immediateInstallHandler
-            armPendingSafety()
-            DispatchQueue.main.async { [weak self] in self?.onUpdateReady?(self?.pendingVersion ?? "") }
-            return true
-        }
-        // Юзер выбрал «авто» → ставим тихо, когда отошёл (5 мин без ввода, не идёт диктовка/окно).
         pendingInstall = immediateInstallHandler
-        kbLog("updater: жду 5 минут простоя, чтобы поставить \(pendingVersion) тихо")
-        armSilentFallback()   // ⚠️ БЕЗ ЭТОГО апдейт и все будущие проверки паркуются навсегда
-        IdleMonitor.shared.waitForIdle(threshold: idleThreshold) { [weak self] in self?.installWhenClear() }
+        if silent {
+            kbLog("updater: жду 5 минут простоя, чтобы поставить \(pendingVersion) тихо")
+            IdleMonitor.shared.waitForIdle(threshold: idleThreshold) { [weak self] in self?.installWhenClear() }
+        } else {
+            showReadyBanner()
+        }
         return true
+    }
+
+    private func showReadyBanner() {
+        AppBanner.shared.show(
+            title: String(format: L10n.t("upd.notifyTitle"), pendingVersion),
+            body: L10n.t("upd.notifyBody"),
+            actions: [
+                .init(title: L10n.t("upd.now"), coral: false) { [weak self] in self?.installPendingNow() },
+                .init(title: L10n.t("upd.autoShort"), coral: true) { [weak self] in
+                    self?.enableSilentUpdates()
+                    self?.installPendingNow()
+                }
+            ],
+            onClose: { [weak self] in self?.deferDownloadedUpdate() },
+            onDismiss: { [weak self] in self?.deferDownloadedUpdate() }
+        )
+    }
+
+    /// Closing or replacing the ready banner cannot cancel Sparkle's install-on-quit commitment.
+    /// Release our immediate handler and resume the cycle; the setting explains this consequence.
+    private func deferDownloadedUpdate() {
+        guard pendingInstall != nil else { return }
+        pendingInstall = nil
+        kbLog("updater: готовое обновление отложено до выхода из Keyboop")
+        updater?.resetUpdateCycle()
     }
 
     /// Тихая установка только когда реально никто не мешает.
@@ -460,23 +465,24 @@ final class UpdaterController: NSObject, SPUUpdaterDelegate {
     /// Тумблер тихих обновлений выключили — гасим ожидание простоя.
     func cancelSilentWait() {
         IdleMonitor.shared.stop()
-        silentFallback?.cancel(); silentFallback = nil
+        updater?.automaticallyDownloadsUpdates = automaticChecks && AppSettings.shared.instantUpdates && !isDevBuild
         lastDeferReason = nil
+        if pendingInstall != nil { showReadyBanner() }
     }
 
-    /// Тумблер «обновлять тихо» включили, когда апдейт УЖЕ скачан и ждёт.
-    /// Без этого он продолжал бы ждать нашего уведомления, которого в тихом режиме не будет.
-    ///
-    /// Если handler'а на руках нет, значит на этот апдейт мы уже ответили Sparkle «ставь сам»
-    /// (обычный режим). Взять его обратно нельзя, поэтому просто перезаводим цикл: Sparkle
-    /// переспросит, и следующий апдейт придёт уже в тихом режиме.
+    /// Тумблер «обновлять тихо» включили при уже показанном или загруженном апдейте: видимый вопрос
+    /// подтверждаем, а загруженную автоматическую установку снова ставим в ожидание простоя.
     func noteSilentModeEnabled() {
+        automaticChecks = true
+        if userDriver?.approvePresentedUpdate() == true {
+            kbLog("updater: включили тихий режим при показанном апдейте — начинаю установку")
+            return
+        }
         guard pendingInstall != nil else {
-            controller?.updater.resetUpdateCycle()
+            updater?.resetUpdateCycle()
             return
         }
         kbLog("updater: включили тихий режим при готовом апдейте — жду простоя")
-        armSilentFallback()
         IdleMonitor.shared.waitForIdle(threshold: idleThreshold) { [weak self] in self?.installWhenClear() }
     }
 }

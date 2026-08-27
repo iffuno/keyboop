@@ -328,10 +328,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async { self?.menuBar.refresh() }
         }
 
-        // Автообновления (Sparkle): по умолчанию спрашиваем НАШИМ баннером (две кнопки, AppBanner —
-        // без системных уведомлений), тихо — только если юзер выбрал «авто». Под dev-рендер-хуками
-        // не стартуем (без сетевых проверок).
-        UpdaterController.shared.onUpdateReady = { [weak self] v in self?.notifyUpdateReady(v) }
+        // Автообновления (Sparkle): по умолчанию спрашиваем НАШИМ баннером, тихо — только если
+        // юзер выбрал «авто». Под dev-рендер-хуками не стартуем (без сетевых проверок).
         let env = ProcessInfo.processInfo.environment
         if (Bundle.main.bundleIdentifier ?? "").hasSuffix(".dev"), env["KEYBOOP_UPDATER"] != "1" {
             // Dev-сборка НЕ проверяет прод-апкаст: Sparkle иначе может «обновить» dev-бандл
@@ -1012,27 +1010,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     UndoLearner.shared.declineLearn(word)
                 }
             ]
-        )
-    }
-
-    /// Готов апдейт → НАШ баннер вверху справа с двумя кнопками (без системных уведомлений и их
-    /// запроса разрешений — по просьбе автора). Ждёт решения; «Обновить» ставит, «Авто» включает тихий
-    /// режим. Закрыл/проигнорировал — переспросит на следующей проверке (или поставится при выходе).
-    private func notifyUpdateReady(_ version: String) {
-        AppBanner.shared.show(
-            title: String(format: L10n.t("upd.notifyTitle"), version),
-            body: L10n.t("upd.notifyBody"),
-            // ПОРЯДОК И ЦВЕТ — РЕШЕНИЕ ИВАНА 30.07. Слева серая «Обновить», справа коралловая
-            // «Обновлять автоматически». Обе ставят апдейт СРАЗУ, без второго окна; правая вдобавок
-            // включает тихие автообновления. Коралл на правой намеренно: это подсказка, куда нажать,
-            // чтобы больше не видеть эту плашку никогда. Раньше акцент стоял на «обновить один раз»,
-            // то есть мы сами уводили людей от автообновлений и потом удивлялись застрявшим версиям.
-            actions: [
-                .init(title: L10n.t("upd.now"), coral: false) { UpdaterController.shared.installPendingNow() },
-                .init(title: L10n.t("upd.autoShort"), coral: true) { UpdaterController.shared.enableSilentAndInstall() }
-            ],
-            // Крестик = «нет»: ничего не поставится ни сейчас, ни при выходе (отзыв #125).
-            onClose: { UpdaterController.shared.declinePending() }
         )
     }
 
