@@ -8,6 +8,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWC: SettingsWindowController?
     private var historyWC: VoiceHistoryWindowController?
     private var welcomeWC: WelcomeWindowController?
+    /// Физический жест по корпусу (задача 35). Сам объект ничего не открывает до opt-in настройки;
+    /// держим его здесь, потому что только AppDelegate уже знает все пять адресатов действия.
+    private var slapDetector: SlapDetector?
+    private var slapSettingsObserver: NSObjectProtocol?
     private var retryTimer: Timer?
     private var engineRunning = false
     /// Уже написали в лог, что ждём Accessibility (иначе строка повторялась бы дважды в секунду).
@@ -33,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 timer.invalidate(); self.imWatchTimer = nil
                 self.menuBar.needsPermission = false
                 self.menuBar.refresh()
+                if ReleaseFeatures.slap { self.restartSlapGestureIfNeeded() }
                 kbLog("доступ «Мониторинг ввода» выдан — предупреждение снято, ввод виден")
             } else if left <= 0 {
                 timer.invalidate(); self.imWatchTimer = nil
@@ -97,6 +102,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // прод `ru.keyboop.app`). Замок КРОСС-БАНДЛОВЫЙ (flock по фикс-пути), иначе разные bundle id
         // расходятся. Если занят другим Keyboop — мы вторая копия: тихо уходим ДО установки тапа.
         guard acquireSingleInstanceLock() else {
+            if ResourceGuardSingletonFailurePolicy.action(
+                explicitGlobeRepair: keyboopGlobeFixRequested
+            ) == .exitRepairFailure {
+                // GLOBEFIX is a command with a verifiable outcome, not an ordinary second launch.
+                // Busy and lock-I/O failures both mean no repair authority: never notify another UI
+                // process and never report success without restore+retire proof.
+                kbLog("GLOBEFIX: singleton lock не получен; repair не запускался, exit 2")
+                exit(2)
+            }
             // Уже запущена другая копия Keyboop. НЕ показываем модальный «уже запущено» (лишний клик —
             // жалоба пользователя) и не дублируем ввод: просто просим РАБОТАЮЩИЙ экземпляр открыть
             // Настройки (человек запустил Keyboop именно чтобы туда попасть) и тихо выходим.
@@ -107,16 +121,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { NSApp.terminate(nil) }
             return
         }
+        // Retire the old GUI-owned receipt before ordinary v3 startup. Readable legacy state is
+        // restored in the safe direction under singleton+globe flock; the helper then writes the
+        // durable exact-inode retirement marker. Unreadable App-Data bytes are touched only by the
+        // explicit GLOBEFIX path, which restores the macOS default and waits for helper proof.
+        let legacyGlobeReady = PersistentResourceGuard.prepareLegacyGlobeBeforeStart(
+            explicitRepair: keyboopGlobeFixRequested
+        )
+        if keyboopGlobeFixRequested {
+            guard legacyGlobeReady else {
+                kbLog("GLOBEFIX: restore+retire не подтверждён; выхожу с receipt/system без изменений")
+                Thread.sleep(forTimeInterval: 0.25)
+                // Do not call finishNormally here: a malformed preflight may have intentionally
+                // spawned no helper, and finishNormally would create one just to block forever.
+                // If a repair helper already exists, exact NOTE_EXIT keeps its retry authority.
+                exit(2)
+            }
+            kbLog("GLOBEFIX: системное действие 🌐 восстановлено и legacy receipt retired")
+            PersistentResourceGuard.finishNormally()
+            Thread.sleep(forTimeInterval: 0.25)
+            exit(0)
+        }
+        if !legacyGlobeReady {
+            kbLog("globe migration: ordinary startup продолжает без глобальных мутаций до recovery")
+        }
         _ = AppHealth.launchedAt   // ленивый static let: «потрогать» на старте, иначе аптайм в первом
                                    // багрепорте всегда «0с» и разбор уходит в ложную ветку
         installMainMenu()   // меню Edit (Cmd+V/C/X/A/Z) — иначе в текстовых полях не работает вставка
         syncProcessLanguage()   // Sparkle и системные диалоги — на языке приложения (репорт 24.07)
+        // Один объединённый сторож живёт всю сессию приложения, даже когда обе его аренды пусты.
+        // READY включает exact NOTE_EXIT watcher и receipt-first SPU recovery; если он не готов,
+        // GlobeKey/Slap fail-close и не выполняют глобальных мутаций.
+        _ = PersistentResourceGuard.start()
         CapsRemap.reconcile()   // Caps-ремап не переживает перезагрузку (переприменить) и не должен
                                 // переживать выключенный тумблер (снять после падения без restore)
         GlobeKey.reconcile()    // роль 🌐: забрать при включённом режиме / вернуть после падения
         CapsLED.reconcile()     // лампочка Caps Lock как индикатор языка (если включена в настройках).
                                 // Не зависит от Accessibility: работает и до старта движка.
         installTerminationSignalHandlers()   // SIGTERM/SIGINT: вернуть системе 🌐 и Caps (см. ниже)
+        // ⚠️ ПРЕДОХРАНИТЕЛЬ НЕЧЁТКОГО СОВПАДЕНИЯ В СЛОВАРЕ ДИКТОВКИ (задача 192). Проверяем не
+        // только `contains`: при отказе words_ru/words_en в Set всё ещё остаются ExtraWords, и без
+        // отдельного ready-бита почти весь язык выглядел бы «неизвестным». Любой неполный комплект
+        // ресурсов отключает ТОЛЬКО fuzzy; точные префиксные замены продолжают работать.
+        let languageData = LayoutData.shared
+        let fuzzyWordsReady = VoiceDictionary.fuzzyLanguageResourcesAreReady(
+            layoutDataLoaded: languageData.isLoaded,
+            wordsRuCount: languageData.wordsRu.count,
+            wordsEnCount: languageData.wordsEn.count)
+        VoiceDictionary.configureFuzzyLanguageGuard(isReady: fuzzyWordsReady) { w in
+            languageData.wordsRu.contains(w) || languageData.wordsEn.contains(w)
+        }
         engine = Engine()
         menuBar = MenuBarController(layout: engine.layout)
         menuBar.onOpenSettings = { [weak self] in self?.openSettings() }
@@ -132,6 +186,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Меню показывает паузу, значит обязано перерисоваться, когда она началась или кончилась.
         Pause.onChange = { [weak self] in self?.menuBar.refreshAfterPauseChange() }
+        // Реализация жеста остаётся в дереве, но в 0.4.6 не создаём detector вообще: это закрывает
+        // и обычный opt-in, и KEYBOOP_SLAP_DIAG, и сохранённый defaults из прежней Dev-сборки.
+        if ReleaseFeatures.slap { configureSlapGesture() }
         menuBar.onCheckUpdates = { UpdaterController.shared.checkNow() }
         menuBar.onQuit = { NSApp.terminate(nil) }
         menuBar.openMenuForShot()   // KEYBOOP_MENUSHOT=1: сам открывает меню под снимок, иначе молчит
@@ -684,8 +741,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 defer { AppSettings.shared.language = wasLanguage }
                 AppSettings.shared.language = "ru"
                 AppBanner.shared.renderSample(to: "/tmp/kb_banner_ru.png")
+                AppBanner.shared.renderLearnSample(to: "/tmp/kb_banner_learn_ru.png")
                 AppSettings.shared.language = "en"
                 AppBanner.shared.renderSample(to: "/tmp/kb_banner_en.png")
+                AppBanner.shared.renderLearnSample(to: "/tmp/kb_banner_learn_en.png")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
             }
         }
@@ -1011,7 +1070,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .init(title: L10n.t("learn.no"), coral: false) {
                     UndoLearner.shared.declineLearn(word)
                 }
-            ]
+            ],
+            onAbandon: { UndoLearner.shared.dismissLearn(word) }
         )
     }
 
@@ -1072,10 +1132,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .appendingPathComponent("Keyboop", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let path = dir.appendingPathComponent("singleton.lock").path
-        let fd = open(path, O_CREAT | O_RDWR, 0o644)
-        guard fd >= 0 else { return true }   // не смогли создать замок — НЕ блокируем запуск (fail-open)
+        let fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0o600)
+        guard fd >= 0 else {
+            kbLog("single-instance: lock не открылся (errno=\(errno)) — fail closed")
+            return false
+        }
+        guard fchmod(fd, mode_t(0o600)) == 0 else {
+            kbLog("single-instance: не подтвердил mode 0600 — fail closed")
+            close(fd)
+            return false
+        }
         for attempt in 0..<10 {
             if flock(fd, LOCK_EX | LOCK_NB) == 0 { singleInstanceFD = fd; return true }
+            if errno != EWOULDBLOCK && errno != EAGAIN {
+                kbLog("single-instance: flock error \(errno) — fail closed")
+                close(fd)
+                return false
+            }
             if attempt < 9 { usleep(200_000) }   // 200мс × 10 ≈ 2с на отпускание старой копией (Sparkle relaunch)
         }
         close(fd)
@@ -1122,6 +1195,99 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         historyWC?.show()
     }
 
+    // MARK: - Шлепок по MacBook (задача 35)
+
+    /// Датчик — только ещё один способ вызвать уже существующие действия. Здесь нет второго пути
+    /// конверсии/диктовки: жест доходит до тех же методов, что клавиатура и меню.
+    private func configureSlapGesture() {
+        guard ReleaseFeatures.slap else { return }
+        let detector = SlapDetector(sensitivity: AppSettings.shared.slapSensitivity) { [weak self] event in
+            self?.performSlapAction(event)
+        }
+        detector.onAvailabilityChange = { state in
+            AppSettings.shared.noteSlapAvailability(state)
+            switch state {
+            case .disabled:    kbLog("шлепок: датчик выключен")
+            case .checking:    kbLog("шлепок: ищу встроенный датчик")
+            case .unavailable: kbLog("шлепок: встроенный датчик недоступен — остальное приложение работает обычно")
+            case .available:   kbLog("шлепок: поток датчика готов")
+            }
+        }
+        slapDetector = detector
+        slapSettingsObserver = NotificationCenter.default.addObserver(
+            forName: .keyboopSlapSettingsChanged, object: nil, queue: .main
+        ) { [weak self] _ in self?.reconcileSlapGesture() }
+        reconcileSlapGesture()
+    }
+
+    private func reconcileSlapGesture() {
+        guard ReleaseFeatures.slap else { return }
+        guard let detector = slapDetector else { return }
+        let settings = AppSettings.shared
+        detector.setSensitivity(settings.slapSensitivity)
+        // Диагностический запуск только подтверждает поток железа; UserDefaults не меняет и
+        // действие не исполняет (performSlapAction всё равно требует явный slapEnabled).
+        let diagnostic = ProcessInfo.processInfo.environment["KEYBOOP_SLAP_DIAG"] == "1"
+        detector.setEnabled(settings.slapEnabled || diagnostic)
+    }
+
+    private func restartSlapGestureIfNeeded() {
+        guard ReleaseFeatures.slap else { return }
+        let diagnostic = ProcessInfo.processInfo.environment["KEYBOOP_SLAP_DIAG"] == "1"
+        guard AppSettings.shared.slapEnabled || diagnostic, let detector = slapDetector else { return }
+        detector.setEnabled(false)
+        detector.setEnabled(true)
+    }
+
+    private func performSlapAction(_ event: SlapEvent) {
+        guard ReleaseFeatures.slap else { return }
+        let settings = AppSettings.shared
+        guard settings.slapEnabled else { return }
+        let action = settings.slapAction
+
+        // «Не мешать» обязано сниматься повторным шлепком. Остальные действия во время паузы
+        // остаются на паузе — иначе физический жест превратился бы в обход собственного режима.
+        guard !Pause.active || action == .pause else { return }
+
+        if settings.slapSoundEnabled {
+            switch settings.slapSound {
+            case .meow:
+                _ = Sounds.play(NSSound(data: CueSynth.meowData), volume: 0.70, as: "slap")
+            case .ouch, .ouchMale, .ouchFemale:
+                // Идентификаторы зарезервированы, но файлов ещё нет. Не подменяем «ау» чужим
+                // системным звуком: когда автор принесёт записи, они подключатся сюда один-в-один.
+                break
+            }
+        }
+
+        switch action {
+        case .manualSwitchOrUndo:
+            engine.handleSwitchHotkey()
+        case .dictate:
+            engine.toggleVoiceFromMenu()
+        case .pause:
+            if Pause.active {
+                Pause.stop()
+                VoiceIndicator.shared.showToast(L10n.t("quick.resumed"))
+            } else {
+                Pause.start(minutes: settings.pauseMinutes)
+                VoiceIndicator.shared.showToast(L10n.t("quick.paused"))
+            }
+        case .history:
+            openVoiceHistory()
+        case .settings:
+            openSettings(section: .general)
+        case .copyVoice:
+            // В slapOptions этого значения нет; неизвестные defaults уже fail-close в AppSettings.
+            break
+        }
+
+        if ProcessInfo.processInfo.environment["KEYBOOP_SLAP_DIAG"] == "1" {
+            let amplitude = String(format: "%.2f", event.amplitude)
+            kbLog("шлепок: действие принято (амплитуда \(amplitude) g)")
+        }
+    }
+
     /// Перед exit() освобождаем модель Whisper (whisper_free): Swift не зовёт deinit при выходе
     /// процесса, Metal-буферы «утекали» за exit, и статический деструктор ggml бил ассерт → SIGABRT
     /// при квите (краш-репорт 20.07, llama.cpp #19137 «not a bug — free your context before exit»).
@@ -1133,10 +1299,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///
     /// `applicationWillTerminate` выполняется при штатном выходе, но НЕ при SIGTERM: дефолтное
     /// действие сигнала убивает процесс, минуя AppKit. А `pkill`, «Завершить» в Мониторинге системы
-    /// и перезагрузка с зависшим приложением шлют именно SIGTERM. Мы при этом держим ДВЕ системные
-    /// настройки: роль клавиши 🌐 (AppleFnUsageType) и ремап Caps через hidutil. Обе переживают
-    /// смерть процесса, поэтому «нас убили» означало «у человека сломана клавиша, и он даже не
-    /// свяжет это с нами» — причём навсегда, в том числе после удаления Keyboop.
+    /// и перезагрузка с зависшим приложением шлют именно SIGTERM. Мы при этом можем держать три
+    /// системных состояния: роль клавиши 🌐, ремап Caps и включённый поток SPU-датчика шлепка.
+    /// Каждое надо вернуть до выхода; иначе настройка или лишнее потребление переживут процесс.
     ///
     /// `DispatchSourceSignal` вместо `signal(2)`-обработчика намеренно: обработчик сигнала обязан
     /// быть async-signal-safe, а CFPreferences и запуск hidutil таковыми не являются. Источник же
@@ -1147,10 +1312,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             signal(sig, SIG_IGN)
             let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
             src.setEventHandler {
-                kbLog("получен сигнал \(sig) — возвращаю системе 🌐 и Caps, выхожу")
+                kbLog("получен сигнал \(sig) — сторож останавливает SPU и возвращает 🌐, выхожу")
+                self.slapDetector?.shutdown()
                 CapsRemap.removeIfOurs()
-                GlobeKey.release()
                 CapsLED.shutdown(atExit: true)   // иначе лампочка останется гореть после нас
+                // One authenticated transaction preserves the global order: local HID close →
+                // proved SPU OFF → globe restore. A direct GlobeKey.release here could restore 🌐
+                // while a failed OFF retry still had BMI282 reporting enabled.
+                GlobeGuard.finishNormally()
                 exit(0)
             }
             src.resume()
@@ -1164,16 +1333,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         VoiceController.shared.unloadForTermination()
+        slapDetector?.shutdown()
+        if let observer = slapSettingsObserver {
+            NotificationCenter.default.removeObserver(observer)
+            slapSettingsObserver = nil
+        }
         // ⚠️ ВТОРАЯ КОПИЯ НИЧЕГО НЕ ОТКАТЫВАЕТ (ревью 17.08). Флаг `capsRemapApplied` лежит в общих
         // defaults и выставлен РАБОТАЮЩЕЙ копией, поэтому guard внутри removeIfOurs проходил и у
         // второй: запуск из DMG обновления при живом старом снимал hidutil-ремап у него под ногами —
         // Caps молча переставал менять язык, тумблер оставался включённым. То же с ролью 🌐.
         guard !isSecondaryInstance else { return }
-        // Caps-ремап и забранная 🌐 без нас жить не должны: выходим — возвращаем всё системе.
-        // (Синхронно: терминация не ждёт GCD; hidutil отрабатывает за ~50мс.)
+        // Caps-remap снимаем локально. SPU + 🌐 принадлежат одной helper-транзакции: после закрытия
+        // локального HID helper сначала доказывает OFF и лишь затем возвращает клавишу.
         CapsRemap.removeIfOurs()
-        GlobeKey.release()
         CapsLED.shutdown(atExit: true)   // лампочке — обратно её системный смысл (состояние капса)
+        GlobeGuard.finishNormally()
     }
 
     /// Sparkle и прочие системные диалоги — на языке ПРИЛОЖЕНИЯ, а не только системы.

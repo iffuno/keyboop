@@ -1,7 +1,6 @@
 import Foundation
 
-/// СТОРОЖ КЛАВИШИ 🌐 — процесс, который переживает нас и возвращает системе то, что мы забрали
-/// (задача 96, решение автора 12.08.2026).
+/// Совместимый фасад объединённого resource-сторожа (задачи 96 + 35).
 ///
 /// # Зачем он вообще нужен
 ///
@@ -19,18 +18,22 @@ import Foundation
 ///
 /// # Почему это тот же бинарник, а не отдельный
 ///
-/// Сторож запускается как `Keyboop --globe-guard <pid>`. Отдельный файл в бандле означал бы свою
+/// v3 по-прежнему запускается как `Keyboop --globe-guard <pid>`, но получает дополнительный
+/// маркер и приватные pipe-дескрипторы. Старый двухаргументный режим оставлен для совместимости с
+/// уже запущенными v1-сторожами. Отдельный файл в бандле означал бы свою
 /// сборку, свою подпись, свою универсальную (arm64+x86_64) сборку и свой шаг нотаризации — четыре
 /// новых места, где что-то может разойтись. Тот же бинарник подписан и нотаризован ровно один раз,
 /// вместе с приложением.
 ///
 /// В режиме сторожа программа НЕ поднимает ни перехватчик, ни строку меню, ни одного разрешения:
-/// флаг проверяется до всего остального (`main.swift`). Она умеет ровно одно — ждать и вернуть.
+/// флаг проверяется до всего остального (`main.swift`). v3 держит независимые аренды 🌐 и SPU;
+/// state machine живёт в `PersistentResourceGuard.swift`, а это имя сохраняет старые API.
 ///
 /// # Что он стоит человеку
 ///
-/// Второй процесс с именем Keyboop в Мониторинге системы, пока включён захват 🌐. Он спит на
-/// `kqueue` (ни опроса, ни таймера, 0% процессора) и уходит сам, как только сделает работу.
+/// Второй процесс с именем Keyboop в Мониторинге системы живёт всю сессию приложения, даже когда
+/// обе аренды пусты. Он спит на pipe+kqueue без опроса; выходит после normalExit или NOTE_EXIT
+/// родителя и только когда доказан cleanup. Legacy v1 по-прежнему спит на kqueue.
 /// Прятать его мы не будем: он назван в разделе «Приватность» и под кнопкой «i» самой функции.
 enum GlobeGuard {
     static let flag = "--globe-guard"
@@ -45,8 +48,6 @@ enum GlobeGuard {
         return dir.appendingPathComponent("globe-guard-\(bid).pid")
     }
 
-    private static func alive(_ pid: pid_t) -> Bool { pid > 0 && kill(pid, 0) == 0 }
-
     private static func readPid() -> pid_t? {
         guard let s = try? String(contentsOf: pidURL, encoding: .utf8), let v = Int32(s.trimmingCharacters(in: .whitespacesAndNewlines))
         else { return nil }
@@ -60,64 +61,32 @@ enum GlobeGuard {
     /// ⚠️ Именно «убедиться», а не «запустить». На перезапуске после аварии клавиша УЖЕ забрана
     /// (её никто не вернул), поэтому `take()` не зовётся, и привязать запуск сторожа к захвату
     /// значило бы остаться без него ровно в том случае, ради которого он существует.
-    static func ensure() {
-        if let pid = readPid(), alive(pid) { return }
-        spawn()
+    @discardableResult
+    static func ensure() -> Bool {
+        PersistentResourceGuard.ensureGlobe(legacyPID: readPid())
     }
 
-    private static func spawn() {
-        guard let exe = Bundle.main.executableURL else { return }
-        let p = Process()
-        p.executableURL = exe
-        p.arguments = [flag, String(ProcessInfo.processInfo.processIdentifier)]
-        p.standardOutput = FileHandle.nullDevice
-        p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch {
-            kbLog("globe-сторож: не запустился (\(error.localizedDescription))")
-            return
-        }
-        try? String(p.processIdentifier).write(to: pidURL, atomically: true, encoding: .utf8)
-        kbLog("globe-сторож: запущен (pid \(p.processIdentifier))")
-    }
-
-    /// Погасить сторожа: клавиша возвращена нами самими, стеречь больше нечего.
-    static func stop() {
-        guard let pid = readPid() else { return }
-        // ⚠️ НЕ УБИТЬ САМОГО СЕБЯ. Возврат клавиши у сторожа и у приложения общий (`GlobeKey.release`),
-        // а он первым делом гасит сторожа — то есть проснувшийся сторож, дойдя сюда, нашёл бы в
-        // файле СВОЙ pid и застрелился бы ровно перед тем, как сделать работу.
-        guard pid != ProcessInfo.processInfo.processIdentifier else {
-            try? FileManager.default.removeItem(at: pidURL)
-            return
-        }
-        if alive(pid) { kill(pid, SIGTERM); kbLog("globe-сторож: остановлен (pid \(pid))") }
-        try? FileManager.default.removeItem(at: pidURL)
+    /// Попросить helper выполнить restore→verify→durable clear и только потом снять аренду/flock.
+    @discardableResult
+    static func stop() -> Bool {
+        PersistentResourceGuard.dropGlobe()
     }
 
     // MARK: - Сторона сторожа
 
     /// Мы запущены сторожем? Тогда эта функция НЕ ВОЗВРАЩАЕТСЯ: подождёт родителя и выйдет.
     static func runIfRequested() {
-        let args = CommandLine.arguments
-        guard let i = args.firstIndex(of: flag), i + 1 < args.count,
-              let parent = pid_t(args[i + 1]) else { return }
-        let startedAt = Date()
-        waitForParent(parent)
-        // ⚠️ ЕСЛИ МЫ ПРОСНУЛИСЬ, ВЫХОД БЫЛ АВАРИЙНЫМ, и это не догадка. При нормальном выходе
-        // приложение гасит сторожа САМО (`GlobeKey.release` → `GlobeGuard.stop`), причём SIGTERM
-        // убивает нас прямо в `kevent`, до единой строчки нашего кода. Значит сюда мы попадаем
-        // только после падения, `kill -9` или исчезновения приложения вместе с бандлом.
-        kbLog("globe-сторож: Keyboop (pid \(parent)) больше нет, выход был аварийным — возвращаю клавишу")
-        // Клавишу возвращаем ПЕРВЫМ делом и ВСЕГДА, даже если следом собираемся поднимать
-        // приложение: перезапуск умеет не удаться, а обещание про клавишу не должно от него зависеть.
-        GlobeKey.release()
-        handleCrash(livedSince: startedAt)
-        // ⚠️ ПАУЗА ПЕРЕД ВЫХОДОМ, И ОНА НЕ ЛИШНЯЯ. `kbLog` пишет на своей очереди асинхронно, а
-        // `exit(0)` следом убивает процесс раньше, чем очередь дойдёт до диска: первая живая
-        // проверка сторожа отработала верно, но в логе не осталось ни строчки. Сторож просыпается
-        // раз в жизни и ровно в тот момент, который потом придётся расследовать по логу.
-        Thread.sleep(forTimeInterval: 0.3)
-        exit(0)
+        switch ResourceGuardLaunchPolicy.parse(CommandLine.arguments) {
+        case .application:
+            return
+        case .invalid:
+            kbLog("resource-сторож: malformed/unsupported helper argv — AppKit не запускаю")
+            exit(EX_USAGE)
+        case let .persistent(parent):
+            exit(PersistentResourceGuard.runIfRequested(parentPID: parent) ? 0 : EX_SOFTWARE)
+        case let .legacy(parent):
+            exit(PersistentResourceGuard.runLegacyGlobeIfRequested(parentPID: parent) ? 0 : EX_SOFTWARE)
+        }
     }
 
     // MARK: - Падение: запись в лог и перезапуск
@@ -138,17 +107,31 @@ enum GlobeGuard {
     /// отчёта не пишут, а перезапуск после них означал бы драку с человеком, который только что
     /// сознательно закрыл программу. Это единственный признак, отличающий «упало» от «закрыли», и
     /// поэтому он же и условие.
-    private static func handleCrash(livedSince: Date) {
+    static func handleCrash(parentPID: pid_t, livedSince: Date, diedAt: Date) {
         // Отчёт macOS пишет с задержкой в пару секунд, поэтому ждём его, а не спрашиваем однажды.
         // Восемь секунд это верхняя граница по наблюдениям; дальше считаем, что отчёта не будет.
-        let deadline = Date().addingTimeInterval(8)
+        let deadline = diedAt.addingTimeInterval(ResourceGuardCrashReportPolicy.secondsAfterDeath)
         var found: (url: URL, when: Date)?
-        while Date() < deadline, found == nil {
-            found = reports(freshFor: 120).first
-            if found == nil { Thread.sleep(forTimeInterval: 0.5) }
-        }
+        repeat {
+            let lower = Date(timeIntervalSince1970: max(
+                livedSince.timeIntervalSince1970 - 1,
+                diedAt.timeIntervalSince1970 - ResourceGuardCrashReportPolicy.secondsBeforeDeath
+            ))
+            found = CrashNote.reports(after: lower).compactMap { report in
+                guard let eventDate = CrashNote.processDate(report.url),
+                      ResourceGuardCrashReportPolicy.matches(
+                    reportPID: CrashNote.processID(report.url),
+                    reportDate: eventDate,
+                    parentPID: parentPID,
+                    parentStartedAt: livedSince,
+                    parentDiedAt: diedAt
+                ) else { return nil }
+                return (url: report.url, when: eventDate)
+            }.first
+            if found == nil, Date() < deadline { Thread.sleep(forTimeInterval: 0.5) }
+        } while found == nil && Date() < deadline
         guard let report = found else {
-            kbLog("globe-сторож: отчёта о падении нет — значит приложение закрыли принудительно, не поднимаю")
+            kbLog("resource-сторож: точного crash-report для pid \(parentPID) нет — не поднимаю")
             return
         }
         if let s = CrashNote.summarize(report.url) { kbLog("globe-сторож: \(s)") }
@@ -157,7 +140,7 @@ enum GlobeGuard {
         // незачем: в логе получались две одинаковые записи подряд.
         CrashNote.markScanned()
 
-        let lived = Date().timeIntervalSince(livedSince)
+        let lived = diedAt.timeIntervalSince(livedSince)
         guard lived >= minLifetime else {
             kbLog("globe-сторож: приложение прожило \(Int(lived))с — падает на старте, не поднимаю")
             return
@@ -196,19 +179,4 @@ enum GlobeGuard {
         catch { kbLog("globe-сторож: поднять не удалось (\(error.localizedDescription))") }
     }
 
-    /// Спим до смерти родителя. `kqueue` вместо опроса: ни таймера, ни просыпаний, ни процессора.
-    ///
-    /// ⚠️ Если родитель успел умереть ДО того, как мы подписались, `kevent` отвечает ошибкой ESRCH.
-    /// Это не сбой, а «уже всё»: выходим из ожидания и идём возвращать клавишу. Без этой ветки
-    /// сторож завис бы навсегда ровно в самом быстром сценарии аварии.
-    private static func waitForParent(_ parent: pid_t) {
-        let kq = kqueue()
-        guard kq >= 0 else { return }
-        var ev = kevent(ident: UInt(parent), filter: Int16(EVFILT_PROC), flags: UInt16(EV_ADD | EV_ONESHOT),
-                        fflags: NOTE_EXIT, data: 0, udata: nil)
-        guard kevent(kq, &ev, 1, nil, 0, nil) == 0 else { close(kq); return }
-        var out = kevent()
-        _ = kevent(kq, nil, 0, &out, 1, nil)
-        close(kq)
-    }
 }

@@ -122,7 +122,7 @@ final class NotchIsland {
     let content = PassThroughView()
     /// Корпус: чёрный фон + маска-силуэт. Маска нужна не для красоты — содержимое обязано
     /// ПОЯВЛЯТЬСЯ из-под выреза вместе с фигурой, а не висеть в воздухе, пока она растёт.
-    private let shape = NSView()
+    private let shape = PassThroughView()
     private let maskLayer = CAShapeLayer()
     /// Тень рисуется своим слоем по тому же контуру: тень ОКНА прямоугольная и легла бы серой
     /// рамкой поперёк строки меню.
@@ -191,7 +191,9 @@ final class NotchIsland {
         panel.ignoresMouseEvents = false
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
 
-        let root = panel.contentView!
+        let root = PassThroughView(frame: panel.contentView!.bounds)
+        root.autoresizingMask = [.width, .height]
+        panel.contentView = root
         root.wantsLayer = true
         root.layer?.addSublayer(shadowLayer)
 

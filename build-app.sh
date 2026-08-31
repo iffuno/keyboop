@@ -3,6 +3,7 @@
 # кладёт Info.plist (LSUIElement) и ad-hoc подписывает.
 set -e
 cd "$(dirname "$0")"
+PROJECT_ROOT="$(pwd -P)"
 
 # Ежедневная резервная копия, привязанная к работе, а не к календарю. Сборка — самый честный
 # признак того, что сегодня в проекте что-то менялось: в дни без сборок и терять нечего.
@@ -31,25 +32,119 @@ fi
 # а перенос копии в другое место ломает выданные доступы (TCC привязан к пути и подписи).
 APP="${KEYBOOP_BUILD_APP:-Keyboop.app}"
 
+# Local admin tools share the exact process classifier. Source releases may omit Tools/, so keep a
+# minimal equivalent fallback here: v3 wins over the legacy flag it also carries.
+if [ -f Tools/keyboop-process-safety.sh ]; then
+  . Tools/keyboop-process-safety.sh
+else
+  keyboop_canonical_path() {
+    python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"
+  }
+  keyboop_build_target_allowed() {
+    local target project base
+    target="$(keyboop_canonical_path "$1")" || return 1
+    project="$(keyboop_canonical_path "$2")" || return 1
+    base="$(basename "$target")"
+    [ "$base" != ".app" ] || return 1
+    case "$base" in *.app) ;; *) return 1 ;; esac
+    case "$target" in
+      "$project/"*.app|/private/tmp/*.app|/private/var/folders/*/T/*.app) return 0 ;;
+      *) return 1 ;;
+    esac
+  }
+  keyboop_process_executable() {
+    python3 -c '
+import ctypes, os, sys
+lib = ctypes.CDLL("/usr/lib/libproc.dylib")
+buf = ctypes.create_string_buffer(4096)
+size = lib.proc_pidpath(ctypes.c_int(int(sys.argv[1])), buf, ctypes.c_uint32(len(buf)))
+if size <= 0:
+    raise SystemExit(1)
+print(os.path.realpath(os.fsdecode(buf.value)))
+' "$1" 2>/dev/null
+  }
+  keyboop_candidate_pids() {
+    local candidates status
+    if candidates="$(pgrep -x Keyboop 2>/dev/null)"; then
+      printf '%s\n' "$candidates"
+      return 0
+    else
+      status=$?
+    fi
+    [ "$status" -eq 1 ] || echo "?"
+  }
+  keyboop_process_pids() {
+    local executable selector="${2:-any}" pid args kind physical
+    executable="$(keyboop_canonical_path "$1")" || return 1
+    while IFS= read -r pid; do
+      [ -n "$pid" ] || continue
+      physical="$(keyboop_process_executable "$pid" || true)"
+      if [ -z "$physical" ]; then
+        [ "$selector" = any ] || [ "$selector" = blocking ] || continue
+        echo "$pid"
+        continue
+      fi
+      [ "$physical" = "$executable" ] || continue
+      args="$(ps -ww -o args= -p "$pid" 2>/dev/null || true)"
+      if [ -z "$args" ]; then
+        [ "$selector" = any ] || [ "$selector" = blocking ] || continue
+        echo "$pid"
+        continue
+      fi
+      case " $args " in
+        *" --resource-guard-v3 "*) kind=persistent ;;
+        *" --globe-guard "*) kind=legacy ;;
+        *) kind=application ;;
+      esac
+      case "$selector:$kind" in
+        application:application|persistent:persistent|blocking:application|blocking:persistent|any:*)
+          echo "$pid" ;;
+      esac
+    done < <(keyboop_candidate_pids)
+  }
+fi
+APP_ABSOLUTE="$(keyboop_canonical_path "$APP")"
+if ! keyboop_build_target_allowed "$APP_ABSOLUTE" "$PROJECT_ROOT"; then
+  echo "✗ небезопасный KEYBOOP_BUILD_APP: $APP_ABSOLUTE"
+  echo "  Разрешён только *.app внутри проекта или системной временной папки."
+  exit 2
+fi
+# From this point the checked path and the mutated path are identical. Never return to the raw
+# alias supplied through KEYBOOP_BUILD_APP.
+APP="$APP_ABSOLUTE"
+EXECUTABLE="$APP_ABSOLUTE/Contents/MacOS/Keyboop"
+
 # ⚠️ Пересборка бандла под РАБОТАЮЩИМ из него процессом запрещена: macOS перестаёт доверять
 # клиенту, чей бандл изменился на диске, и coreaudiod МОЛЧА глушит ему микрофон — TCC отвечает
 # authorized, буферы идут, но в них битовый ноль (инцидент 23.07.2026).
-# ⚠️ СТОРОЖ КЛАВИШИ 🌐 НЕ СЧИТАЕТСЯ (13.08). Он запускается из ТОГО ЖЕ файла, что приложение, и
-# после закрытия живёт ещё до восьми секунд: ждёт, не появится ли отчёт о падении. Простая проверка
-# по пути видела его и отказывалась собирать, хотя приложения уже нет. Причина запрета — микрофон и
-# TCC у РАБОТАЮЩЕГО приложения, а сторож ни того, ни другого не трогает.
-if pgrep -f "$(pwd)/$APP/Contents/MacOS/Keyboop" 2>/dev/null | while read -r pid; do
-     ps -o args= -p "$pid" | grep -q -- "--globe-guard" || echo "$pid"
-   done | grep -q .; then
-  echo "✗ Keyboop сейчас запущен из $(pwd)/$APP — собирать под ним нельзя."
+# Узкий legacy crash-scanner без `--resource-guard-v3` можно отличить по argv и не учитывать. Новый
+# persistent helper принципиально другой: он может жить после GUI, удерживая global lock/receipt и
+# повторяя OFF/restore. Перезаписывать его executable bundle до завершения cleanup нельзя.
+main_pids="$(keyboop_process_pids "$EXECUTABLE" application)"
+if [ -n "$main_pids" ]; then
+  echo "✗ Keyboop сейчас запущен из $APP_ABSOLUTE — собирать под ним нельзя."
   # ⚠️ ГАСИМ ПО ПУТИ, А НЕ ПО ИМЕНИ. Здесь стояло `pkill -x Keyboop`, и эта подсказка обошлась
   # дорого: она гасит ЛЮБОЙ процесс с именем Keyboop, то есть заодно и боевую копию из
   # /Applications, которой человек в этот момент пользуется. У сборочной и у боевой копии общее
   # имя процесса и разные пути — значит и различать их надо путём.
   # И `-f`, а не `-9`: SIGKILL перехватить нельзя, а на выходе мы возвращаем системе роль клавиши
   # 🌐, иначе она остаётся сломанной до перезапуска (задача 96).
-  echo "  Сначала:  pkill -f \"$(pwd)/$APP/Contents/MacOS/Keyboop\"        затем собери и:  open \"$APP\""
+  echo "  Сначала:  pkill -f \"$EXECUTABLE\"        затем собери и:  open \"$APP\""
   exit 1
+fi
+persistent_pids="$(keyboop_process_pids "$EXECUTABLE" persistent)"
+if [ -n "$persistent_pids" ]; then
+  echo "⏳ persistent resource helper завершает cleanup: $persistent_pids"
+  for _ in $(seq 1 40); do
+    persistent_pids="$(keyboop_process_pids "$EXECUTABLE" persistent)"
+    [ -z "$persistent_pids" ] && break
+    sleep 0.25
+  done
+  if [ -n "$persistent_pids" ]; then
+    echo "✗ resource helper всё ещё держит незавершённую сессию: $persistent_pids"
+    echo "  Bundle не перезаписываю; helper не посылаю сигналов. Проверь cleanup log/receipt."
+    exit 1
+  fi
 fi
 # ПРОВЕРКА ДУБЛЕЙ В L10n (25.07): Swift-словарь-литерал с повторяющимся ключом компилируется молча,
 # но падает SIGTRAP при ПЕРВОМ обращении — то есть приложение не запускается вообще (Dictionary.init →
@@ -68,6 +163,14 @@ if [ -n "$DUPES" ]; then
 fi
 
 echo "▸ swiftc compile…"
+# Close the bounded-wait race: a GUI may have launched while the old helper was finishing. Perform
+# one final exact-path check immediately before replacing any bundle contents.
+blocking_pids="$(keyboop_process_pids "$EXECUTABLE" blocking)"
+if [ -n "$blocking_pids" ]; then
+  echo "✗ перед записью bundle снова появился GUI/persistent helper: $blocking_pids"
+  echo "  Bundle оставляю без изменений."
+  exit 1
+fi
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
@@ -101,7 +204,7 @@ swiftc -O Sources/Keyboop/*.swift \
   -L "$WHISPER_BUILD/ggml/src/ggml-metal" -L "$WHISPER_BUILD/ggml/src/ggml-blas" \
   -L "$FA" -lFluidAudio \
   -lwhisper -lggml -lggml-cpu -lggml-metal -lggml-blas -lggml-base -lc++ \
-  -framework AppKit -framework Carbon -framework ServiceManagement -framework ApplicationServices \
+  -framework AppKit -framework Carbon -framework ServiceManagement -framework ApplicationServices -framework IOKit \
   -framework AVFoundation -framework CoreAudio -framework AudioToolbox -framework Metal -framework MetalKit -framework Accelerate -framework CoreML \
   -framework SwiftUI -Xlinker -weak_framework -Xlinker Translation \
   -F "$SPARKLE" -framework Sparkle \
@@ -129,7 +232,7 @@ if [ "${KEYBOOP_UNIVERSAL:-}" = "1" ]; then
     -I "$WHISPER/include" -I "$WHISPER/ggml/include" \
     -L "$WX/src" -L "$WX/ggml/src" -L "$WX/ggml/src/ggml-blas" \
     -lwhisper -lggml -lggml-cpu -lggml-blas -lggml-base -lc++ \
-    -framework AppKit -framework Carbon -framework ServiceManagement -framework ApplicationServices \
+    -framework AppKit -framework Carbon -framework ServiceManagement -framework ApplicationServices -framework IOKit \
     -framework AVFoundation -framework CoreAudio -framework AudioToolbox -framework Accelerate -framework CoreML \
     -framework SwiftUI -Xlinker -weak_framework -Xlinker Translation \
     -F "$SPARKLE" -framework Sparkle \
@@ -172,8 +275,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key>            <string>Keyboop</string>
     <key>CFBundleDisplayName</key>     <string>Keyboop</string>
     <key>CFBundleIdentifier</key>      <string>ru.keyboop.app</string>
-    <key>CFBundleVersion</key>         <string>0.4.5</string>
-    <key>CFBundleShortVersionString</key> <string>0.4.5</string>
+    <key>CFBundleVersion</key>         <string>0.4.6</string>
+    <key>CFBundleShortVersionString</key> <string>0.4.6</string>
     <!-- Штамп сборки: подставляется ниже (sed по __BUILD_STAMP__). Логируется при запуске, чтобы по
          логу было ВИДНО, какую именно сборку гоняем. Прецедент 21.07: диагностировали баг по логу
          процесса, стартовавшего на 11 минут РАНЬШЕ пересборки, — то есть по коду без свежих правок. -->

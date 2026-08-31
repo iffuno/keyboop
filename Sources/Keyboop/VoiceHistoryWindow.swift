@@ -1,4 +1,6 @@
 import AppKit
+import Darwin
+import UniformTypeIdentifiers
 
 /// Окно истории голосового набора (в духе Superwhisper/Wispr, в нашем стиле):
 /// поиск, чистый список карточек (действия проявляются по наведению — как в Things/Mail,
@@ -22,6 +24,10 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
     private let df: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "d MMM, HH:mm"
         f.locale = Locale(identifier: L10n.current == .ru ? "ru_RU" : "en_US"); return f
+    }()
+    private let exportDF: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd-HHmmss"
+        f.locale = Locale(identifier: "en_US_POSIX"); return f
     }()
 
     var onOpenVoiceSettings: (() -> Void)?
@@ -343,6 +349,8 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         guard let clip = e.audio, VoiceClips.exists(clip) else {
             return HoverCard(date: date, body: text, actions: [copy, del])
         }
+        let save = cardIcon("square.and.arrow.down", L10n.t("hist.saveAudio"),
+                            #selector(saveAudio(_:)), tag)
         let body = NSStackView(views: [text, VoiceClipPlayerView(clipID: clip, wave: e.wave)])
         body.orientation = .vertical
         body.alignment = .leading
@@ -351,7 +359,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         // Плеер тянем во всю ширину карточки: иначе NSStackView сжимает его по содержимому и дорожка
         // превращается в огрызок рядом с длинным текстом.
         body.arrangedSubviews.last?.widthAnchor.constraint(equalTo: body.widthAnchor).isActive = true
-        return HoverCard(date: date, body: body, actions: [copy, del])
+        return HoverCard(date: date, body: body, actions: [save, copy, del])
     }
 
     /// Иконка-действие на карточке (проявляется по наведению).
@@ -388,6 +396,126 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak s] in
             s?.image = prev; s?.contentTintColor = .secondaryLabelColor
         }
+    }
+    @objc private func saveAudio(_ s: NSButton) {
+        guard s.tag >= 0, s.tag < all.count,
+              let clip = all[s.tag].audio
+        else { return }
+        // Клип мог исчезнуть между отрисовкой карточки и кликом (например, из-за retention).
+        // Если кнопка уже была на экране, не делаем вид, что клика не было.
+        guard VoiceClips.exists(clip) else {
+            VoiceIndicator.shared.showToast(L10n.t("hist.saveAudioFailed"))
+            return
+        }
+
+        // Расшифровываем ТОЛЬКО после того, как человек выбрал место. До этого момента открытых
+        // байтов нет даже в памяти; после записи никакого временного файла за нами не остаётся.
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.mpeg4Audio]
+        panel.canCreateDirectories = true
+        panel.isMovable = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = "Keyboop-\(exportDF.string(from: all[s.tag].date)).m4a"
+
+        // Это отдельная системная панель, а не sheet окна истории. Sheet нельзя двигать, и у
+        // истории, припаркованной у края экрана, широкая панель неизбежно вылезала за границу.
+        // `begin` остаётся асинхронным, но позицию и перемещение целиком отдаёт macOS.
+        s.isEnabled = false
+        NSApp.activate(ignoringOtherApps: true)
+        panel.begin { [weak s] response in
+            guard response == .OK, let destination = panel.url else {
+                s?.isEnabled = true
+                return
+            }
+            DispatchQueue.global(qos: .userInitiated).async { [weak s] in
+                guard let data = VoiceClips.data(for: clip) else {
+                    DispatchQueue.main.async {
+                        s?.isEnabled = true
+                        VoiceIndicator.shared.showToast(L10n.t("hist.saveAudioFailed"))
+                    }
+                    return
+                }
+                do {
+                    // Временный inode сразу рождается 0600 в ВЫБРАННОЙ папке и затем атомарно
+                    // переименовывается. Поэтому даже на миг между write и chmod открытого 0644
+                    // файла не бывает; дополнительной plaintext-копии в системном temp тоже нет.
+                    try Self.writeExportSecurely(data, to: destination)
+                    let sizeKB = data.count / 1024
+                    DispatchQueue.main.async { [weak s] in
+                        s?.isEnabled = true
+                        kbLog("аудио диктовки: экспортировано \(sizeKB) КБ")
+                        let folderURL = destination.deletingLastPathComponent()
+                        let folderName = FileManager.default.displayName(atPath: folderURL.path)
+                        let message = String(format: L10n.t("hist.saveAudioDoneFolder"), folderName)
+                        VoiceIndicator.shared.showToast(message, onClick: {
+                            // Путь нигде не логируем. Finder получает URL только по явному клику
+                            // и выделяет именно экспортированный файл, а не просто открывает папку.
+                            NSWorkspace.shared.activateFileViewerSelecting([destination])
+                        })
+                        let previous = s?.image
+                        s?.image = NSImage(systemSymbolName: "checkmark", accessibilityDescription: nil)
+                        s?.contentTintColor = DS.coral
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak s] in
+                            s?.image = previous; s?.contentTintColor = .secondaryLabelColor
+                        }
+                    }
+                } catch {
+                    let nsError = error as NSError
+                    let failure = "\(nsError.domain):\(nsError.code)"
+                    DispatchQueue.main.async { [weak s] in
+                        s?.isEnabled = true
+                        // NSError.userInfo намеренно не пишем: там может быть имя/путь, выбранный человеком.
+                        kbLog("аудио диктовки: экспорт не удался (\(failure))")
+                        VoiceIndicator.shared.showToast(L10n.t("hist.saveAudioFailed"))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Атомарная запись без окна с широкими правами: `mkstemp` создаёт соседний файл сразу 0600,
+    /// а POSIX rename переносит этот же inode на выбранное имя. Любая ошибка оставляет destination
+    /// нетронутым и удаляет только наш скрытый временный файл.
+    private static func writeExportSecurely(_ data: Data, to destination: URL) throws {
+        let folder = destination.deletingLastPathComponent()
+        var template = Array(folder.appendingPathComponent(".keyboop-export.XXXXXX").path.utf8CString)
+        let fd = mkstemp(&template)
+        guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        let temporaryPath = String(cString: template)
+        var descriptorOpen = true
+        var moved = false
+        defer {
+            if descriptorOpen { Darwin.close(fd) }
+            if !moved { temporaryPath.withCString { _ = Darwin.unlink($0) } }
+        }
+
+        try data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            var offset = 0
+            while offset < raw.count {
+                let count = Darwin.write(fd, base.advanced(by: offset), raw.count - offset)
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                }
+                guard count > 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO)) }
+                offset += count
+            }
+        }
+        guard Darwin.fsync(fd) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        guard Darwin.close(fd) == 0 else {
+            descriptorOpen = false
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        descriptorOpen = false
+
+        let renamed = temporaryPath.withCString { source in
+            destination.path.withCString { target in Darwin.rename(source, target) }
+        }
+        guard renamed == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        moved = true
     }
     @objc private func deleteEntry(_ s: NSButton) {
         guard s.tag >= 0, s.tag < all.count else { return }
@@ -608,8 +736,8 @@ final class PillButton: NSButton {
 
 // MARK: - HoverCard: карточка записи; действия проявляются по наведению (как в Things/Mail)
 
-/// Карточка истории: дата слева, действия (копировать/удалить) справа — скрыты, пока курсор
-/// не наведён (поэтому НИКОГДА не наезжают на дату). Тело — выделяемый переносимый текст.
+/// Карточка истории: дата слева, действия (сохранить аудио / копировать / удалить) справа — скрыты,
+/// пока курсор не наведён (поэтому НИКОГДА не наезжают на дату). Тело — выделяемый переносимый текст.
 final class HoverCard: NSView {
     private let actions: NSStackView
 

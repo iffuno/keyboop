@@ -17,28 +17,43 @@ final class AppBanner {
     private var restX: CGFloat = 0          // x в покое (для свайпа/возврата)
 
     /// Показать баннер. `actions` пусто → инфо-тост. `autoDismiss` > 0 → сам скроется через N сек.
-    /// Что делать, если человек закрыл плашку крестиком. Ставится тем, кто её показал.
+    /// `onClose` — только явный × (для update-баннера это именно «отказаться»).
+    /// `onAbandon` — вопрос исчез без ответа: ×, свайп, замена, таймер или программный dismiss.
     var onClose: (() -> Void)?
+    private var onAbandon: (() -> Void)?
 
     func show(title: String, body: String, actions: [Action] = [], autoDismiss: TimeInterval = 0,
-              onClose: (() -> Void)? = nil) {
-        self.onClose = onClose
-        DispatchQueue.main.async { self.present(title: title, body: body, actions: actions, autoDismiss: autoDismiss) }
+              onClose: (() -> Void)? = nil, onAbandon: (() -> Void)? = nil) {
+        DispatchQueue.main.async {
+            self.present(title: title, body: body, actions: actions, autoDismiss: autoDismiss,
+                         onClose: onClose, onAbandon: onAbandon)
+        }
     }
 
     func dismiss() {
+        // Replacement/таймер/programmatic dismiss не означают явный отказ update-баннеру, поэтому
+        // `onClose` лишь забываем. Нейтральный lifecycle callback обучения при этом обязан сработать.
+        let abandon = onAbandon
+        onClose = nil
+        onAbandon = nil
         dismissTimer?.invalidate(); dismissTimer = nil
-        guard let p = panel else { return }
+        guard let p = panel else { abandon?(); return }
         panel = nil
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.18; p.animator().alphaValue = 0
         }, completionHandler: { p.orderOut(nil) })
+        abandon?()
     }
 
     // MARK: present
 
-    private func present(title: String, body: String, actions: [Action], autoDismiss: TimeInterval) {
+    private func present(title: String, body: String, actions: [Action], autoDismiss: TimeInterval,
+                         onClose newOnClose: (() -> Void)?, onAbandon newOnAbandon: (() -> Void)?) {
+        // Один panel на всё приложение: новая плашка заменяет старую. Сначала сообщаем владельцу
+        // старой, что ответа уже не будет, и только затем привязываем callback новой.
         dismiss(); dismissTimer?.invalidate()
+        onClose = newOnClose
+        onAbandon = newOnAbandon
         let (content, width, height) = makeContent(title: title, body: body, actions: actions, solidDarkBG: true)
 
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
@@ -97,7 +112,9 @@ final class AppBanner {
         let compact = actions.isEmpty
         let maxW: CGFloat = 420
         let pad: CGFloat = compact ? 14 : 18          // равные поля (сверху/снизу/слева)
-        let rightPad: CGFloat = compact ? 34 : 22     // справа чуть больше — под крестик
+        // Крестик занимает последние 28 pt панели; 34 pt оставляют ему ещё 6 pt воздуха и не дают
+        // длинному заголовку action-баннера зайти под кнопку закрытия.
+        let rightPad: CGFloat = 34
         let iconSize: CGFloat = compact ? 40 : 60
         let gap: CGFloat = compact ? 12 : 16
 
@@ -128,7 +145,9 @@ final class AppBanner {
         titleL.lineBreakMode = .byTruncatingTail
         let bodyL = NSTextField(labelWithString: body)
         bodyL.font = .systemFont(ofSize: 12.5); bodyL.textColor = .secondaryLabelColor
-        bodyL.lineBreakMode = .byWordWrapping; bodyL.maximumNumberOfLines = 2
+        // В action-баннере русский вопрос про исключение занимает три строки при минимальной
+        // ширине 340 pt. Лимит в две строки обрывал смысл ровно перед «переключал?».
+        bodyL.lineBreakMode = .byWordWrapping; bodyL.maximumNumberOfLines = compact ? 2 : 3
         bodyL.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let textCol = NSStackView(views: [titleL, bodyL]); textCol.orientation = .vertical
         textCol.alignment = .leading; textCol.spacing = 3
@@ -148,13 +167,15 @@ final class AppBanner {
         let row = NSStackView(views: [icon, rightCol]); row.orientation = .horizontal
         row.spacing = gap; row.alignment = .centerY
         row.translatesAutoresizingMaskIntoConstraints = false
-        row.edgeInsets = NSEdgeInsets(top: pad, left: pad, bottom: pad, right: rightPad)
         content.addSubview(row)
         NSLayoutConstraint.activate([
-            row.leadingAnchor.constraint(equalTo: content.leadingAnchor),
-            row.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            row.topAnchor.constraint(equalTo: content.topAnchor),
-            row.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+            // `NSStackView.edgeInsets` do not reliably contribute to the root view's fittingSize.
+            // The panel then received the rows' bare height and clipped the intended top/bottom air.
+            // Real container constraints make the padding part of the measured window geometry.
+            row.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: pad),
+            row.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -rightPad),
+            row.topAnchor.constraint(equalTo: content.topAnchor, constant: pad),
+            row.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -pad),
         ])
 
         // Ширина: с кнопками — фиксированные 420 (тексту есть где переноситься); тост — по контенту (до maxW).
@@ -222,6 +243,24 @@ final class AppBanner {
             // наоборот и тихо врал — визуальную проверку по нему делать было нельзя.
             actions: [.init(title: L10n.t("upd.now"), coral: false) {}, .init(title: L10n.t("upd.autoShort"), coral: true) {}],
             solidDarkBG: true)
+        render(content: content, width: width, height: height, to: path)
+    }
+
+    /// Тот же production-layout, которым рисуется вопрос обучения на отмене. Отдельный образец
+    /// нужен, потому что у него длиннее заголовок и текст — именно здесь незаметно пропали поля.
+    func renderLearnSample(to path: String) {
+        let (content, width, height) = makeContent(
+            title: String(format: L10n.t("learn.askTitle"), L10n.current == .ru ? "пример" : "sample"),
+            body: L10n.t("learn.askBody"),
+            actions: [
+                .init(title: L10n.t("learn.add"), coral: true) {},
+                .init(title: L10n.t("learn.no"), coral: false) {}
+            ],
+            solidDarkBG: true)
+        render(content: content, width: width, height: height, to: path)
+    }
+
+    private func render(content: NSView, width: CGFloat, height: CGFloat, to path: String) {
         content.appearance = NSAppearance(named: .darkAqua)
         content.frame = NSRect(x: 0, y: 0, width: width, height: height)
         content.layoutSubtreeIfNeeded()
@@ -243,6 +282,7 @@ final class AppBanner {
         case .ended, .cancelled, .failed:
             if tx > 60 {                                   // свайп достаточный → улетает вправо и закрывается
                 dismissTimer?.invalidate(); dismissTimer = nil
+                abandonOwner()
                 let win = p; panel = nil
                 NSAnimationContext.runAnimationGroup({ ctx in
                     ctx.duration = 0.16
@@ -264,6 +304,9 @@ final class AppBanner {
         // нажатие до нас или нет, и был ли под кнопкой обработчик.
         let h = actionHandlers[safe: s.tag]
         kbLog("баннер: нажата кнопка \(s.tag)\(h == nil ? " — обработчика нет!" : "")")
+        // Кнопка — явный ответ: ни ×-отказ, ни lifecycle-abandon здесь срабатывать не должны.
+        onClose = nil
+        onAbandon = nil
         dismiss(); h?()
     }
     @objc private func closeTapped() {
@@ -273,8 +316,17 @@ final class AppBanner {
         // перезапуске. Для приложения, которое имеет доступ к клавиатуре, это очень неприятно».
         // Он прав, и это вопрос доверия, а не удобства: закрыв окно, человек считает, что сказал
         // «нет», и обязан получить именно «нет». Кто показал плашку, тот и решает, что значит отказ.
-        let cb = onClose; onClose = nil
-        dismiss()
+        let explicitClose = onClose
+        onClose = nil
+        dismiss()           // вызывает нейтральный onAbandon, если он есть
+        explicitClose?()    // только × означает явный отказ владельцу onClose
+    }
+
+    /// Успешный свайп закрывает вопрос без ответа, но НЕ равен явному отказу update-баннеру.
+    private func abandonOwner() {
+        let cb = onAbandon
+        onClose = nil
+        onAbandon = nil
         cb?()
     }
 }

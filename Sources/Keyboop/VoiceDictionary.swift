@@ -14,10 +14,20 @@ import Foundation
 /// короткая запись цепляет однокоренные слова («вайп» превратит и «вайпер»), поэтому список
 /// пользовательский и видимый, а не зашитый внутрь.
 ///
-/// Чего словарь НЕ делает намеренно: не склоняет («кейбупом» станет «Keyboopом», а не «Keyboop'ом»),
-/// не угадывает похожие слова и не работает по звучанию. Всё это требует морфологии русского языка,
-/// то есть отдельного движка, а не списка из пяти строк. Человеку проще дописать вторую строку, чем
-/// разбираться, почему «умная» замена сработала там, где он её не просил.
+/// ⚠️ С 28.08.2026 ЕСТЬ ВТОРОЙ ПРОХОД, НЕЧЁТКИЙ, И У НЕГО ДРУГАЯ СЕМАНТИКА (задача 192). Точное
+/// совпадение осталось префиксным, как описано выше. Нечёткое включается, только если точное
+/// ничего не нашло, и сравнивает СЛОВО ЦЕЛИКОМ (или столько слов, сколько в образце). Причина
+/// числовая: замер по корпусу в 163 тысячи русских слов показал, что префиксная нечёткость выводит
+/// под удар 1027 живых слов, а нечёткость по целому слову — 129, при том же выигрыше. Разбор и
+/// цифры — `Tools/VoiceFuzzySim.swift`, запуск `run-voicefuzzy.sh`.
+///
+/// Правило для человека формулируется одной фразой: **точное правится где угодно в начале слова,
+/// похожее — только если слово похоже целиком.**
+///
+/// Чего словарь НЕ делает намеренно: не склоняет («кейбупом» станет «Keyboopом», а не «Keyboop'ом»)
+/// и не работает по звучанию. Это требует морфологии русского языка, то есть отдельного движка, а
+/// не списка из пяти строк. Человеку проще дописать вторую строку, чем разбираться, почему «умная»
+/// замена сработала там, где он её не просил.
 final class VoiceDictionary {
     static let shared = VoiceDictionary()
     private let d = UserDefaults.standard
@@ -29,6 +39,13 @@ final class VoiceDictionary {
     /// Готовые к матчу иглы: нормализованный образец → замена. Отсортированы по длине убыванием,
     /// чтобы «клауд код» побеждало «клауд», а не наоборот.
     private var needles: [(pattern: [Character], replacement: String)] = []
+    /// Те же иглы, но пригодные для НЕЧЁТКОГО совпадения: только с ненулевым допуском, и с числом
+    /// слов в образце — нечёткость сравнивает слово (или столько слов, сколько в образце) ЦЕЛИКОМ.
+    /// `fuzzyNeedles` — компактный hot-path prefilter; `fullFuzzyNeedles` вызывается только после
+    /// его попадания и сохраняет точный выбор/неоднозначность исходного полного набора.
+    private var fuzzyNeedles: [(pattern: [Character], words: Int, tol: Int, replacement: String)] = []
+    private var fullFuzzyNeedles: [(pattern: [Character], words: Int, tol: Int, replacement: String)] = []
+    private var maxFuzzyWords = 0
     /// Первые слова замен, в которых есть заглавная. Их не трогает «не начинать с заглавной»:
     /// человек написал «Keyboop» с большой буквы осознанно, и настройка про обычные предложения
     /// не должна отменять его выбор.
@@ -71,6 +88,7 @@ final class VoiceDictionary {
       + chatGPTHeardAs.map { ($0, "ChatGPT") }
       + usdtHeardAs.map { ($0, "USDT") }
       + vpnHeardAs.map { ($0, "VPN") }
+      + zCodeHeardAs.map { ($0, "ZCode") }
       + aiNamesHeardAs
 
     /// Как распознавание слышит «Claude Code». Собрано как произведение слышимых «Клодов» на слышимые
@@ -161,6 +179,18 @@ final class VoiceDictionary {
         "ви пи эн", "вэ пэ эн", "в пэ эн", "ви пи ен", "ви пиэн",
     ]
 
+    /// Как распознавание пишет «Z-код» (просьба автора 30.08.2026). Латинскую Z модель обычно
+    /// оставляет буквой или разворачивает в русское «зет», а `code` независимо выбирает кириллицей
+    /// или латиницей. Пробел в образце уже покрывает пробел, дефис, длинное тире и их повторы.
+    ///
+    /// Эти четыре формы намеренно ТОЛЬКО ТОЧНЫЕ. Для `z код` одна разрешённая fuzzy-правка была бы
+    /// слишком широкой: например, выдумала бы ZCode из совершенно другого «x код». Здесь вариантов
+    /// мало и они известны, поэтому догадка не нужна.
+    static let zCodeHeardAs: [String] = [
+        "z код", "зет код", "z code", "зет code",
+    ]
+    private static let exactOnlySeedPatterns = Set(zCodeHeardAs.map { fold($0) })
+
     /// Имена нейросетей, которыми автор пользуется каждый день (просьба 18.08.2026). Тот же класс,
     /// что Claude Code: иностранное имя, которого в словаре модели нет, поэтому она пишет его как
     /// слышит — «сидэнс», «хигсвилд», а иногда латиницей, но врозь и со строчной: «Sea Dance»,
@@ -199,8 +229,8 @@ final class VoiceDictionary {
     /// достанутся только тем, кто поставит приложение впервые. Сегодня это уже второй такой заход
     /// (Claude Code 12.08, ChatGPT 13.08), значит будет и третий.
     private func mergeSeed2() {
-        // Четвёртый заход: USDT (18.08). Номер обязан расти при каждом пополнении заготовок.
-        let mark = "voiceDictSeed8"   // + Klink → Kling (20.08)
+        // Девятый заход: ZCode (30.08). Номер обязан расти при каждом пополнении заготовок.
+        let mark = "voiceDictSeed9"   // + Z-код → ZCode (30.08)
         guard !d.bool(forKey: mark) else { return }
         d.set(true, forKey: mark)
         guard !orderedPairs.isEmpty else { return }   // пустой список человек очистил намеренно
@@ -243,12 +273,72 @@ final class VoiceDictionary {
     }
 
     private func rebuildIndex() {
-        needles = orderedPairs.compactMap { (h, w) in
+        let indexed = orderedPairs.enumerated().compactMap { index, pair ->
+            (pattern: [Character], replacement: String, order: Int)? in
+            let (h, w) = pair
             let f = Self.fold(h.trimmingCharacters(in: .whitespaces))
             guard !f.isEmpty, !w.isEmpty else { return nil }
-            return (Array(f), w)
+            return (Array(f), w, index)
         }
-        .sorted { $0.pattern.count > $1.pattern.count }
+        needles = indexed.sorted {
+            if $0.pattern.count != $1.pattern.count { return $0.pattern.count > $1.pattern.count }
+            return $0.order < $1.order
+        }.map { ($0.pattern, $0.replacement) }
+        let fuzzyIndexed = indexed.filter {
+            !Self.exactOnlySeedPatterns.contains(String($0.pattern))
+        }
+        fullFuzzyNeedles = fuzzyIndexed.compactMap { n in
+            let tolerance = Self.fuzzyTolerance(n.pattern.count)
+            guard tolerance > 0 else { return nil }
+            return (n.pattern, max(n.pattern.split(separator: " ").count, 1),
+                    tolerance, n.replacement)
+        }
+
+        // 222 видимые записи засева НЕЛЬЗЯ удалять: старые и пользовательские варианты обязаны
+        // по-прежнему работать как ТОЧНЫЕ ПРЕФИКСНЫЕ замены. Схлопываем только второй, нечёткий
+        // индекс. Внутри одной замены оставляем опорный вариант, если уже выбранная опора не
+        // дотягивается до него своим допуском И сравнивает столько же слов. Последнее важно:
+        // «хиггс филд» близко к «хиггсфилд» по Левенштейну, но двухсловная опора физически не
+        // проверяется на однословном кандидате. На заводском засеве hot-path проходит 89 опор вместо
+        // 207 пригодных по длине. Если опора заметила возможное совпадение, ответ перепроверяется
+        // полным набором: так сокращение не меняет ни победителя, ни решение «неоднозначно».
+        // Все 222 точные записи остаются на месте и в настройках.
+        var groups: [String: [(pattern: [Character], replacement: String, order: Int)]] = [:]
+        var groupOrder: [String] = []
+        for n in fuzzyIndexed {
+            if groups[n.replacement] == nil { groupOrder.append(n.replacement) }
+            groups[n.replacement, default: []].append(n)
+        }
+        var compact: [(pattern: [Character], words: Int, tol: Int,
+                       replacement: String, order: Int)] = []
+        for replacement in groupOrder {
+            let candidates = (groups[replacement] ?? []).sorted {
+                if $0.pattern.count != $1.pattern.count { return $0.pattern.count > $1.pattern.count }
+                return $0.order < $1.order
+            }
+            var anchors: [(pattern: [Character], replacement: String, order: Int)] = []
+            for candidate in candidates {
+                let covered = anchors.contains { anchor in
+                    guard anchor.pattern.split(separator: " ").count
+                            == candidate.pattern.split(separator: " ").count else { return false }
+                    let tolerance = Self.fuzzyTolerance(anchor.pattern.count)
+                    return tolerance > 0
+                        && Self.editDistance(anchor.pattern, candidate.pattern, upTo: tolerance) <= tolerance
+                }
+                if !covered { anchors.append(candidate) }
+            }
+            for anchor in anchors {
+                let tolerance = Self.fuzzyTolerance(anchor.pattern.count)
+                guard tolerance > 0 else { continue }
+                let words = max(anchor.pattern.split(separator: " ").count, 1)
+                compact.append((anchor.pattern, words, tolerance, anchor.replacement, anchor.order))
+            }
+        }
+        fuzzyNeedles = compact.sorted {
+            if $0.pattern.count != $1.pattern.count { return $0.pattern.count > $1.pattern.count }
+            return $0.order < $1.order
+        }.map { ($0.pattern, $0.words, $0.tol, $0.replacement) }
+        maxFuzzyWords = fuzzyNeedles.map { $0.words }.max() ?? 0
         caseKeepers = Set(orderedPairs.compactMap { (_, w) in
             guard let first = w.split(separator: " ").first, first.contains(where: { $0.isUppercase })
             else { return nil }
@@ -258,6 +348,83 @@ final class VoiceDictionary {
 
     /// Слово написано в словаре с заглавной и должно её сохранить.
     func keepsCase(_ word: String) -> Bool { caseKeepers.contains(word) }
+
+    // MARK: - Нечёткое совпадение (задача 192)
+
+    /// Два независимых предохранителя: готовность данных И проверка отдельного слова. Одного
+    /// замыкания недостаточно — если words_ru/words_en не прочитались, их Set всё равно содержит
+    /// ExtraWords, и «нет в урезанном Set» ошибочно означало бы «можно нечётко переписать».
+    /// Поэтому готовность по умолчанию false и проверяется ДО любого fuzzy-кандидата.
+    private static var fuzzyLanguageDataReady = false
+    private static var isWordOfTheLanguage: (String) -> Bool = { _ in false }
+
+    /// Подключить языковой предохранитель. `isReady=false` полностью отключает нечёткость, даже если
+    /// переданное замыкание отвечает false для каждого слова. Это fail-closed граница между
+    /// загрузчиком ресурсов и независимым `VoiceDictionary`; стенд подменяет её напрямую.
+    static func configureFuzzyLanguageGuard(
+        isReady: Bool,
+        isWordOfTheLanguage: @escaping (String) -> Bool
+    ) {
+        fuzzyLanguageDataReady = isReady
+        self.isWordOfTheLanguage = isWordOfTheLanguage
+    }
+
+    /// `LayoutData.isLoaded` исторически проверяет ещё триграммы, но не умеет отличить пустой
+    /// words-файл от маленького набора ExtraWords. Полные комплектные словари на два порядка больше
+    /// этого порога (сейчас 163k RU / 59k EN); отсутствие или битый JSON fail-closed отключает fuzzy.
+    static func fuzzyLanguageResourcesAreReady(
+        layoutDataLoaded: Bool,
+        wordsRuCount: Int,
+        wordsEnCount: Int
+    ) -> Bool {
+        layoutDataLoaded && wordsRuCount > 1_000 && wordsEnCount > 1_000
+    }
+
+    /// Видно стенду без раскрытия самих игл. Exact остаётся 222 на заводском засеве, hot-path fuzzy
+    /// после безопасного схлопывания — 89, полный верификатор — 207 и работает только после hit.
+    var indexCounts: (exact: Int, fuzzy: Int, fuzzyVerification: Int) {
+        (needles.count, fuzzyNeedles.count, fullFuzzyNeedles.count)
+    }
+
+    /// Сколько правок прощаем образцу длины n.
+    ///
+    /// ⚠️ ЦИФРЫ ВЫБРАНЫ ЗАМЕРОМ, А НЕ НА ГЛАЗ (`run-voicefuzzy.sh`, 28.08.2026, корпус 163k русских
+    /// и 60k английских слов). У соседей порог мягче (5–8 → len/3), и на нашем засеве он выводит под
+    /// удар 129 живых слов против 13 у этой политики. После учёта реального числа слов в образце
+    /// средняя политика сокращает hot-path prefilter 207→89 (мягкая — до 66).
+    ///
+    /// Короче пяти символов нечёткости нет вовсе: «юсдт», «впн», «апи» это четыре символа и меньше,
+    /// у них любая правка меняет слово целиком.
+    static func fuzzyTolerance(_ n: Int) -> Int {
+        if n < 5 { return 0 }
+        return n <= 8 ? 1 : 2
+    }
+
+    /// Расстояние Левенштейна с ранним отказом: считать точное значение незачем, нужен ответ
+    /// «влезает ли в допуск». Полоса вокруг диагонали шириной `limit` — за её пределами ответ
+    /// заведомо больше допуска.
+    static func editDistance(_ a: [Character], _ b: [Character], upTo limit: Int) -> Int {
+        let n = a.count, m = b.count
+        if abs(n - m) > limit { return limit + 1 }
+        if n == 0 { return m }
+        var prev = Array(0...m)
+        var cur = [Int](repeating: 0, count: m + 1)
+        for i in 1...n {
+            cur[0] = i
+            var rowMin = i
+            let lo = max(1, i - limit), hi = min(m, i + limit)
+            if lo > 1 { cur[lo - 1] = limit + 1 }
+            for j in lo...hi {
+                let cost = a[i - 1] == b[j - 1] ? 0 : 1
+                cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+                rowMin = min(rowMin, cur[j])
+            }
+            if hi < m { cur[hi + 1] = limit + 1 }
+            if rowMin > limit { return limit + 1 }
+            swap(&prev, &cur)
+        }
+        return prev[m]
+    }
 
     // MARK: - Подсказка распознаванию
 
@@ -306,6 +473,7 @@ final class VoiceDictionary {
         var out = String(); out.reserveCapacity(text.count + 16)
         var i = 0
         var hits = 0
+        var fuzzyHits = 0
         while i < src.count {
             // Замена начинается ТОЛЬКО с начала слова: иначе «код» внутри «кодировки» жил бы своей
             // жизнью, а человек не смог бы предсказать ни одной замены.
@@ -316,14 +484,123 @@ final class VoiceDictionary {
                 hits += 1
                 continue
             }
+            // Нечёткое — ТОЛЬКО когда точное не нашлось: точное дешевле и предсказуемее, и пока оно
+            // срабатывает, гадать не о чем.
+            if atWordStart, let (end, replacement) = fuzzyMatch(src, from: i) {
+                out += cased(replacement, likeSourceAt: src, i)
+                i = end
+                hits += 1
+                fuzzyHits += 1
+                continue
+            }
             out.append(src[i])
             i += 1
         }
-        if hits > 0 { kbLog("словарь диктовки: заменено \(hits)") }
+        if hits > 0 { kbLog("словарь диктовки: заменено \(hits)\(fuzzyHits > 0 ? " (из них нечётко \(fuzzyHits))" : "")") }
         return out
     }
 
     private func isWordChar(_ c: Character) -> Bool { c.isLetter || c.isNumber }
+
+    /// Разрыв слов. Дефис для нас то же, что пробел — см. разбор в `match`.
+    private func isBreak(_ c: Character) -> Bool { c.isWhitespace || c == "-" || c == "–" }
+
+    // MARK: - Нечёткое совпадение
+
+    /// НЕЧЁТКОЕ СОВПАДЕНИЕ ИДЁТ ПО СЛОВУ ЦЕЛИКОМ, А НЕ ОТ НАЧАЛА СЛОВА, И ЭТО ГЛАВНОЕ ОТЛИЧИЕ ОТ
+    /// ТОЧНОГО. Разница не вкусовая, она измерена (`run-voicefuzzy.sh`, 28.08.2026): на нашем засеве
+    /// префиксная нечёткость выводит под удар 1027 живых слов, а нечёткость по целому слову — 129,
+    /// то есть в восемь раз меньше при том же выигрыше. Причина понятна: у образца «сидрем» с
+    /// допуском 2 в русском языке сотни слов, начинающихся похоже («систематичность», «стремнина»,
+    /// «задремывавший»), и все они стали бы кандидатами.
+    ///
+    /// Точное совпадение при этом остаётся префиксным, как было: «вайп» обязано чинить и
+    /// «вайпкодинг» (задача 126). То есть правило для человека простое: **точное правится где угодно
+    /// в начале слова, похожее — только если слово похоже целиком.**
+    ///
+    /// Побеждает наименьшее расстояние; при равенстве — более длинный образец, как и в точном.
+    private func fuzzyMatch(_ src: [Character], from i: Int) -> (Int, String)? {
+        // Отдельный ready-бит обязателен: пустой/битый words-файл оставляет в LayoutData набор
+        // ExtraWords, поэтому по одному `contains` отличить полный словарь от обломка нельзя.
+        guard Self.fuzzyLanguageDataReady, !fuzzyNeedles.isEmpty else { return nil }
+        let ahead = wordsAhead(src, from: i, max: maxFuzzyWords)
+        guard !ahead.isEmpty else { return nil }
+
+        // Каждая удалённая из hot-path игла B покрыта опорой A: d(A,B) ≤ tol(A), число слов равно.
+        // Если B могла совпасть с вводом X, то по неравенству треугольника
+        // d(A,X) ≤ tol(A)+tol(B) ≤ tol(A)+2. Поэтому расширенный prefilter НЕ теряет ни одного
+        // полного кандидата, а точный ответ затем выбирается по исходным 207 иглам.
+        let possible = fuzzyNeedles.contains { n in
+            guard n.words <= ahead.count else { return false }
+            let cand = ahead[n.words - 1]
+            guard !allWordsOfTheLanguage(cand.text) else { return false }
+            let prefilterTolerance = n.tol + 2       // максимальный production-допуск любой иглы
+            guard abs(cand.text.count - n.pattern.count) <= prefilterTolerance else { return false }
+            return Self.editDistance(n.pattern, cand.text, upTo: prefilterTolerance)
+                <= prefilterTolerance
+        }
+        guard possible else { return nil }
+
+        var best: (d: Int, len: Int, end: Int, replacement: String)?
+        var bestIsAmbiguous = false
+        for n in fullFuzzyNeedles {
+            guard n.words <= ahead.count else { continue }
+            let cand = ahead[n.words - 1]
+            guard abs(cand.text.count - n.pattern.count) <= n.tol else { continue }
+            // ⚠️ ПРЕДОХРАНИТЕЛЬ, БЕЗ КОТОРОГО ВСЁ ОСТАЛЬНОЕ БЕССМЫСЛЕННО: живое слово языка не
+            // трогаем никогда. «сиденс» с допуском 1 дотягивается до «сидение», «сиденья»,
+            // «сиденье» — это обычная русская речь, и переписать её в «Seedance» недопустимо.
+            // Для многословного образца условие «все слова живые»: «когда код» защищено, а
+            // «клоуд кот» нет, потому что «клоуд» словом не является.
+            if allWordsOfTheLanguage(cand.text) { continue }
+            let d = Self.editDistance(n.pattern, cand.text, upTo: n.tol)
+            guard d <= n.tol else { continue }
+            if best == nil || d < best!.d || (d == best!.d && n.pattern.count > best!.len) {
+                best = (d, n.pattern.count, cand.end, n.replacement)
+                bestIsAmbiguous = false
+            } else if d == best!.d, n.pattern.count == best!.len,
+                      n.replacement != best!.replacement {
+                // Две одинаково хорошие догадки с разными ответами — это не повод выбирать по
+                // случайному порядку словаря. Exact уже проверен выше; fuzzy здесь fail-closed.
+                bestIsAmbiguous = true
+            }
+        }
+        guard let b = best, !bestIsAmbiguous else { return nil }
+        return (b.end, b.replacement)
+    }
+
+    /// Каждое ли слово кандидата — живое слово языка. Пустой кандидат живым не считаем.
+    private func allWordsOfTheLanguage(_ text: [Character]) -> Bool {
+        let parts = text.split(separator: " ")
+        guard !parts.isEmpty else { return false }
+        return parts.allSatisfy { Self.isWordOfTheLanguage(String($0)) }
+    }
+
+    /// Слова, начинающиеся в позиции `i`, нарастающим итогом: `[0]` это первое слово, `[1]` —
+    /// «первое второе» и так далее. Нормализованы тем же `fold`, что и образцы, а `end` указывает в
+    /// ИСХОДНЫЙ текст, чтобы замена отрезала ровно столько, сколько прочитала.
+    private func wordsAhead(_ src: [Character], from i: Int, max maxWords: Int) -> [(text: [Character], end: Int)] {
+        guard maxWords > 0 else { return [] }
+        var out: [(text: [Character], end: Int)] = []
+        var acc: [Character] = []
+        var si = i
+        while out.count < maxWords {
+            var w: [Character] = []
+            while si < src.count, isWordChar(src[si]) {
+                w.append(contentsOf: Self.fold(String(src[si])))
+                si += 1
+            }
+            if w.isEmpty { break }
+            if !acc.isEmpty { acc.append(" ") }
+            acc.append(contentsOf: w)
+            out.append((acc, si))
+            var bi = si
+            while bi < src.count, isBreak(src[bi]) { bi += 1 }
+            if bi == si { break }        // разрыва нет — следующего слова тоже
+            si = bi
+        }
+        return out
+    }
 
     /// Первое (самое длинное) совпадение образца в позиции `i`. Возвращает конец совпадения.
     private func match(_ src: [Character], from i: Int) -> (Int, (pattern: [Character], replacement: String))? {
@@ -340,7 +617,6 @@ final class VoiceDictionary {
                     // вещи как придётся: «клауд код», «клауд-код», «вайб кодинг», «вайб-кодинг». Без
                     // этого на каждый вариант написания заводилась бы отдельная строка словаря, то
                     // есть человек вручную перечислял бы то, что мы и так можем считать одинаковым.
-                    func isBreak(_ c: Character) -> Bool { c.isWhitespace || c == "-" || c == "–" }
                     guard si < src.count, isBreak(src[si]) else { ok = false; break }
                     while si < src.count, isBreak(src[si]) { si += 1 }
                     pi += 1

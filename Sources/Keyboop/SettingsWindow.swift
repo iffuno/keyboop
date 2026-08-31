@@ -315,6 +315,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         sidebar.onSelect = { [weak self] s in self?.detail.show(s) }
         detail.observeCapsRemap()
+        if ReleaseFeatures.slap { detail.observeSlapAvailability() }
         detail.onLanguageChanged = { [weak self] in
             // Тоже откладываем: приходит из action popup'а языка, а reshow сносит сам popup.
             DispatchQueue.main.async {
@@ -1110,6 +1111,9 @@ final class DetailVC: NSViewController {
     private let column = FlippedView()           // колонка контента с ограниченной шириной
     private var contentStack: NSStackView?
     private var currentSection: SettingsSection = .switching
+    /// Несколько runtime-сигналов жеста могут прийти внутри одного action тумблера. Схлопываем их
+    /// в одну безопасную пересборку на следующем проходе main loop.
+    private var slapReshowPending = false
     /// Ширина колонки. Один и тот же класс обслуживает и разделы Pro, и корневой простой экран,
     /// потому что все кирпичи строк (`card`, `switchRow`, `controlRow`, `settingRow`) приватные:
     /// отдельный контроллер потребовал бы вынести их наружу, то есть переписать работающий Pro
@@ -1397,6 +1401,16 @@ final class DetailVC: NSViewController {
 
     func reshow() { showingRoot ? showRoot() : show(currentSection) }
 
+    private func scheduleSlapReshow() {
+        guard !slapReshowPending else { return }
+        slapReshowPending = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.slapReshowPending = false
+            self.reshow()
+        }
+    }
+
     /// Высота собранного корневого экрана. Считает сам стек: строк мало, все известны, и гадать
     /// «на бумаге» тут незачем, в отличие от Pro, где высота берётся по самому длинному разделу.
     /// Сколько высоты съедает прозрачный заголовок окна. Окно у нас `.fullSizeContentView`, то есть
@@ -1482,6 +1496,19 @@ final class DetailVC: NSViewController {
                                               object: nil, queue: .main) { [weak self] _ in
             guard let self, self.currentSection == .switching else { return }
             self.reshow()
+        }
+    }
+
+    /// Первый живой HID-report приходит уже после того, как человек включил жест. Обновляем только
+    /// открытый раздел «Общие», не дёргая остальные формы и недонабранные поля.
+    func observeSlapAvailability() {
+        NotificationCenter.default.addObserver(forName: .keyboopSlapAvailabilityChanged,
+                                              object: nil, queue: .main) { [weak self] _ in
+            guard let self, self.currentSection == .general else { return }
+            // `.checking` приходит синхронно из action тумблера. Не сносим сам NSSwitch, пока
+            // AppKit ещё выполняет его action; соседние slap-handler-ы по той же причине откладывают
+            // перестройку на следующий проход main loop.
+            self.scheduleSlapReshow()
         }
     }
     /// Дешёвая сигнатура файлов моделей на диске (имя+размер+mtime). Меняется ровно тогда, когда
@@ -2324,9 +2351,9 @@ final class DetailVC: NSViewController {
             sub(L10n.t("priv.body")),
             group(2),
             sub(L10n.t("priv.body2")),
-            // ⚠️ ВТОРОЙ ПРОЦЕСС НАЗЫВАЕМ САМИ (задача 96). Строка появляется, только когда сторож
-            // реально нужен, то есть когда мгновенное переключение висит на 🌐. Человек, увидевший
-            // в Мониторинге системы два «Keyboop», должен найти объяснение у нас, а не гадать —
+            // ⚠️ ВТОРОЙ ПРОЦЕСС НАЗЫВАЕМ САМИ (задачи 96 + 35). Теперь он спит всю сессию,
+            // поэтому объяснение тоже постоянно. Человек, увидевший в Мониторинге системы два
+            // «Keyboop», должен найти объяснение у нас, а не гадать —
             // необъяснённый второй процесс у программы, которая читает клавиатуру, выглядит ровно
             // так, как выглядят вещи, из-за которых люди боятся ставить переключатели раскладки.
             globeGuardNote(),
@@ -2355,10 +2382,10 @@ final class DetailVC: NSViewController {
         ])
     }
 
-    /// Строка про сторожа клавиши 🌐 — только когда он живёт (см. `buildPrivacy`).
+    /// Объединённый сторож живёт всю сессию приложения — показываем его честно всегда.
     private func globeGuardNote() -> NSView {
-        guard settings.instantSwitchEnabled, settings.instantSwitchMode == "globe" else { return group(0) }
-        return vstack([group(2), sub(L10n.t("priv.guard"))])
+        let key = ReleaseFeatures.slap ? "priv.guard" : "priv.guardNoSlap"
+        return vstack([group(2), sub(L10n.t(key))])
     }
 
     /// Общие — настройки уровня приложения: язык интерфейса, автозапуск, доступ Accessibility.
@@ -2425,12 +2452,24 @@ final class DetailVC: NSViewController {
         iconSeg.selectedSegment = iconStyleKeys.firstIndex(of: settings.menuBarStyle) ?? 1
         iconSeg.target = self; iconSeg.action = #selector(iconStyleSegChanged(_:))
 
-        // БЫСТРОЕ ДЕЙСТВИЕ ПРАВЫМ КЛИКОМ (задача 21). Порядок пунктов не случайный: первым стоит
-        // умолчание, дальше по убыванию пользы, как договорились с автором 05.08.
+        // БЫСТРЫЕ ДЕЙСТВИЯ: правый клик сохраняет прежнее поведение и storage, а шлепок получает
+        // собственные enable/action/sound. Списки различаются намеренно: клик по status item забирает
+        // фокус у чужого поля, поэтому ручное исправление доступно только жесту.
         let quickPop = NSPopUpButton()
-        quickPop.addItems(withTitles: quickActionKeys.map { L10n.t("quick." + $0) })
-        quickPop.selectItem(at: quickActionKeys.firstIndex(of: settings.quickAction) ?? 0)
+        quickPop.addItems(withTitles: quickActionOptions.map { L10n.t($0.l10nKey) })
+        quickPop.selectItem(at: quickActionOptions.firstIndex { $0.rawValue == settings.quickAction } ?? 0)
         quickPop.target = self; quickPop.action = #selector(quickActionChanged(_:))
+
+        let slapPop = NSPopUpButton()
+        slapPop.addItems(withTitles: slapActionOptions.map { L10n.t($0.l10nKey) })
+        slapPop.selectItem(at: slapActionOptions.firstIndex(of: settings.slapAction) ?? 0)
+        slapPop.target = self; slapPop.action = #selector(slapActionChanged(_:))
+
+        let slapSensitivityPop = NSPopUpButton()
+        slapSensitivityPop.addItems(withTitles: slapSensitivityOptions.map { L10n.t($0.l10nKey) })
+        slapSensitivityPop.selectItem(at: slapSensitivityOptions.firstIndex(of: settings.slapSensitivity) ?? 0)
+        slapSensitivityPop.target = self
+        slapSensitivityPop.action = #selector(slapSensitivityChanged(_:))
 
         let pausePop = NSPopUpButton()
         pausePop.addItems(withTitles: pauseLenMinutes.map(Pause.lengthLabel))
@@ -2441,21 +2480,56 @@ final class DetailVC: NSViewController {
         // Пункт исчезает из строки меню, только если убраны И значок, И индикатор языка: при
         // скрытом значке, но включённом языке в строке остаётся «RU/EN», и правый клик по нему
         // прекрасно работает. Гасить функцию в этом случае значило бы соврать.
-        let quickOK = !(settings.menuBarStyle == "hidden" && !settings.menuBarShowLanguage)
-        Self.setEnabledDeep(quickPop, quickOK)
-        Self.setEnabledDeep(pausePop, quickOK)
+        let rightClickAvailable = !(settings.menuBarStyle == "hidden" && !settings.menuBarShowLanguage)
+        Self.setEnabledDeep(quickPop, rightClickAvailable)
 
-        // Кнопка «i» остаётся живой даже когда строка приглушена: именно из неё человек и узнает,
-        // ПОЧЕМУ недоступно. Приглушённая строка без объяснения читается как поломка.
+        let slapSubtitle: String = {
+            guard settings.slapEnabled else { return L10n.t("quick.slapSub") }
+            switch settings.slapAvailability {
+            case .available:   return L10n.t("quick.slapReady")
+            case .unavailable: return L10n.t("quick.slapUnavailable")
+            case .checking, .disabled: return L10n.t("quick.slapChecking")
+            }
+        }()
+        // Кнопка «i» у правого клика остаётся живой даже когда строка приглушена: именно из неё
+        // человек узнает, почему действие сейчас недоступно.
         var quickRows: [NSView] = [
-            controlRow(L10n.t("quick.action"), quickPop, enabled: quickOK,
-                       help: L10n.t(quickOK ? "quick.help" : "quick.helpOff"), key: "quick.action")
+            controlRow(L10n.t("quick.rightClick"), quickPop, enabled: rightClickAvailable,
+                       help: L10n.t(rightClickAvailable ? "quick.help" : "quick.helpOff"),
+                       key: "quick.rightClick")
         ]
-        // «Сколько молчать» показываем ТОЛЬКО у паузы: остальным действиям эта строка не нужна и
-        // только засоряет раздел. Тот же приём, что у зависимых настроек в других разделах.
-        if settings.quickAction == "pause" {
-            quickRows.append(controlRow(L10n.t("quick.pauseLen"), pausePop, enabled: quickOK,
+        if ReleaseFeatures.slap {
+            quickRows.append(contentsOf: [
+                switchRow(L10n.t("quick.slap"), slapSubtitle, settings.slapEnabled,
+                          #selector(toggleSlap), key: "quick.slap"),
+                controlRow(L10n.t("quick.slapAction"), slapPop, enabled: settings.slapEnabled,
+                           key: "quick.slapAction")
+            ])
+            // Пока жест выключен, порог не нужен вовсе. При включении появляются заводская
+            // «Сбалансированная» и более отзывчивая «Высокая» — без неясного числового слайдера.
+            if settings.slapEnabled {
+                quickRows.append(controlRow(L10n.t("quick.sensitivity"), slapSensitivityPop,
+                                            key: "quick.sensitivity"))
+            }
+        }
+
+        // Длительность общая для обоих источников. Видимость правого клика не должна гасить её,
+        // когда «Не мешать» выбрано у включённого шлепка.
+        let pauseByRightClick = settings.quickAction == QuickAction.pause.rawValue
+        let pauseBySlap = ReleaseFeatures.slap
+            && settings.slapEnabled && settings.slapAction == .pause
+        if pauseByRightClick || pauseBySlap {
+            let pauseAvailable = (pauseByRightClick && rightClickAvailable)
+                || (pauseBySlap && settings.slapEnabled)
+            quickRows.append(controlRow(L10n.t("quick.pauseLen"), pausePop, enabled: pauseAvailable,
                                         key: "quick.pauseLen"))
+        }
+        // Тумблер показывает сохранённое «вкл», даже пока сам жест выключен: при включении шлепка
+        // звук не должен неожиданно менять заранее выбранное состояние.
+        if ReleaseFeatures.slap {
+            quickRows.append(switchRow(L10n.t("quick.slapSound"), nil, settings.slapSoundEnabled,
+                                       #selector(toggleSlapSound), enabled: settings.slapEnabled,
+                                       key: "quick.slapSound"))
         }
 
         var general: [NSView] = [
@@ -2483,7 +2557,7 @@ final class DetailVC: NSViewController {
             sectionTitle(L10n.t("quick.title")),
             card(quickRows),
             group(2),
-            hint(L10n.t("quick.sub")),
+            hint(L10n.t(ReleaseFeatures.slap ? "quick.sub" : "quick.subNoSlap")),
         ]
         if settings.menuBarStyle == "hidden" {
             // Значок скрыт — всегда объясняем, как добраться до приложения. Текст зависит от языка:
@@ -2745,13 +2819,33 @@ final class DetailVC: NSViewController {
         settings.snippetPickModifiers = preset.2
     }
 
-    /// Порядок = порядок в меню выбора. Первый элемент это умолчание.
-    private let quickActionKeys = ["copyVoice", "pause", "dictate", "history", "settings"]
+    /// Порядок = порядок в меню выбора. Первый элемент это умолчание каждого источника.
+    private let quickActionOptions = QuickAction.rightClickOptions
+    private let slapActionOptions = QuickAction.slapOptions
+    private let slapSensitivityOptions = SlapSensitivity.allCases
     private var pauseLenMinutes: [Int] { Pause.lengths }   // список один на меню и настройки
 
     @objc private func quickActionChanged(_ p: NSPopUpButton) {
-        settings.quickAction = quickActionKeys[max(0, min(quickActionKeys.count - 1, p.indexOfSelectedItem))]
+        let i = max(0, min(quickActionOptions.count - 1, p.indexOfSelectedItem))
+        settings.quickAction = quickActionOptions[i].rawValue
         reshow()   // строка «Сколько молчать» есть только у паузы, раздел надо пересобрать
+    }
+    @objc private func slapActionChanged(_ p: NSPopUpButton) {
+        let i = max(0, min(slapActionOptions.count - 1, p.indexOfSelectedItem))
+        settings.slapAction = slapActionOptions[i]
+        reshow()
+    }
+    @objc private func slapSensitivityChanged(_ p: NSPopUpButton) {
+        let i = max(0, min(slapSensitivityOptions.count - 1, p.indexOfSelectedItem))
+        settings.slapSensitivity = slapSensitivityOptions[i]
+    }
+    @objc private func toggleSlap(_ s: NSSwitch) {
+        settings.slapEnabled = (s.state == .on)
+        // Перестройка меняет доступность соседних контролов; не сносим NSSwitch из его action.
+        scheduleSlapReshow()
+    }
+    @objc private func toggleSlapSound(_ s: NSSwitch) {
+        settings.slapSoundEnabled = (s.state == .on)
     }
     @objc private func pauseLenChanged(_ p: NSPopUpButton) {
         settings.pauseMinutes = pauseLenMinutes[max(0, min(pauseLenMinutes.count - 1, p.indexOfSelectedItem))]

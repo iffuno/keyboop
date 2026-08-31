@@ -755,6 +755,55 @@ final class EventTap {
     private func handleFlags(_ flags: CGEventFlags, keyCode: Int64) -> Bool {
         if HotkeyRecording.active { return false }   // идёт запись комбинации — не перехватываем (см. keyDown)
         let s = AppSettings.shared
+        // АРБИТРАЖ СТАРЫХ КОНФЛИКТНЫХ НАСТРОЕК (#195). До проверки `sameTrigger` человек мог
+        // сохранить и «конверсия = 2×⌥ + диктовка = правый ⌥», и точное совпадение «обе функции =
+        // правый ⌥». Менять такую настройку при обновлении молча нельзя, но и запускать ДВА действия
+        // одним физическим нажатием нельзя. Правило рантайма детерминированное:
+        // `instant → voice → conversion`. Точный односторонний modkey старшей функции владеет своей
+        // клавишей; конверсия уступает её и в `modkey`, и в широком `doubletap`. Поэтому в первой
+        // паре правый ⌥ остаётся диктовке, 2× левый ⌥ — конверсии; в точной паре правый ⌥ целиком
+        // остаётся диктовке, пока человек не разнесёт настройки после предупреждения.
+        // Перевод сюда не входит: это обычная клавиша + модификаторы и приходит через `.keyDown`,
+        // а не через `.flagsChanged`.
+        //
+        // Важно сбросить и первый тап: иначе последовательность «левый ⌥ → правый ⌥ (другая
+        // функция) → левый ⌥» склеилась бы в двойной тап через уже выполненное чужое действие.
+        // Не читаем настройки остальных функций в обычном (заводском combo) пути: handleFlags —
+        // горячий системный callback, и этот редкий legacy-предохранитель не должен утяжелять его.
+        var conversionModifierClaimedHere = false
+        if s.hotkeyMode == "doubletap" || s.hotkeyMode == "modkey" {
+            let conversionTouchesThisKey: Bool
+            if s.hotkeyMode == "doubletap" {
+                let mask = relevantMods(CGEventFlags(rawValue: s.hotkeyModifiers))
+                conversionTouchesThisKey = HotkeyGuard.maskCovers(keyCode: Int(keyCode), mask: mask)
+            } else {
+                conversionTouchesThisKey = keyCode == Int64(s.hotkeyKeyCode)
+            }
+            if conversionTouchesThisKey {
+                let instantOwnsThisModifier = s.instantSwitchEnabled
+                    && s.instantSwitchMode == "modkey"
+                    && s.instantSwitchKeyCode != 57   // Caps живёт в LANG1/keyDown, не здесь
+                    && keyCode == Int64(s.instantSwitchKeyCode)
+                    && HotkeyGuard.maskCovers(
+                        keyCode: s.instantSwitchKeyCode,
+                        mask: relevantMods(CGEventFlags(rawValue: s.instantSwitchMods)))
+                let voiceOwnsThisModifier = s.voiceEnabled
+                    && s.voiceHotkeyMode == "modkey"
+                    && keyCode == Int64(s.voiceHotkeyKeyCode)
+                    && HotkeyGuard.maskCovers(
+                        keyCode: s.voiceHotkeyKeyCode,
+                        mask: relevantMods(CGEventFlags(rawValue: s.voiceHotkeyModifiers)))
+                conversionModifierClaimedHere = instantOwnsThisModifier || voiceOwnsThisModifier
+            }
+        }
+        if conversionModifierClaimedHere {
+            if s.hotkeyMode == "doubletap" {
+                lastModTap = 0
+                otherKeyBetweenTaps = false
+            } else {
+                modkeyArmed = false
+            }
+        }
         // Щёлкнули НАСТОЯЩИЙ капс (клавиша не занята сменой языка — иначе она ремапнута и сюда не
         // приходит): ОС в этот момент сама зажигает/гасит лампочку под состояние капса, а у нас она
         // индикатор ЯЗЫКА. Возвращаем ей наш смысл (событие не трогаем — капс работает как обычно).
@@ -902,7 +951,23 @@ final class EventTap {
                     onMain { [weak self] in self?.handler?.handleVoiceEnd() }
                 }
             }
-            return false
+            // ⚠️ НЕ ВЫХОДИТЬ ИЗ ФУНКЦИИ ПОСЛЕ ЭТОГО БЛОКА (фикс 28.08.2026, отзыв #204). Здесь
+            // стоял `return false` — ТОТ ЖЕ ДЕФЕКТ, что чинили 30.07 в соседней ветке `combo`
+            // (репорт #55), где над блоком висит такое же предупреждение. В modkey ранний выход
+            // остался и делал недостижимым весь разбор хоткея конверсии ниже, как только keyCode
+            // совпал с клавишей диктовки.
+            //
+            // ЧТО ЭТО ЛОМАЛО НА ЗАВОДСКИХ НАСТРОЙКАХ, а не только у автора отзыва. Конверсия по
+            // умолчанию это combo ⌥⇧, диктовка — правый ⌥ (keyCode 61). Ветка combo — конечный
+            // автомат по флагам, и выстрел у неё на «отпущено всё». Жмём ⌥⇧ ПРАВЫМ Option,
+            // отпускаем ⇧, потом ⌥: последнее отпускание уходило в ранний выход, combo не видела
+            // пустой набор и НЕ СТРЕЛЯЛА. Отпустил в обратном порядке — сработало. Снаружи это
+            // «конверсия иногда не срабатывает», и виновата сторона Option плюс порядок пальцев.
+            //
+            // Для НОВЫХ назначений двойное срабатывание закрывает интерфейс
+            // (`HotkeyGuard.sameTrigger`). Для уже сохранённой пары 2×⌥ + правый ⌥ ниже действует
+            // явный runtime-арбитраж: точный voice-modkey выигрывает свою сторону. А провал вниз
+            // всё равно обязателен для заводской совместимой пары combo ⌥⇧ + правый ⌥.
         }
         // Voice combo (напр. ⌥⌘) — режима не существовало до 29.07, поэтому записать сочетание из
         // двух модификаторов было нельзя в принципе: рекордер предлагал одиночную клавишу, а движок
@@ -944,6 +1009,9 @@ final class EventTap {
         switch s.hotkeyMode {
         case "modkey":
             // Конкретная клавиша-модификатор (правый ⌥ = keyCode 61 и т.п.) — tap по отпусканию.
+            // Не возвращаемся из общего voice-блока выше: это сломало бы заводской combo ⌥⇧.
+            // Вместо этого гасим ТОЛЬКО точную legacy-коллизию modkey × modkey.
+            if conversionModifierClaimedHere { break }
             let mask = CGEventFlags(rawValue: s.hotkeyModifiers)
             guard !mask.isEmpty else { return false }
             if keyCode == Int64(s.hotkeyKeyCode) {
@@ -967,6 +1035,11 @@ final class EventTap {
             // Двойное нажатие модификатора (напр. 2× Shift) в окне ~300 мс без других клавиш.
             let mask = CGEventFlags(rawValue: s.hotkeyModifiers)
             guard !mask.isEmpty else { return false }
+            // Точный modkey другой включённой функции выигрывает свою физическую сторону. Это
+            // runtime-предохранитель для уже сохранённых конфликтов; новые назначения по-прежнему
+            // блокирует HotkeyGuard, а настройки здесь не переписываются. Сброс состояния сделан
+            // выше ДО раннего `return` instant-пути, поэтому правило одинаково для instant/voice.
+            if conversionModifierClaimedHere { break }
             let pressed = !flags.intersection(mask).isEmpty
             // ⚠️ ТОЛЬКО В ОДИНОЧКУ: чужой модификатор рядом отменяет жест (репорт #73, 03.08.2026).
             //
@@ -1043,7 +1116,13 @@ final class EventTap {
     /// Тот же путь, что и по хоткею, но из меню (быстрое действие, задача 21). Держим ОДНУ
     /// реализацию: развилка start/stop атомарна (VoiceGate.flip), и второй копии этой логики
     /// быть не должно, иначе рассинхрон вернётся.
-    func toggleVoiceExternally() { toggleVoice() }
+    func toggleVoiceExternally() {
+        // Меню и шлепок доступны даже когда сама функция выключена в настройках. Без этого guard
+        // VoiceGate флипался в active, а VoiceController.begin() сразу выходил — следующее нажатие
+        // считалось «остановкой» несуществующей записи. Живую запись остановить всё равно разрешаем.
+        guard AppSettings.shared.voiceEnabled || VoiceGate.isActive else { return }
+        toggleVoice()
+    }
 
     private func toggleVoice() {
         // Решение start/stop — СИНХРОННОЕ и атомарное (VoiceGate.flip), иначе быстрый второй тап
@@ -1084,12 +1163,13 @@ final class EventTap {
     }
 
     /// keyCode принадлежит модификатору из mask (левый ИЛИ правый).
+    ///
+    /// ⚠️ ТАБЛИЦА ОДНА НА ПРИЛОЖЕНИЕ И ЖИВЁТ В `HotkeyGuard` (28.08.2026). Копий было две, и они
+    /// разошлись: здесь двойной тап принимал ОБЕ клавиши модификатора, а проверка конфликтов в
+    /// интерфейсе сравнивала keyCode и считала левый ⌥ и правый ⌥ разными комбинациями. Отсюда
+    /// отзыв #204: «двойной ⌥» назначился поверх диктовки на правом ⌥ без единого предупреждения.
     private func keyCodeMatchesMask(_ kc: Int64, _ mask: CGEventFlags) -> Bool {
-        if mask.contains(.maskShift) && (kc == 56 || kc == 60) { return true }
-        if mask.contains(.maskAlternate) && (kc == 58 || kc == 61) { return true }
-        if mask.contains(.maskCommand) && (kc == 55 || kc == 54) { return true }
-        if mask.contains(.maskControl) && (kc == 59 || kc == 62) { return true }
-        return false
+        HotkeyGuard.maskCovers(keyCode: Int(kc), mask: mask)
     }
 
     private func relevantMods(_ flags: CGEventFlags) -> CGEventFlags {

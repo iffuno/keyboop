@@ -355,10 +355,50 @@ enum HotkeyGuard {
         }
     }
 
+    /// Модификатор → его физические клавиши, ОБЕ СТОРОНЫ. Единственная таблица на приложение.
+    ///
+    /// ⚠️ Копий было две — эта и `EventTap.keyCodeMatchesMask` — и они разошлись (отзыв #204).
+    /// Держим одну: расхождение между «как ловим» и «как проверяем конфликт» не видно ни в одном
+    /// тесте, а наружу выходит как «хоткей не работает и никто не предупредил».
+    /// Fn и ⇪ здесь намеренно нет: они бывают только `modkey`, где сравнивается точный keyCode.
+    static let modifierKeys: [(CGEventFlags, [Int])] = [
+        (.maskShift,     [56, 60]),
+        (.maskAlternate, [58, 61]),
+        (.maskCommand,   [55, 54]),
+        (.maskControl,   [59, 62]),
+    ]
+
+    /// Покрывает ли маска эту физическую клавишу-модификатор (левую ИЛИ правую).
+    static func maskCovers(keyCode: Int, mask: CGEventFlags) -> Bool {
+        for (flag, keys) in modifierKeys where mask.contains(flag) && keys.contains(keyCode) { return true }
+        return false
+    }
+
     /// Одна и та же ли это комбинация. Сравнение зависит от режима: у голого модификатора значим
     /// только keyCode (маска у левого и правого ⌥ одинакова), у 🌐 сравнивать нечего вовсе.
     static func sameTrigger(_ mode: String, _ keyCode: Int, _ mods: UInt64,
                             as other: (mode: String, keyCode: Int, mods: UInt64)) -> Bool {
+        // ⚠️ ДВОЙНОЙ ТАП РАЗБИРАЕМ ДО СРАВНЕНИЯ РЕЖИМОВ (28.08.2026, отзыв #204). Он единственный
+        // жест, который в рантайме НЕ РАЗЛИЧАЕТ СТОРОНЫ: ловится по маске, а keyCode в настройках у
+        // него декоративный (пресет «2× ⌥» хранит 58, но срабатывает и на 61). Из-за `mode ==
+        // other.mode` первой строкой «двойной ⌥» и «правый ⌥» жили в разных вселенных, и назначить
+        // конверсию поверх диктовки не мешал никто — при том что физически это одна клавиша.
+        if mode == "doubletap" || other.mode == "doubletap" {
+            let (dtMods, rest) = mode == "doubletap"
+                ? (mods, other)
+                : (other.mods, (mode: mode, keyCode: keyCode, mods: mods))
+            let mask = CGEventFlags(rawValue: dtMods)
+            switch rest.mode {
+            // Двойной тап против двойного тапа: значима ТОЛЬКО маска.
+            case "doubletap": return mask == CGEventFlags(rawValue: rest.mods)
+            // Двойной тап против голого модификатора: конфликт, если клавиша входит в маску.
+            case "modkey":    return maskCovers(keyCode: rest.keyCode, mask: mask)
+            // `combo` рекордер собирает только из ДВУХ и более модификаторов (см. `count(peak) >= 2`),
+            // а двойной тап требует одиночного (`solo` в EventTap) — пересечься они не могут.
+            // `key` — жест с обычной клавишей, его прикрывает `otherKeyBetweenTaps`. `globe` — Fn.
+            default:          return false
+            }
+        }
         guard mode == other.mode else { return false }
         switch mode {
         case "globe":  return true

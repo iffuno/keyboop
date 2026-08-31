@@ -1,19 +1,16 @@
 import AppKit
 
-// СТОРОЖ КЛАВИШИ 🌐 — до всего остального (задача 96). Запуск с `--globe-guard <pid>` это не
-// приложение: ни перехватчика, ни строки меню, ни разрешений, ни охраны единственного экземпляра.
-// Процесс ждёт смерти родителя, возвращает системе клавишу и выходит. Проверка стоит первой строкой
-// именно затем, чтобы сторож не тащил за собой ничего из того, что делает Keyboop.
+// ОБЪЕДИНЁННЫЙ RESOURCE-СТОРОЖ — до всего остального (задачи 96 + 35). Запуск с
+// `--globe-guard <pid>` это не приложение: ни перехватчика, ни строки меню, ни разрешений, ни
+// охраны единственного экземпляра. Legacy v1 охраняет 🌐; persistent v3 по приватному pipe держит
+// независимые аренды 🌐 и SPU всю жизнь родителя и переживает его crash/SIGKILL. Проверка первая,
+// чтобы helper не поднял UI.
 GlobeGuard.runIfRequested()
 
-// Dev-хук: вернуть клавише 🌐 системное действие и выйти (`KEYBOOP_GLOBEFIX=1`). То же, что кнопка
-// в настройках, но без окна: кнопку иначе не проверить, а проверять её надо — она чинит клавиатуру
-// человеку, у которого приложение уже вело себя не так, как обещало.
-if ProcessInfo.processInfo.environment["KEYBOOP_GLOBEFIX"] == "1" {
-    GlobeKey.restoreSystemAction()
-    Thread.sleep(forTimeInterval: 0.3)   // дать логу дописаться (см. GlobeGuard)
-    exit(0)
-}
+// The repair hook must first win the cross-build singleton and then complete an authenticated
+// helper transaction. AppDelegate consumes this flag before normal UI/resource startup.
+let keyboopGlobeFixRequested =
+    ProcessInfo.processInfo.environment["KEYBOOP_GLOBEFIX"] == "1"
 
 // ggml/Metal: ВЫКЛЮЧАЕМ residency sets ДО первого касания Metal (первый whisper_init).
 // Иначе при выходе с загруженной моделью статический деструктор ggml бьёт осознанный ассерт

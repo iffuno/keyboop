@@ -8,7 +8,8 @@ let package = Package(
         .executableTarget(
             name: "Keyboop",
             path: "Sources/Keyboop",
-            swiftSettings: [.unsafeFlags(["-swift-version", "5"])]
+            swiftSettings: [.unsafeFlags(["-swift-version", "5"])],
+            linkerSettings: [.linkedFramework("IOKit")]
         )
     ]
 )

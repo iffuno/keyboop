@@ -3,6 +3,52 @@ import ServiceManagement
 import CoreGraphics
 import AppKit   // NSAppearance для appAppearance (оформление приложения)
 
+/// Функции, код которых уже находится в дереве, но ещё не входит в пользовательский релиз.
+/// Один флаг закрывает и UI, и runtime: сохранённый opt-in из Dev-сборки не должен молча включить
+/// железо после установки публичной 0.4.6.
+enum ReleaseFeatures {
+    static let slap = false
+}
+
+/// Единые идентификаторы быстрых действий. Старые raw-value правого клика сохраняем дословно:
+/// `MenuBarController` уже читает их из `quickAction`, поэтому добавление шлепка не мигрирует и не
+/// меняет существующее поведение.
+enum QuickAction: String, CaseIterable {
+    case copyVoice
+    case pause
+    case dictate
+    case history
+    case settings
+    case manualSwitchOrUndo
+
+    /// Правый клик активирует Keyboop и теряет фокус чужого поля, поэтому ручной перевод текста ему
+    /// предлагать нельзя. Порядок совпадает с прежним списком в настройках.
+    static let rightClickOptions: [QuickAction] = [.copyVoice, .pause, .dictate, .history, .settings]
+    /// Шлепок не требует клика по строке меню, поэтому его безопасное основное действие — тот же
+    /// ручной путь «переключить / отменить», который позже подключит runtime.
+    static let slapOptions: [QuickAction] = [.manualSwitchOrUndo, .dictate, .pause, .history, .settings]
+
+    var l10nKey: String { "quick." + rawValue }
+}
+
+/// Стабильные идентификаторы звуков шлепка. Пока честно доступен только синтезированный `meow`;
+/// остальные id зарезервированы для будущих данных и в текущем UI не показываются.
+enum SlapSound: String, CaseIterable {
+    case meow
+    case ouch
+    case ouchMale
+    case ouchFemale
+
+    static let available: [SlapSound] = [.meow]
+}
+
+extension Notification.Name {
+    /// Любая настройка жеста изменилась — будущий detector/runtime перечитает конфигурацию.
+    static let keyboopSlapSettingsChanged = Notification.Name("keyboopSlapSettingsChanged")
+    /// Живой статус встроенного датчика изменился. Это не настройка и на диск не пишется.
+    static let keyboopSlapAvailabilityChanged = Notification.Name("keyboopSlapAvailabilityChanged")
+}
+
 /// Настройки в UserDefaults.
 final class AppSettings {
     static let shared = AppSettings()
@@ -57,6 +103,13 @@ final class AppSettings {
             "translateSoundEnabled": true,
             "translateSoundName": "keyboop",   // "keyboop" = наш синтез-звук, "" = без звука, иначе системный
             "translateSoundVolume": 0.6,
+            // Жест физически новый: включать его всем молча нельзя. Звук же заранее включён внутри
+            // самой функции — когда человек осознанно включит шлепок, отклик сразу будет живым.
+            "slapEnabled": false,
+            "slapAction": QuickAction.manualSwitchOrUndo.rawValue,
+            "slapSensitivity": SlapSensitivity.balanced.rawValue,
+            "slapSoundEnabled": true,
+            "slapSoundID": SlapSound.meow.rawValue,
             "voiceWinOpacity": 0.8,
             // ВАЖНО: voiceHistoryMinutes НЕ регистрируем здесь — иначе object(forKey:) всегда != nil
             // и миграция со старого voiceHistoryDays в геттере НИКОГДА не сработает. Дефолт (60) и
@@ -75,6 +128,11 @@ final class AppSettings {
             // ~2с — ключ AppKit NSInitialToolTipDelay в миллисекундах.
             "NSInitialToolTipDelay": 120
         ])
+        // 0.4.6 не выпускает «Шлепок». Сбрасываем возможный Dev-opt-in, чтобы при будущем возврате
+        // человек включил жест заново осознанно, а не унаследовал скрытое управление датчиком.
+        if !ReleaseFeatures.slap {
+            d.set(false, forKey: "slapEnabled")
+        }
     }
 
     var autoEnabled: Bool { get { d.bool(forKey: Key.auto) } set { d.set(newValue, forKey: Key.auto) } }
@@ -216,7 +274,7 @@ final class AppSettings {
     }
     var snippetPickEnabled: Bool { snippetPickKeyCode >= 0 }
 
-    // MARK: - Быстрое действие и пауза (задача 21, автор 05.08.2026)
+    // MARK: - Быстрые действия и пауза (задачи 21 и 35)
 
     /// Что делает ПРАВЫЙ клик по значку в строке меню. Левый по-прежнему открывает меню.
     /// Значения: `copyVoice` (умолчание) · `pause` · `dictate` · `history`.
@@ -228,6 +286,80 @@ final class AppSettings {
     var quickAction: String {
         get { d.string(forKey: "quickAction") ?? "copyVoice" }
         set { d.set(newValue, forKey: "quickAction") }
+    }
+
+    private(set) var slapAvailability: SlapDetectorAvailability = .disabled
+
+    /// Runtime сообщает состояние только на main. Храним его рядом с настройкой исключительно для
+    /// интерфейса: неподдерживаемый или уснувший датчик не должен выглядеть как бодро работающий.
+    func noteSlapAvailability(_ state: SlapDetectorAvailability) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard state != slapAvailability else { return }
+        slapAvailability = state
+        NotificationCenter.default.post(name: .keyboopSlapAvailabilityChanged, object: self)
+    }
+
+    /// Жест по корпусу включается только осознанно. Отдельный флаг важнее пункта «Выключено» в
+    /// списке: действие остаётся выбранным и возвращается таким же при повторном включении.
+    var slapEnabled: Bool {
+        get { ReleaseFeatures.slap && d.bool(forKey: "slapEnabled") }
+        set {
+            let releasedValue = ReleaseFeatures.slap && newValue
+            guard releasedValue != d.bool(forKey: "slapEnabled") else { return }
+            d.set(releasedValue, forKey: "slapEnabled")
+            notifySlapSettingsChanged()
+        }
+    }
+
+    /// Действие шлепка. Неизвестное либо недопустимое сохранённое значение не переписываем молча,
+    /// а в runtime/UI трактуем как безопасное заводское «ручное переключение и отмена».
+    var slapAction: QuickAction {
+        get {
+            guard let raw = d.string(forKey: "slapAction"),
+                  let action = QuickAction(rawValue: raw),
+                  QuickAction.slapOptions.contains(action) else { return .manualSwitchOrUndo }
+            return action
+        }
+        set {
+            guard QuickAction.slapOptions.contains(newValue), newValue != slapAction else { return }
+            d.set(newValue.rawValue, forKey: "slapAction")
+            notifySlapSettingsChanged()
+        }
+    }
+
+    /// Чувствительность detector-а: сбалансированная заводская либо более отзывчивая высокая.
+    /// Старое сохранённое `low` безопасно читается как новый минимальный режим — `.balanced`.
+    var slapSensitivity: SlapSensitivity {
+        get { SlapSensitivity.restored(from: d.string(forKey: "slapSensitivity")) }
+        set {
+            guard newValue != slapSensitivity else { return }
+            d.set(newValue.rawValue, forKey: "slapSensitivity")
+            notifySlapSettingsChanged()
+        }
+    }
+
+    /// Свой тумблер отклика шлепка; общий `silentMode` позже останется верхним master-gate.
+    var slapSoundEnabled: Bool {
+        get { d.bool(forKey: "slapSoundEnabled") }
+        set {
+            guard newValue != slapSoundEnabled else { return }
+            d.set(newValue, forKey: "slapSoundEnabled")
+            notifySlapSettingsChanged()
+        }
+    }
+
+    /// Выбранный звук хранится стабильным id, а не локализованной подписью.
+    var slapSound: SlapSound {
+        get { SlapSound(rawValue: d.string(forKey: "slapSoundID") ?? "") ?? .meow }
+        set {
+            guard newValue != slapSound else { return }
+            d.set(newValue.rawValue, forKey: "slapSoundID")
+            notifySlapSettingsChanged()
+        }
+    }
+
+    private func notifySlapSettingsChanged() {
+        NotificationCenter.default.post(name: .keyboopSlapSettingsChanged, object: self)
     }
 
     /// На сколько минут усыпляет действие «пауза». 15 · 60 · 180 · 300 (выбор автора 05.08).

@@ -20,7 +20,10 @@ final class VoiceIndicator {
     /// Текущий показ идёт в острове.
     private var islandOn = false
     private let wave = WaveformView(frame: NSRect(x: 0, y: 0, width: 54, height: 20))
-    private let label = NSTextField(labelWithString: "")
+    private let label = ClickableToastLabel(labelWithString: "")
+    /// Необязательное действие живёт ровно столько же, сколько текущий тост. Обычные HUD-состояния
+    /// остаются полностью click-through; сейчас действие нужно экспорту аудио для «Показать в Finder».
+    private var toastAction: (() -> Void)?
     private var decoderLoop: Timer?     // раз в 3с запускает вспышку-декодер
     private var decoderAnim: Timer?     // текущая вспышка
 
@@ -83,7 +86,7 @@ final class VoiceIndicator {
     /// ⚠️ БЫЛ БЕЗЫМЯННЫЙ КРУЖОК (автор 08.08). Коралловая точка ничего не означала и занимала место,
     /// где по смыслу стоит знак того, кто говорит. Берём тот же рисунок, что в строке меню, значит
     /// плашка узнаётся как наша с первого взгляда и без подписи.
-    private let dot = NSImageView()
+    private let dot = PassThroughImageView()
 
     /// КНОПКИ «ОТМЕНА» И «ГОТОВО» НА ОСТРОВЕ (автор 13.08).
     ///
@@ -141,7 +144,7 @@ final class VoiceIndicator {
     /// Строка живого текста в острове. Отдельная от `label` намеренно: в острове справа продолжает
     /// тикать таймер, а речь идёт ниже, и две роли в одной метке не уживаются.
     private lazy var liveLabel: NSTextField = {
-        let l = NSTextField(labelWithString: "")
+        let l = ClickableToastLabel(labelWithString: "")
         l.font = .systemFont(ofSize: 11, weight: .regular)
         // ⚠️ ПРИГЛУШЁННЫЙ, КАК ТАЙМЕР (автор 13.08). Белым он спорил бы с коралловой волной за
         // внимание, а черновик распознавания это ещё не текст, а намёк на него: гипотеза каждую
@@ -215,6 +218,9 @@ final class VoiceIndicator {
             self.presentGen += 1          // всё отложенное, что целилось в текущий показ, отменяется
             self.stopTimers(); self.wave.stop()
             self.recStart = nil; self.liveText = ""
+            self.toastAction = nil
+            self.label.onClick = nil
+            self.panel?.ignoresMouseEvents = true
             // Остров не гасим щелчком: он вырос из выреза, значит и уйти обязан туда же. Панель
             // убирает он сам, когда доиграет.
             if self.islandOn { self.island.collapse() } else { self.panel?.orderOut(nil) }
@@ -238,7 +244,7 @@ final class VoiceIndicator {
     /// Второй: тост во время записи затирал «Слушаю» насовсем. А тосты приходят и ПОСРЕДИ диктовки
     /// (микрофон отдал тишину, расшифровка зависла, поле оказалось паролем). Человек видел, как
     /// индикатор записи молча исчезал, хотя запись шла. Теперь после тоста возвращаемся в «Слушаю».
-    func showToast(_ text: String) {
+    func showToast(_ text: String, onClick: (() -> Void)? = nil) {
         DispatchQueue.main.async {
             // ⚠️ СПРАШИВАЕМ «ПЛАШКА НА ЭКРАНЕ», А НЕ «ВИДНА ЛИ ОБЫЧНАЯ ПАНЕЛЬ». Тут стояло
             // `panel?.isVisible`, и с приходом острова (задача 144) это молча вернуло тот самый
@@ -246,9 +252,13 @@ final class VoiceIndicator {
             // спрятана, `wasRecording` выходил ложью, и тост посреди диктовки гасил запись насовсем.
             // В логе это видно как лишнее «спрятал» ровно через 2.2 с после тоста.
             let wasRecording = (self.mode == .recording && self.onScreen)
+            self.toastAction = onClick
             self.present(text, .toast)
             let gen = self.presentGen
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
+            // Кликабельному сообщению даём больше времени: название папки надо успеть прочитать и
+            // навести мышь. Обычные короткие тосты сохраняют прежнюю длительность.
+            let duration = onClick == nil ? 2.2 : 4.5
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
                 guard let self, self.presentGen == gen else { return }   // показали что-то новее — не наше дело
                 if wasRecording {
                     // Запись всё ещё идёт: если бы она кончилась, VoiceController уже позвал бы
@@ -305,6 +315,7 @@ final class VoiceIndicator {
         let p = panel ?? makePanel(); panel = p
         presentGen += 1
         mode = m
+        if m != .toast { toastAction = nil }
         stopTimers()
         // Куда показываем — решаем ДО раскладки: от этого зависит и минимальная ширина строки, и
         // то, в чьём контейнере эта строка будет лежать.
@@ -312,6 +323,11 @@ final class VoiceIndicator {
         // У записи правую колонку собираем сами: звавшему нечего сюда передать, время он не считает.
         let text = (m == .recording) ? recordingRightText() : raw
         label.stringValue = text
+        let clickableToast = (m == .toast && toastAction != nil)
+        label.onClick = clickableToast ? { [weak self] in self?.performToastAction() } : nil
+        // Обычная плашка исторически не крадёт мышь. Включаем hit-testing только на четыре с
+        // небольшим секунды кликабельного тоста и сразу возвращаем прежнее поведение после него.
+        p.ignoresMouseEvents = !clickableToast
         // ⚠️ ТАЙМЕР ПРИГЛУШЁН, А СООБЩЕНИЯ НЕТ. На плашке записи и так два ярких пятна — коралловая
         // волна и белый текст, — и в паре с волной таймер начинал спорить с ней за внимание. Время
         // это фон происходящего, а не событие: приглушённый серый оставляет единственным акцентом
@@ -352,6 +368,16 @@ final class VoiceIndicator {
             positionAtCursor(p)
             p.orderFrontRegardless()
         }
+    }
+
+    private func performToastAction() {
+        guard mode == .toast, let action = toastAction else { return }
+        // Защита от двойного клика. Сам тост оставляем до штатного тайм-аута: если он временно
+        // перекрыл индикатор записи, тот вернётся тем же проверенным путём, что и у обычного тоста.
+        toastAction = nil
+        label.onClick = nil
+        panel?.ignoresMouseEvents = true
+        action()
     }
 
     // MARK: - Остров в вырезе (задача 144)
@@ -442,7 +468,18 @@ final class VoiceIndicator {
     /// поля, иначе элементы распадаются.
     private func relayout(text: String, showWave: Bool) {
         let font = label.font ?? .systemFont(ofSize: 12, weight: .medium)
-        let lblW = ceil((text as NSString).size(withAttributes: [.font: font]).width) + 1
+        let measuredLabelW = ceil((text as NSString).size(withAttributes: [.font: font]).width) + 1
+        // Имя выбранной папки может быть сколь угодно длинным. Тост не имеет права стать шире
+        // экрана или превратить остров в полосу; середина усекается, полный текст остаётся tooltip.
+        let maxToastLabelW: CGFloat = 460
+        let lblW = mode == .toast ? min(measuredLabelW, maxToastLabelW) : measuredLabelW
+        label.lineBreakMode = mode == .toast ? .byTruncatingMiddle : .byClipping
+        if mode == .toast, toastAction != nil {
+            let hint = L10n.t("hist.showInFinder")
+            label.toolTip = measuredLabelW > lblW ? "\(text)\n\(hint)" : hint
+        } else {
+            label.toolTip = nil
+        }
         let markSize = Self.markImage?.size ?? NSSize(width: dotW, height: dotW)
         let markGap = showWave ? pad : toastGap
         let waveBlock = showWave ? (waveW + pad) : 0
@@ -556,7 +593,7 @@ final class VoiceIndicator {
         p.ignoresMouseEvents = true
         p.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
 
-        let v = NSVisualEffectView(frame: p.contentView!.bounds)
+        let v = PassThroughEffectView(frame: p.contentView!.bounds)
         v.autoresizingMask = [.width, .height]
         v.material = .hudWindow
         v.blendingMode = .behindWindow
@@ -589,7 +626,9 @@ final class VoiceIndicator {
         v.addSubview(cancelBtn)
         v.addSubview(doneBtn)
 
-        p.contentView?.addSubview(v)
+        // Сам effect-view становится contentView: если его hitTest вернул nil, под ним не остаётся
+        // стандартной корневой NSView, которая снова проглотила бы клик по прозрачному фону.
+        p.contentView = v
         return p
     }
 
@@ -742,6 +781,54 @@ final class VoiceIndicator {
     }
 }
 
+/// Размытие рисует фон, но само не является кнопкой: мышь получает только интерактивный дочерний
+/// элемент. Иначе на 4.5 секунды кликабельного тоста весь его прямоугольник перекрывал чужое окно.
+private final class PassThroughEffectView: NSVisualEffectView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === self ? nil : hit
+    }
+}
+
+private final class PassThroughImageView: NSImageView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// Текст тоста обычно пропускает мышь насквозь. Только пока задано действие, он становится
+/// настоящей ссылкой: принимает первый клик даже в nonactivatingPanel и показывает hand-cursor.
+private final class ClickableToastLabel: NSTextField {
+    var onClick: (() -> Void)? {
+        didSet {
+            window?.invalidateCursorRects(for: self)
+            setAccessibilityRole(onClick == nil ? .staticText : .link)
+            setAccessibilityLabel(stringValue)
+            setAccessibilityHelp(onClick == nil ? nil : L10n.t("hist.showInFinder"))
+        }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        onClick == nil ? nil : super.hitTest(point)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { onClick != nil }
+    override func mouseDown(with event: NSEvent) {} // действие только по mouse-up внутри метки
+    override func mouseUp(with event: NSEvent) {
+        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        onClick?()
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        guard let onClick else { return false }
+        onClick()
+        return true
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        if onClick != nil { addCursorRect(bounds, cursor: .pointingHand) }
+    }
+}
+
 /// Компактный waveform: ряд закруглённых баров. «Слушаю» — высоты по громкости микрофона (с авто-
 /// гейном через peak-follower); «Распознаю» — синтетическое спокойное «дыхание». Рендер ~30 fps,
 /// бары плавно тянутся к целям. Цвет — коралл.
@@ -762,6 +849,8 @@ private final class WaveformView: NSView {
         wantsLayer = true
     }
     required init?(coder: NSCoder) { fatalError("no xib") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     /// Новый уровень микрофона (RMS) → правый край ленты (бары едут влево).
     func push(_ rms: Float) {

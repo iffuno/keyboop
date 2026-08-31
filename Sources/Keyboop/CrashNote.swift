@@ -55,6 +55,51 @@ enum CrashNote {
         .map { (url: $0.0, when: $0.1) }
     }
 
+    /// Exact process identity for the crash-surviving guard. macOS has used both the JSON header
+    /// and body for `pid` across .ips revisions, so accept either but never infer it from a filename.
+    static func processID(_ url: URL) -> pid_t? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              let newline = text.firstIndex(of: "\n") else { return nil }
+        let header = parse(String(text[..<newline]))
+        let body = parse(String(text[text.index(after: newline)...]))
+        for object in [header, body] {
+            if let number = object?["pid"] as? NSNumber { return pid_t(number.int32Value) }
+            if let value = object?["pid"] as? Int { return pid_t(value) }
+        }
+        return nil
+    }
+
+    /// Embedded crash timestamp, not the file modification time. DiagnosticReports may be copied,
+    /// rescanned or written a few seconds late; only the event's own timestamp can be compared to
+    /// the exact watched parent's NOTE_EXIT window.
+    static func processDate(_ url: URL) -> Date? {
+        guard let text = try? String(contentsOf: url, encoding: .utf8),
+              let newline = text.firstIndex(of: "\n") else { return nil }
+        let objects = [
+            parse(String(text[..<newline])),
+            parse(String(text[text.index(after: newline)...])),
+        ]
+        for object in objects {
+            for key in ["timestamp", "captureTime"] {
+                guard let value = object?[key] as? String else { continue }
+                if let date = ISO8601DateFormatter().date(from: value) { return date }
+                for format in [
+                    "yyyy-MM-dd HH:mm:ss.SSSSSS Z",
+                    "yyyy-MM-dd HH:mm:ss.SSS Z",
+                    "yyyy-MM-dd HH:mm:ss.SS Z",
+                    "yyyy-MM-dd HH:mm:ss.S Z",
+                    "yyyy-MM-dd HH:mm:ss Z",
+                ] {
+                    let formatter = DateFormatter()
+                    formatter.locale = Locale(identifier: "en_US_POSIX")
+                    formatter.dateFormat = format
+                    if let date = formatter.date(from: value) { return date }
+                }
+            }
+        }
+        return nil
+    }
+
     /// Разобрать один отчёт в короткую безопасную строку. nil, если это не разбираемый отчёт.
     ///
     /// Формат `.ips`: первая строка это JSON-заголовок, дальше отдельным JSON тело. Разбираем оба и

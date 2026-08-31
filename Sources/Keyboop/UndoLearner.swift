@@ -30,7 +30,7 @@ final class UndoLearner {
     /// Порог 3 (просьба автора 2026-06-22: на каждый одиночный откат баннер слишком назойлив; копим).
     private let strikeThreshold = 3
     /// Затухание: если слово давно не откатывали — счётчик сбрасываем (случайные отмены не копятся вечно).
-    private let strikeDecay: TimeInterval = 30 * 24 * 3600   // 30 дней
+    private let strikeDecay: TimeInterval = 7 * 24 * 3600   // 7 дней
 
     /// Персистентный счётчик откатов по слову (typed-форма, lowercased) + время последнего отката.
     /// Копится МЕЖДУ сессиями (в отличие от sessionProtected); сбрасывается затуханием/обучением.
@@ -65,6 +65,20 @@ final class UndoLearner {
         declined = Set(d.stringArray(forKey: declinedKey) ?? [])
         strikeCount = Self.loadIntDict(strikeCountKey, d)
         strikeTime = Self.loadDoubleDict(strikeTimeKey, d)
+
+        // Миграция со старой модели: U2 сохранял count >= 3 после показа вопроса, а `pending` жил
+        // только в памяти. После перезапуска первый же откат становился четвёртым и спрашивал сразу.
+        // Любой такой cohort уже пересёк старый порог, поэтому безопасно считаем его израсходованным;
+        // незавершённые серии 1/2 сохраняем.
+        let completedCohorts = strikeCount.compactMap { $0.value >= strikeThreshold ? $0.key : nil }
+        if !completedCohorts.isEmpty {
+            for word in completedCohorts {
+                strikeCount[word] = nil
+                strikeTime[word] = nil
+            }
+            d.set(strikeCount, forKey: strikeCountKey)
+            d.set(strikeTime, forKey: strikeTimeKey)
+        }
     }
 
     private static func loadIntDict(_ key: String, _ d: UserDefaults) -> [String: Int] {
@@ -84,7 +98,9 @@ final class UndoLearner {
     private func registerStrike(_ word: String) -> Bool {
         let w = word.lowercased()
         let t = now().timeIntervalSince1970
-        if let last = strikeTime[w], t - last > strikeDecay { strikeCount[w] = 0 }
+        if let last = strikeTime[w], t - last > strikeDecay {
+            strikeCount[w] = 0
+        }
         let c = (strikeCount[w] ?? 0) + 1
         strikeCount[w] = c
         strikeTime[w] = t
@@ -102,6 +118,19 @@ final class UndoLearner {
 
     /// Для машинных тестов.
     func _strikeCount(_ word: String) -> Int { strikeCount[word.lowercased()] ?? 0 }
+
+    /// Общая точка для обоих production-жестов U1/U2: каждый точный откат защищает слово в текущем
+    /// контексте, но баннер появляется только после общего порога релевантных откатов.
+    private func recordRelevantUndo(_ word: String) {
+        let w = word.lowercased()
+        sessionProtected.insert(w)
+        // Пока вопрос висит, новые откаты не должны заранее наполнять следующую серию. Ответ или
+        // закрытие баннера завершат текущий cohort; после закрытия снова потребуются все три.
+        guard !pending.contains(w) else { return }
+        if registerStrike(w), suggestLearn(w) {
+            clearStrikes(w)   // три страйка израсходованы ровно тем вопросом, который они показали
+        }
+    }
 
     /// Тумблер фичи. Читаем ключ напрямую (а не через AppSettings) — чтобы UndoLearner не тянул
     /// ServiceManagement и компилировался в лёгком тест-таргете. Дефолт — ВКЛ (object==nil).
@@ -121,29 +150,14 @@ final class UndoLearner {
     }
 
     /// Ручная конверсия (U1): юзер хоткеем превратил `from` в `to`. Если это точный откат нашей
-    /// недавней авто-конверсии (to == оригинал, from == наш вывод, в окне) — предлагаем добавить.
+    /// недавней авто-конверсии (to == оригинал, from == наш вывод, в окне) — засчитываем откат.
     @discardableResult
     func noteManualConvert(from: String, to: String) -> String? {
         guard enabled, let cand = liveCandidate() else { return nil }
         let f = from.lowercased(), t = to.lowercased()
         guard f == cand.converted, t == cand.original else { return nil }
         candidate = nil
-        sessionProtected.insert(cand.original)
-        // ⚠️ У ЖЕСТА U1 ПОРОГ ОДИН, А НЕ ТРИ (отзывы #126–128 @mr_sable, 11.08.2026: «жму правый Alt
-        // сразу после неверного исправления, но за 3+ недели в исключения не добавилось ни одного
-        // слова»). Разбор показал, что порог 3 на деле означал не «три отката», а «три РАЗНЫХ
-        // сеанса»: после первого отката слово попадает в `sessionProtected`, мы его больше не
-        // конвертируем, а значит и откатить второй раз в этом же сеансе физически нельзя. Плюс у
-        // человека откаты приходятся на РАЗНЫЕ слова, и ни одно не набирает трёх. Обещание «учимся
-        // на отмене» оказалось недостижимым при обычной работе.
-        //
-        // Порог 3 был поставлен 22.06 против назойливости, и для слабого жеста U2 (стереть и
-        // перенабрать вручную) он остаётся: там легко принять обычную правку за откат. Но U1 —
-        // нажатие НАШЕГО хоткея конверсии в течение четырёх секунд после НАШЕЙ же конверсии, ровно
-        // на нашем выводе. Случайно так не делают, и переспрашивать три раза значит не верить
-        // человеку, который сказал прямо. Мы и тут ничего не заносим молча: показываем вопрос.
-        suggestLearn(cand.original)
-        clearStrikes(cand.original)
+        recordRelevantUndo(cand.original)
         return cand.original
     }
 
@@ -166,12 +180,11 @@ final class UndoLearner {
         case .retyping:
             if cur == cand.original {
                 candidate = nil
-                sessionProtected.insert(cand.original)
+                recordRelevantUndo(cand.original)
                 // Диагностика 23.07 («перестало переключаться»): фиксация отката — главный тихий
                 // глушитель авто. Если откаты сыплются БЕЗ реальных действий юзера — в буфер
                 // просочилась наша же синтетика (стирание+перенабор выглядит как ручной откат).
                 kbLog("undo-learn: откат зафиксирован — слово под session-защитой (len \(cand.original.count))")
-                if registerStrike(cand.original) { suggestLearn(cand.original) }   // баннер только по порогу
                 return true                                         // точно восстановили оригинал → откат
             } else if cand.original.hasPrefix(cur) {
                 return false                                        // ещё строят оригинал (конверсию глушим)
@@ -213,14 +226,17 @@ final class UndoLearner {
 
     /// Откат засчитан → предлагаем добавить слово в исключения (если не выучено, не отклонено и
     /// баннер по нему ещё не висит).
-    private func suggestLearn(_ word: String) {
+    @discardableResult
+    private func suggestLearn(_ word: String) -> Bool {
         let w = word.lowercased()
-        guard enabled else { return }
-        if ExceptionStore.shared.learned.contains(w) { return }
-        if declined.contains(w) { return }     // сказал «нет» → молчим навсегда
-        if pending.contains(w) { return }      // уже спросили, ждём ответа
+        guard enabled else { return false }
+        if ExceptionStore.shared.learned.contains(w) { return false }
+        if declined.contains(w) { return false }     // сказал «нет» → молчим навсегда
+        if pending.contains(w) { return false }      // уже спросили, ждём ответа
+        guard let callback = onSuggestLearn else { return false }
         pending.insert(w)
-        onSuggestLearn?(w)
+        callback(w)
+        return true
     }
 
     /// Пользователь нажал «Добавить в исключения».
@@ -242,6 +258,14 @@ final class UndoLearner {
         d.set(Array(declined), forKey: declinedKey)
         clearStrikes(w)                 // отказ — счётчик не нужен (и так больше не спросим)
         kbLog("undo-learn: пользователь отказал — больше не спрашиваем (len \(w.count))")
+    }
+
+    /// Баннер закрыли без ответа (×, свайп или его заменила другая плашка). Это не постоянный отказ:
+    /// забываем только текущий вопрос и его уже израсходованный cohort, затем снова ждём три отката.
+    func dismissLearn(_ word: String) {
+        let w = word.lowercased()
+        pending.remove(w)
+        clearStrikes(w)
     }
 
     // MARK: - Утилиты

@@ -1769,6 +1769,9 @@ final class Engine: EventTapHandler {
         muted = true
         kbLog("отмена правки: \(item.deleteCount) симв. возвращено")   // без контента (принцип №2)
         _ = UndoLearner.shared.noteManualConvert(from: fix.fixed, to: fix.original)
+        // Даже если 4-секундное окно обучения уже истекло, это всё равно явный выбор пользователя:
+        // не даём автоисправлению немедленно превратить возвращённое слово обратно.
+        UndoLearner.shared.protect(fix.original)
         lastTextFix = nil
         TextReplacer.replace(deleteCount: item.deleteCount, with: fix.original + item.tail) { [weak self] in
             guard let self else { return }
@@ -1959,6 +1962,29 @@ final class Engine: EventTapHandler {
         if settings.developerMode && frontAppIsDev { return false }
         let appMode = frontAppMode
         if appMode == "off" { return false }
+
+        // ЧИСЛОВАЯ ОПЕЧАТКА ДО ENTER (отзыв #218): `1ю8` → `1.8`.
+        //
+        // Обычная правка опечаток живёт на границе слова, но в чатах реальный Enter мгновенно
+        // отправляет и очищает поле. Если ждать async-boundary, замена прилетит уже в пустую строку.
+        // Поэтому этот детерминированный случай глотаем и выпускаем синтетический Return строго
+        // после замены — тем же безопасным путём, что конверсия раскладки ниже. Раскладку, счётчик
+        // «расколдовано» и звук не трогаем: это правка текста внутри общего typoFix.
+        if let fixed = TypoFix.shared.numericSuggestion(word) {
+            muted = true
+            kbLog("числовая опечатка(enter-pre): \(word.count) симв. исправлено")   // без контента
+            // Enter уже отправляет сообщение, поэтому отменять после него нечего. Явно стираем и
+            // старую пару: иначе предыдущая boundary-правка того же `1ю8` совпадёт с новым буфером,
+            // и следующий хоткей напечатает исходник повторно в уже очищенное поле чата.
+            lastTextFix = nil
+            TextReplacer.replace(deleteCount: word.count, with: fixed, thenReturn: true) { [weak self] in
+                guard let self else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
+            }
+            buffer.applyConversion(converted: fixed)
+            buffer.boundary("\n")
+            return true
+        }
         guard let prop = autoConversionProposal(word: word, soft: appMode == "soft") else { return false }
         // AX-предохранителя здесь НЕТ намеренно (финал аудита 24.07, R1): enter-pre работает
         // СИНХРОННО внутри колбэка тапа, а AX-чтение — до 2×50мс IPC к занятому приложению =

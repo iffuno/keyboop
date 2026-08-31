@@ -246,8 +246,22 @@ final class TypoFix {
     }
 
     /// Исправление для слова, либо nil. Стоимость — один поиск в словаре, никакого перебора.
+    func numericSuggestion(_ word: String) -> String? {
+        guard ready, AppSettings.shared.typoFix else { return nil }
+        // Отзыв #218: точка на физической клавише в русской раскладке даёт `ю`. Это именно
+        // исправление опечатки, поэтому оно уважает общий тумблер и штатную отмену нашей правки.
+        // Раскладку целиком не переключаем: после `1.8` человек может продолжить русским `мм`.
+        guard let fixed = NumericTypoRule.suggestion(for: word) else { return nil }
+        let w = word.lowercased(), exc = ExceptionStore.shared
+        guard !exc.ignored.contains(w), !exc.learned.contains(w),
+              !UndoLearner.shared.isSessionProtected(w) else { return nil }
+        return fixed
+    }
+
+    /// Исправление для слова, либо nil. Стоимость — один поиск в словаре, никакого перебора.
     func suggest(_ word: String) -> String? {
         guard ready, AppSettings.shared.typoFix else { return nil }
+        if let fixed = numericSuggestion(word) { return fixed }
         let w = word.lowercased()
         guard w.count >= 4, w.allSatisfy({ $0.isLetter }) else { return nil }
         // Смешанные огрызки не наши: там работает конверсия раскладки, а не правка опечаток.

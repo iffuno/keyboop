@@ -73,6 +73,44 @@ enum Changelog {
         // путях записи, то есть в самом горячем месте проекта.
         // 0.4.5 — про то, чтобы человек ВИДЕЛ: свой текст в форме отзыва, объяснение про скрытый
         // ввод там, где его ищут, и канал версии в самом списке изменений. Кода в горячем пути нет.
+        // 0.4.6 — БЕТА. В выпуске есть диктовка, словарь, исправление опечаток и арбитраж горячих
+        // клавиш: всё это горячие пути ввода, поэтому только добровольный beta-канал. Реализация
+        // физического жеста остаётся в дереве за закрытым release-флагом и в эту версию не входит.
+        Release(version: "0.4.6",
+            ru: [
+                "Исходную запись диктовки теперь можно сохранить из истории как .m4a. Внутри Keyboop аудио по-прежнему хранится зашифрованным: открытые байты появляются только после того, как вы сами выбрали место сохранения. После экспорта запись остаётся в истории, а по сообщению об успехе можно сразу показать точный файл в Finder.",
+                "Словарь диктовки исправляет близкие варианты и превращает «Z-код» в «ZCode». Если модель ошиблась на одну или две буквы в длинном имени или термине, нужное написание всё равно подставится. Обычные слова языка, короткие совпадения и неоднозначные варианты не трогаем. «Зет-код» и «Z code» тоже становятся «ZCode».",
+                "«Не начинать с заглавной» больше не портит имена людей. Частые русские имена, их краткие и падежные формы, аббревиатуры и регистр из словаря диктовки сохраняются. В неоднозначных случаях имя важнее нарицательного: «Роман», «Вера» и «Лев» остаются с заглавной.",
+                "«Исправлять опечатки» теперь превращает «1ю8» в «1.8». Узкое правило понимает русскую «ю» между цифрами как промах мимо точки; оно работает только при включённом исправлении опечаток и не трогает обычные слова, заглавную «Ю» или «ю» у края числа.",
+                "Исключения с цифрами и точками работают, а обучение спрашивает только после трёх отмен. Проверка учитывает всю запись, работает при исправлении на лету и перед внешней точкой или запятой. Это не общее распознавание сайтов: адрес или технический токен по-прежнему нужно добавить в список самому. Первый и второй возврат одного слова проходят молча; если его не отменяли больше недели, счёт начинается заново. Закрытая без ответа плашка тоже требует три свежие отмены. Сама плашка теперь получила нормальные поля сверху и снизу.",
+                "Левый и правый Option больше не отбирают друг у друга действия. Правый Option можно оставить диктовке, а двойной левый Option отдать конверсии; старые конфликтующие настройки разводятся в работе, а новые конфликты интерфейс не даёт сохранить. Заодно Option+Shift больше не зависит от порядка, в котором отпущены клавиши.",
+                "Сторож 🌐 возвращает системное действие даже после падения и SIGKILL. Второй спящий процесс Keyboop теперь живёт всю сессию приложения и хранит проверяемую расписку восстановления; он не читает ввод и не выходит в сеть.",
+            ],
+            en: [
+                "The original dictation recording can now be saved from History as an .m4a file. Audio remains encrypted inside Keyboop: plaintext bytes appear only after you choose where to save them. Exporting leaves the history entry intact, and the success message can reveal the exact file in Finder.",
+                "The dictation dictionary corrects close matches and turns “Z-код” into “ZCode”. If the model misses one or two characters in a long name or term, the intended spelling can still be restored. Ordinary language words, short matches, and ambiguous guesses are left alone. “Зет-код” and “Z code” become “ZCode” too.",
+                "“No leading capital” no longer breaks people’s names. Common Russian names and their usual short and inflected forms, acronyms, and casing defined in the dictation dictionary keep their capitals. When a word is ambiguous, the name wins: “Роман”, “Вера”, and “Лев” stay capitalized.",
+                "“Fix typos” now turns “1ю8” into “1.8”. This narrow rule treats the Russian-layout letter “ю” between digits as a missed full stop; it runs only when typo correction is enabled and leaves ordinary words, capital “Ю”, and a “ю” at either edge of a number untouched.",
+                "Exceptions with digits and dots now work, and learning asks only after three reversals. Matching uses the complete token during live correction and before a trailing full stop or comma. This is not general website detection: the address or technical token still has to be added to the list. The first two reversals of the same word stay quiet; after more than a week without one, the count starts over. Closing the prompt without an answer also requires three fresh reversals. The prompt itself now has proper breathing room above and below its content.",
+                "Left and right Option no longer steal actions from each other. Right Option can belong to dictation while double-tapping left Option converts text; old conflicting settings are arbitrated at runtime and new conflicts are rejected in Settings. Option+Shift also no longer depends on key release order.",
+                "The 🌐 guard restores the system action even after a crash or SIGKILL. A second sleeping Keyboop process now stays for the app session and keeps a verifiable recovery receipt; it reads no input and makes no network requests.",
+            ],
+            beta: true,
+            announce: """
+                Keyboop стабилен: теперь чаще добавляю новое и прикольное, чем чиню старое.
+
+                Перехожу на Codex + ZCode: Claude Code слишком быстро съедает лимиты, даже \
+                максимального тарифа не хватает.
+
+                Ищу удалённую работу продактом или в видеопродакшне. Рекомендации: @iffun
+                """,
+            announceEnd: """
+                Это бета: включите «Ставить бета-версии» и нажмите «Проверить обновления».
+
+                Пригодился Keyboop? Поставьте звезду: github.com/iffuno/keyboop
+
+                Спасибо всем за донаты: keyboop.com/tips или boosty.to/iffun
+                """),
         Release(version: "0.4.5",
             ru: [
                 "Форма отзыва больше не прячет ваш текст. У трети отправителей поле ввода оказывалось вдвое шире окна, и строки обрезались по правому краю: из фразы просто выпадала середина. Жалоба жила с июля и пережила две починки, потому что на большинстве машин всё выглядело нормально. Нашли по диагностике, которую сами же и приложили к отзывам месяц назад.",

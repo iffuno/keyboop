@@ -107,11 +107,17 @@ enum LayoutDetector {
     /// Решение для режима «чинить на лету» (мид-слово). Срабатывает только когда сочетание
     /// букв в текущем языке практически невозможно, а в другом — нормально. Без словаря-«авось».
     static func liveDecide(word raw: String) -> SwapDecision {
-        var coreSub = Substring(Self.letterCore(of: raw))   // срезаем ведущие/концевые скобки/кавычки/тире
+        let letterCore = Self.letterCore(of: raw)
+        let typed = Keymap.core(of: letterCore).lowercased()
+        var coreSub = Substring(letterCore)   // срезаем ведущие/концевые скобки/кавычки/тире
         while let f = coreSub.first, f.isNumber { coreSub = coreSub.dropFirst() }   // и ведущие/концевые цифры
         while let l = coreSub.last,  l.isNumber { coreSub = coreSub.dropLast() }
         let core = String(coreSub)
         let w = core.lowercased()
+        // Полное исключение проверяем ДО языкового решения: запись `1ghbdtn` не равна ядру
+        // `ghbdtn`. На live-пути нужен и префикс, иначе слово успеет переключиться ещё до границы.
+        // Для обычного слова typed == w, и второй одинаковый линейный обход малых Set'ов не нужен.
+        if typed != w, Self.isExceptionOrPrefix(typed, cyrillic: typed.hasCyrillic) { return .keep }
         guard w.count >= 4, w.allSatisfy(Self.isLayoutLetter) else { return .keep }
         let sourceCyrillic = w.hasCyrillic, sourceLatin = w.hasLatinLetter
         guard sourceCyrillic != sourceLatin else { return .keep }
@@ -191,9 +197,19 @@ enum LayoutDetector {
     static func decide(word raw: String, exceptions: ExceptionStore,
                        prev: String? = nil, afterCaretJump: Bool = false) -> SwapDecision {
         let context = ContextHint.of(prev)
+        let letterCore = Self.letterCore(of: raw)
+        let literal = letterCore.lowercased()
+        let typed = Keymap.core(of: letterCore).lowercased()
+        // UI сохраняет полное исключение (`1gt.it`). Лингвистическое ядро ниже срежет ведущую `1`
+        // и станет `gt.it`, поэтому точное намерение человека обязано победить ДО нормализации.
+        // Проверяем и literal: интерфейс исторически разрешает сохранить конечную пунктуацию,
+        // а `Keymap.core` её снимает. Затем проверяем форму без внешнего знака, чтобы обычное
+        // исключение `1gt.it` защищало и предложение `1GT.IT.`.
+        if exceptions.ignored.contains(literal) || exceptions.learned.contains(literal)
+            || exceptions.ignored.contains(typed) || exceptions.learned.contains(typed) { return .keep }
         // Анализируем БУКВЕННОЕ ЯДРО (без ведущих/концевых скобок, кавычек, тире, пунктуации):
         // "(tckb"→"tckb", "привет."→"привет". Решаем по ядру, конвертим (в Engine) полный токен.
-        var coreSub = Substring(Self.letterCore(of: raw))
+        var coreSub = Substring(letterCore)
         // Слово с ЦИФРАМИ: берём буквенную часть (срезаем ведущие/концевые цифры) и чиним ТОЛЬКО
         // длинные однородные слова (≥4): «ghbdtn2»→ядро «ghbdtn»→«привет2». Короткие/внутренние
         // цифро-токены (gj1, h2o, b2b, d2, 2gis, i18n) остаются keep — ядро <4 или не сплошное буквенное.
