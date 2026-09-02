@@ -9,6 +9,7 @@ protocol EventTapHandler: AnyObject {
     /// `post` — постинг ВНУТРИ колбэка (event.tapPostEvent(proxy)); nil, если путь недоступен.
     /// Возврат true = клавишу проглотить (сниппет раскрыт / inline-замена уже отправлена).
     func handleKeyDown(keyCode: Int64, characters: String, flags: CGEventFlags,
+                       eventTime: TimeInterval,
                        post: ((CGEvent) -> Void)?) -> Bool
     func handleSwitchHotkey()
     /// ТОЛЬКО смена языка (RU↔EN), без конвертации набранного — действие клавиши 🌐/Fn.
@@ -96,6 +97,20 @@ final class EventTap {
         let ns = stampIsNanos == true ? deltaTicksOrNs
                                       : deltaTicksOrNs * Double(timebase.numer) / Double(timebase.denom)
         return ns / 1_000_000
+    }
+
+    /// Момент самого системного события в секундах с загрузки. Нужен там, где важен ритм двух
+    /// физических клавиш: время ВХОДА в callback врёт, если очередь разом разгребла накопившиеся
+    /// события. `eventAgeMs` выше уже определил реальные единицы timestamp на этой машине.
+    private static func eventUptime(_ event: CGEvent) -> TimeInterval {
+        let stamp = event.timestamp
+        guard stamp > 0, let nanos = stampIsNanos else {
+            return ProcessInfo.processInfo.systemUptime
+        }
+        let valueNs = nanos
+            ? Double(stamp)
+            : Double(stamp) * Double(timebase.numer) / Double(timebase.denom)
+        return valueNs / 1_000_000_000
     }
 
     private var comboArmed = false
@@ -343,6 +358,12 @@ final class EventTap {
         // микросекунды. Итог: семь реальных убийств тапа и НОЛЬ строк «МЕДЛЕННЫЙ колбэк». Единственный
         // ранний детектор врал «всё быстро» ровно тогда, когда у человека вставал ввод.
         // event.timestamp — наносекунды с загрузки в той же базе, что mach_absolute_time.
+        let sourceUserData = event.getIntegerValueField(.eventSourceUserData)
+        let origin = InputEventOrigin.classify(
+            sourceUserData: sourceUserData,
+            syntheticMarker: kbSyntheticMarker,
+            pauseMarker: kbPauseFixMarker
+        )
         let ageMs = Self.eventAgeMs(event)
         let tapT0 = CACurrentMediaTime()
         defer {
@@ -350,7 +371,7 @@ final class EventTap {
             // Порог по возрасту низкий сознательно: видимая человеку просадка начинается задолго до
             // того, как система решит нас вырубить, и лучше иметь запись заранее.
             if ageMs > 20 || bodyMs > 10 {
-                kbLog(String(format: "ввод придержан: событие пролежало %.0f мс, обработка %.1f мс", ageMs, bodyMs))
+                kbLog("ввод придержан: \(origin.label) · " + String(format: "событие пролежало %.0f мс, обработка %.1f мс", ageMs, bodyMs))
             }
         }
         // Пульс тапа: единственное доказательство, что события НАМ ЕЩЁ НОСЯТ. Одна запись на событие,
@@ -368,12 +389,12 @@ final class EventTap {
         // пустышка не должна трогать буфер и взводы хоткеев. keyUp у неё нет (мы его не шлём),
         // поэтому глотание не нарушает инвариант парности.
         if type == .keyDown,
-           event.getIntegerValueField(.eventSourceUserData) == kbPauseFixMarker {
+           sourceUserData == kbPauseFixMarker {
             (handler as? Engine)?.handlePauseFixMarker(post: { $0.tapPostEvent(proxy) })
             return nil
         }
         if (type == .keyDown || type == .keyUp),
-           event.getIntegerValueField(.eventSourceUserData) == kbSyntheticMarker {
+           sourceUserData == kbSyntheticMarker {
             return Unmanaged.passUnretained(event)
         }
         // ПАУЗА: пропускаем событие насквозь, не разбирая. Стоит ЗДЕСЬ, после отсева собственной
@@ -698,7 +719,8 @@ final class EventTap {
             // sink живёт РОВНО на время колбэка: proxy валиден только здесь (Apple: использовать
             // его после возврата нельзя). Engine принимает его как обычное замыкание и не хранит.
             let post: (CGEvent) -> Void = { $0.tapPostEvent(proxy) }
-            if handler?.handleKeyDown(keyCode: keyCode, characters: chars, flags: event.flags, post: post) == true {
+            if handler?.handleKeyDown(keyCode: keyCode, characters: chars, flags: event.flags,
+                                      eventTime: Self.eventUptime(event), post: post) == true {
                 // Здесь НЕ регистрируем парность: за inline-замену учёт ведёт Engine
                 // (inlineSwallowedKeyCode → consumeInlineSwallowedKeyUp), и двойной учёт съел бы
                 // keyUp дважды. ⚠️ Но handleKeyDown возвращает true из ТРЁХ мест, а метку ставит

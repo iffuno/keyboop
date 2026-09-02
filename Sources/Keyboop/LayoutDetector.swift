@@ -22,6 +22,42 @@ enum ContextHint {
     }
 }
 
+/// Форма именно СЛОВА через ASCII-дефис. Вынесена из словарного решения, чтобы до него не
+/// добирались минусы, диапазоны, `--flags`, висячий/двойной дефис и идентификаторы. Обычные
+/// внешние скобки и кавычки срезаются, но внешний `-` никогда не считается пунктуацией.
+enum HyphenTokenShape {
+    static func linguisticCore(
+        of raw: String,
+        isLayoutLetter: (Character) -> Bool
+    ) -> String? {
+        // Цифры считаем возможной границей ядра, но ниже не разрешаем внутри сегментов. Так `5-3`
+        // и `2xnj-nj` отклоняются, а не превращаются в слово после тихого срезания цифр.
+        // `isLayoutLetter` нужен и на границе: `[`, `;`, `'`, `,`, `.` могут быть буквами другой
+        // раскладки, поэтому Character.isLetter здесь потерял бы «во-первых» (`dj-gthds[`).
+        guard let first = raw.firstIndex(where: { isLayoutLetter($0) || $0.isNumber }),
+              let last = raw.lastIndex(where: { isLayoutLetter($0) || $0.isNumber })
+        else { return nil }
+
+        if raw[raw.startIndex..<first].contains("-") { return nil }
+        if raw[raw.index(after: last)...].contains("-") { return nil }
+
+        var segment = ""
+        var segments = 0
+        for character in raw[first...last] {
+            if character == "-" {
+                guard !segment.isEmpty else { return nil }
+                segment.removeAll(keepingCapacity: true)
+                segments += 1
+            } else {
+                guard isLayoutLetter(character) else { return nil }
+                segment.append(character)
+            }
+        }
+        guard segments >= 1, !segment.isEmpty else { return nil }
+        return String(raw[first...last])
+    }
+}
+
 /// Двусторонний детектор «слово набрано не в той раскладке».
 /// Каскад: guard'ы → force-swap → словарь → триграммная плаузивность (margin).
 enum LayoutDetector {
@@ -62,6 +98,34 @@ enum LayoutDetector {
         }
         guard hasElongation else { return nil }
         return toTwo == toOne ? [toOne] : [toTwo, toOne]
+    }
+
+    /// Настоящее слово перед КОНЦЕВОЙ пунктуацией важнее альтернативного прочтения той же клавиши
+    /// как буквы другой раскладки. На русской клавише `ю` лежит английская `.`, на `б` — `,`, на
+    /// `ж` — `;`: поэтому `it.` целиком выглядит как русское `шею`, хотя человек набрал корректное
+    /// английское слово и точку. Это тот же strict-gate, только для семантического ядра до знака.
+    ///
+    /// Не защищаем `forceRuAmb`: для этих редких EN-форм продукт уже осознанно выбрал частое русское
+    /// слово. Явный пользовательский force-swap проверяется позже и тоже остаётся сильнее guard'а.
+    static func hasValidSourceBeforeTrailingPunctuation(
+        _ rawCore: String,
+        forcedSource: Set<String> = []
+    ) -> Bool {
+        let whole = rawCore.lowercased()
+        let semantic = Keymap.core(of: whole)
+        // Как и основной strict-gate, не доверяем односимвольным «словам» из шумного EN-словаря:
+        // иначе `t.`/`e;` перестанут чиниться в настоящие `ею`/`уж`.
+        guard semantic != whole, semantic.count >= 2 else { return false }
+        let cyrillic = semantic.hasCyrillic
+        let latin = semantic.hasLatinLetter
+        guard cyrillic != latin else { return false }
+        // `api.` и пользовательский победитель спорной пары должны вести себя ровно как `api`:
+        // «всегда переключать» означает конвертировать В него, но не из него.
+        if Self.forceSwap.contains(semantic) || forcedSource.contains(semantic) { return true }
+        if latin, ExtraWords.forceRuAmb.contains(semantic) { return false }
+        let words = cyrillic ? LayoutData.shared.wordsRu : LayoutData.shared.wordsEn
+        if words.contains(semantic) { return true }
+        return Self.deElongated(semantic)?.contains(where: words.contains) ?? false
     }
 
     /// Английские слова из двух букв, которые действительно пишут отдельным словом. Закрытый список:
@@ -118,6 +182,13 @@ enum LayoutDetector {
         // `ghbdtn`. На live-пути нужен и префикс, иначе слово успеет переключиться ещё до границы.
         // Для обычного слова typed == w, и второй одинаковый линейный обход малых Set'ов не нужен.
         if typed != w, Self.isExceptionOrPrefix(typed, cyrillic: typed.hasCyrillic) { return .keep }
+        // `it.` — это настоящее EN `it` + точка, хотя полное чтение тех же клавиш даёт RU `шею`.
+        // Live-fix обязан применить тот же strict-gate, что и boundary, иначе успеет испортить более
+        // длинные варианты (`uhf,`, `cdt;`) ещё до пробела.
+        if Self.hasValidSourceBeforeTrailingPunctuation(
+            core,
+            forcedSource: ExceptionStore.shared.forceSwap
+        ) { return .keep }
         guard w.count >= 4, w.allSatisfy(Self.isLayoutLetter) else { return .keep }
         let sourceCyrillic = w.hasCyrillic, sourceLatin = w.hasLatinLetter
         guard sourceCyrillic != sourceLatin else { return .keep }
@@ -230,7 +301,11 @@ enum LayoutDetector {
         // прежнем комментарии («у» в «у-штл» — валидный предлог): части короче двух букв мы не
         // рассматриваем вовсе, поэтому одиночный предлог сюда не попадает.
         //
-        // Правило симметрично, и это его главное свойство:
+        // Сначала отдельный shape-guard проверяет ИСХОДНЫЙ токен, до срезания внешних знаков.
+        // Поэтому `(xnj-nj)` остаётся словом, а `--xnj-nj`, `-xnj-nj`, `xnj-nj-`, диапазоны и
+        // повторный дефис не могут замаскироваться под него после `letterCore`.
+        //
+        // Дальше правило симметрично, и это его главное свойство:
         //   • все части ИСХОДНИКА — слова текущего языка → живое составное слово, не трогаем.
         //     Так защищены и «dry-run», «real-time», «well-known», и русское «что-то», набранное
         //     по-русски: оно не уедет в латиницу;
@@ -238,23 +313,35 @@ enum LayoutDetector {
         //     («xnj-nj» → «что» + «то», обе в словаре) → конвертируем;
         //   • всё остальное → молчим.
         //
-        // Покрытие замерено на живых словах: у 13 из 15 частых русских слов с дефисом обе части в
-        // словаре. «Тёмно-синий» и «по-русски» останутся неисправленными («тёмно» и «русски» в
-        // словаре нет), и это принятая цена: пропустить лучше, чем испортить.
+        // Покрытие замерено на живых словах. Две короткие коллизии из карточки задачи (`ult`/`nj`
+        // и `bp`/`pf`) ошибочно выглядят валидными английскими словами, поэтому для «где-то» и
+        // «из-за» есть точный canonical override. Шире его делать нельзя: corpus-аудит нашёл
+        // `ru-ru`→`кг-кг` и 156 одиночных cross-layout словарных коллизий.
         if w.contains("-") {
-            let segs = w.split(separator: "-", omittingEmptySubsequences: false)
-            if segs.count >= 2, segs.allSatisfy({ !$0.isEmpty && $0.allSatisfy(Self.isLayoutLetter) }),
-               w.hasCyrillic != w.hasLatinLetter {
-                let toCyr = !w.hasCyrillic
-                let swapped = Keymap.convert(coreRaw, toCyrillic: toCyr).lowercased()
-                if ExtraWords.hyphenTerms.contains(swapped) { return .convert(toCyrillic: toCyr) }
+            guard let hyphenRaw = HyphenTokenShape.linguisticCore(
+                of: raw,
+                isLayoutLetter: Self.isLayoutLetter
+            ) else { return .keep }
+            let hyphenWord = hyphenRaw.lowercased()
+            guard hyphenWord == w else { return .keep }
+
+            let segs = hyphenWord.split(separator: "-", omittingEmptySubsequences: false)
+            if hyphenWord.hasCyrillic != hyphenWord.hasLatinLetter {
+                let toCyr = !hyphenWord.hasCyrillic
+                let swapped = Keymap.convert(hyphenRaw, toCyrillic: toCyr).lowercased()
+                if ExtraWords.hyphenTerms.contains(hyphenWord)
+                    || ExtraWords.ruHyphenTerms.contains(hyphenWord) { return .keep }
+                if ExtraWords.hyphenTerms.contains(swapped)
+                    || ExtraWords.ruHyphenTerms.contains(swapped) {
+                    return .convert(toCyrillic: toCyr)
+                }
                 let src = segs.map(String.init)
                 let dst = swapped.split(separator: "-", omittingEmptySubsequences: false).map(String.init)
                 if src.count == dst.count, src.allSatisfy({ $0.count >= 2 }),
                    dst.allSatisfy({ $0.count >= 2 && $0.allSatisfy({ $0.isLetter }) }) {
                     let data = LayoutData.shared
-                    let dictSrc = w.hasLatinLetter ? data.wordsEn : data.wordsRu
-                    let dictDst = w.hasLatinLetter ? data.wordsRu : data.wordsEn
+                    let dictSrc = hyphenWord.hasLatinLetter ? data.wordsEn : data.wordsRu
+                    let dictDst = hyphenWord.hasLatinLetter ? data.wordsRu : data.wordsEn
                     if src.allSatisfy({ dictSrc.contains($0) }) { return .keep }
                     if dst.allSatisfy({ dictDst.contains($0) }) { return .convert(toCyrillic: toCyr) }
                 }
@@ -332,7 +419,11 @@ enum LayoutDetector {
         // Схлопываем повтор от трёх букв и спрашиваем словарь о том, что получилось. Порог именно
         // три: две одинаковые подряд это нормальная орфография («ванна», «класс», «сумма»), а три —
         // всегда намеренное растягивание.
-        let sourceIsRealWord = LayoutData.shared.wordsRu.contains(w)
+        let sourceIsRealWord = Self.hasValidSourceBeforeTrailingPunctuation(
+                coreRaw,
+                forcedSource: exceptions.forceSwap
+            )
+            || LayoutData.shared.wordsRu.contains(w)
             || LayoutData.shared.wordsEn.contains(w)
             || (Self.deElongated(w)?.contains {
                     LayoutData.shared.wordsRu.contains($0) || LayoutData.shared.wordsEn.contains($0)

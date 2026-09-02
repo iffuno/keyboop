@@ -8,6 +8,14 @@ final class KeystrokeBuffer {
     private(set) var lastWord = ""
     private(set) var lastTail = ""
 
+    /// Интервал между ПЕРВЫМИ двумя ASCII-пробелами в хвосте завершённого слова.
+    /// Нужен только для сохранения системной «точки по двойному пробелу»: если boundary-конверсия
+    /// стартовала с задержкой, macOS уже могла заменить эти два физических пробела на `. `, а наша
+    /// ретайп-замена раньше возвращала обратно `  `. Время монотонное; nil = доказанного быстрого
+    /// двойного пробела нет, поэтому правило обязано молчать.
+    private(set) var lastTailDoubleSpaceGap: TimeInterval?
+    private var lastTailFirstSpaceAt: TimeInterval?
+
     /// История ЗАВЕРШЁННЫХ слов текущей сессии набора (между clear'ами) — для групповой
     /// конвертации нескольких слов одним хоткеем. Каждый элемент: слово + хвост (пробелы после).
     /// Чистится в clear() (навигация/клик/смена окна), поэтому курсор всегда в конце набранного.
@@ -51,6 +59,8 @@ final class KeystrokeBuffer {
                 // слово стёрто целиком — контекст предыдущего слова больше не достоверен
                 lastWord = ""
                 lastTail = ""
+                lastTailFirstSpaceAt = nil
+                lastTailDoubleSpaceGap = nil
                 // и групповая история ненадёжна (стёрли через границу) — рвём её, single-word живёт
                 sessionWords.removeAll()
                 // слова больше нет — его ритм тоже. Иначе следующее слово унаследует чужую паузу
@@ -62,6 +72,12 @@ final class KeystrokeBuffer {
             // само слово ещё помним (держим консистентность с группой).
             lastTail.removeLast()
             if !sessionWords.isEmpty { sessionWords[sessionWords.count - 1].tail = lastTail }
+            // После ручного стирания прежний ритм хвоста уже нельзя считать доказательством
+            // двойного пробела. Следующая пара должна быть набрана заново.
+            if !lastTail.hasPrefix("  ") {
+                lastTailFirstSpaceAt = nil
+                lastTailDoubleSpaceGap = nil
+            }
         } else if !lastWord.isEmpty {
             // Хвост исчерпан → Backspace вошёл В само завершённое слово. «Раз-граничиваем» его обратно
             // в currentWord, чтобы дальнейшая правка шла по ВСЕМУ слову, а не теряла префикс. Раньше тут
@@ -72,9 +88,12 @@ final class KeystrokeBuffer {
             if !sessionWords.isEmpty { sessionWords.removeLast() }
             lastWord = sessionWords.last?.word ?? ""
             lastTail = sessionWords.last?.tail ?? ""
+            lastTailFirstSpaceAt = nil
+            lastTailDoubleSpaceGap = nil
             currentWord.removeLast()
             if currentWord.isEmpty {
                 lastWord = ""; lastTail = ""; sessionWords.removeAll(); currentWordGap = 0
+                lastTailFirstSpaceAt = nil; lastTailDoubleSpaceGap = nil
             }
         } else {
             // редактируем что-то раньше (буфер пуст) — безопаснее забыть контекст
@@ -83,17 +102,33 @@ final class KeystrokeBuffer {
     }
 
     /// Завершение слова (пробел/таб/ввод).
-    func boundary(_ whitespace: String) {
+    func boundary(_ whitespace: String,
+                  at eventTime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         lastActivity = Date()
         if !currentWord.isEmpty {
             sessionWords.append((currentWord, whitespace))
             lastWord = currentWord
             lastTail = whitespace
+            lastTailFirstSpaceAt = whitespace == " " ? eventTime : nil
+            lastTailDoubleSpaceGap = nil
             currentWord = ""
             lastWordGap = currentWordGap
             currentWordGap = 0
         } else if !lastWord.isEmpty {
+            let previousTail = lastTail
             lastTail += whitespace
+            if previousTail == " ", whitespace == " ", let first = lastTailFirstSpaceAt {
+                lastTailDoubleSpaceGap = eventTime - first
+            } else if previousTail.hasPrefix("  "), lastTailDoubleSpaceGap != nil {
+                // Третий пробел/Tab/Enter не отменяет уже доказанную ведущую пару: правило меняет
+                // только первые два символа и обязано сохранить весь остальной хвост как есть.
+            } else if previousTail.isEmpty, whitespace == " " {
+                lastTailFirstSpaceAt = eventTime
+                lastTailDoubleSpaceGap = nil
+            } else {
+                lastTailFirstSpaceAt = nil
+                lastTailDoubleSpaceGap = nil
+            }
             // хвост последнего завершённого слова растёт вместе с lastTail (консистентность группы)
             if !sessionWords.isEmpty { sessionWords[sessionWords.count - 1].tail += whitespace }
         }
@@ -116,6 +151,8 @@ final class KeystrokeBuffer {
         currentWord = ""
         lastWord = ""
         lastTail = ""
+        lastTailFirstSpaceAt = nil
+        lastTailDoubleSpaceGap = nil
         sessionWords.removeAll()
         currentWordGap = 0
         lastWordGap = 0
@@ -129,6 +166,8 @@ final class KeystrokeBuffer {
     func softContextReset() {
         lastWord = ""
         lastTail = ""
+        lastTailFirstSpaceAt = nil
+        lastTailDoubleSpaceGap = nil
         sessionWords.removeAll()
     }
 
@@ -186,6 +225,16 @@ final class KeystrokeBuffer {
         guard !lastWord.isEmpty else { return }
         lastWord = converted
         if !sessionWords.isEmpty { sessionWords[sessionWords.count - 1].word = converted }
+    }
+
+    /// Boundary-конверсия перепечатала хвост той же длины (например, `  ` → `. `). Модель обязана
+    /// повторить экран, иначе поздний хоткей/групповая конверсия вернёт два пробела обратно.
+    func applyCompletedTail(_ tail: String) {
+        guard !lastWord.isEmpty else { return }
+        lastTail = tail
+        if !sessionWords.isEmpty { sessionWords[sessionWords.count - 1].tail = tail }
+        lastTailFirstSpaceAt = nil
+        lastTailDoubleSpaceGap = nil
     }
 
     /// Зафиксировать раскрытие сниппета: текущее слово (триггер) превратилось в раскрытие, затем —

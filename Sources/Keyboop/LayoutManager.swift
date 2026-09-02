@@ -13,6 +13,25 @@ final class LayoutManager {
     /// а не чтению. Память обновляется нашими select'ами и TIS-уведомлениями (внешняя смена).
     private var opinionCyr: Bool?
 
+    /// Полный TIS ID последнего источника, который Keyboop точно выбрал или принял как внешний
+    /// выбор. Это отдельная память: Bool не различает Norwegian и ABC и потому не годится для
+    /// цикла из трёх и более раскладок.
+    private var opinionExactID: String?
+    private var opinionExactAt: TimeInterval = 0
+    private var selectedNotificationGeneration: UInt64 = 0
+
+    private func setExactOpinion(_ id: String?) {
+        opinionExactID = id
+        opinionExactAt = id == nil ? 0 : ProcessInfo.processInfo.systemUptime
+    }
+
+    /// Вызывается на каждую selected-source нотификацию, включая подавленные grace-окном. Само
+    /// уведомление не доказывает источник, но позволяет verifier-у не спорить с более поздним
+    /// ручным выбором человека.
+    func noteSelectedSourceNotification() {
+        selectedNotificationGeneration &+= 1
+    }
+
     /// Текущая раскладка — кириллическая? (сырое чтение TIS; может отставать, см. opinionCyr)
     func currentIsCyrillic() -> Bool { Self.systemIsCyrillic() }
 
@@ -92,6 +111,7 @@ final class LayoutManager {
     /// самосогласованной лжи оно не бывает.
     func noteExternalLayoutChange() {
         opinionCyr = nil
+        setExactOpinion(nil)
         CapsLED.refreshSoon()   // язык сменили мимо нас — лампочка-индикатор должна догнать
     }
 
@@ -112,6 +132,10 @@ final class LayoutManager {
     @discardableResult
     func reconcileWithReality() -> Bool {
         guard ProcessInfo.processInfo.systemUptime - lastSelectAt > 0.8 else { return false }
+        if let live = Self.liveSelectedSource(),
+           let id = Self.stringProp(live, kTISPropertyInputSourceID) {
+            setExactOpinion(id)
+        }
         let real = currentIsCyrillic()
         // Момент выбран вызывающим — чтение достоверно. Но окно подавления НЕ взводим
         // (authoritative: false): сверка идёт на каждой границе слова, и взведённое окно
@@ -245,9 +269,58 @@ final class LayoutManager {
         kbLog("layout: запомнил \(cyrillic ? "кириллическую" : "латинскую") раскладку \(id)")
     }
 
-    /// Живой ВЫБРАННЫЙ источник: имя из настроек HIToolbox (они не страдают стейл-кэшем TIS в
-    /// фоновом агенте), сам объект — из списка включённых по этому имени. Тот же принцип, что у
-    /// `languageFromSystemPrefs`, но с объектом на выходе: памяти раскладки нужен ID, а не язык.
+    /// Сопоставить запись HIToolbox живому TIS-объекту. Когда настройки дают полный ID, он всегда
+    /// главнее локализованного имени; имя остаётся фолбэком для обычных Keyboard Layout entries.
+    private static func matchLiveSource(forEntry entry: [String: Any],
+                                        pool: [TISInputSource]) -> TISInputSource? {
+        if let sourceID = (entry["Input Source ID"] as? String)
+            ?? (entry["InputSourceID"] as? String),
+           !sourceID.isEmpty,
+           let source = pool.first(where: {
+               stringProp($0, kTISPropertyInputSourceID) == sourceID
+           }) {
+            return source
+        }
+
+        let modeID = entry["Input Mode"] as? String
+        let bundleID = entry["Bundle ID"] as? String
+        if let modeID, !modeID.isEmpty {
+            let modeMatches = pool.filter {
+                stringProp($0, kTISPropertyInputModeID) == modeID
+            }
+            if let bundleID, !bundleID.isEmpty,
+               let source = modeMatches.first(where: {
+                   stringProp($0, kTISPropertyBundleID) == bundleID
+               }) {
+                return source
+            }
+            if let source = modeMatches.first { return source }
+        }
+        if let bundleID, !bundleID.isEmpty,
+           let source = pool.first(where: {
+               stringProp($0, kTISPropertyBundleID) == bundleID
+           }) {
+            return source
+        }
+
+        let name = (entry["KeyboardLayout Name"] as? String) ?? ""
+        guard !name.isEmpty else { return nil }
+        let key = nameKey(name)
+        for source in pool {
+            if let id = stringProp(source, kTISPropertyInputSourceID),
+               nameKey(String(id.split(separator: ".").last ?? "")) == key {
+                return source
+            }
+            if let raw = TISGetInputSourceProperty(source, kTISPropertyLocalizedName) {
+                let localized = Unmanaged<CFString>.fromOpaque(raw).takeUnretainedValue() as String
+                if nameKey(localized) == key { return source }
+            }
+        }
+        return nil
+    }
+
+    /// Живой ВЫБРАННЫЙ источник: запись из HIToolbox (не страдает стейл-кэшем TIS в фоновом
+    /// агенте), сам объект — из списка включённых источников.
     private static func liveSelectedSource() -> TISInputSource? {
         CFPreferencesAppSynchronize("com.apple.HIToolbox" as CFString)
         guard let raw = CFPreferencesCopyAppValue("AppleSelectedInputSources" as CFString,
@@ -257,17 +330,7 @@ final class LayoutManager {
         guard let list = TISCreateInputSourceList(filter, false)?.takeRetainedValue() as? [TISInputSource]
         else { return nil }
         for entry in raw {
-            let name = (entry["KeyboardLayout Name"] as? String) ?? (entry["Input Mode"] as? String) ?? ""
-            guard !name.isEmpty else { continue }
-            let key = nameKey(name)
-            for src in list {
-                if let id = stringProp(src, kTISPropertyInputSourceID),
-                   nameKey(String(id.split(separator: ".").last ?? "")) == key { return src }
-                if let p = TISGetInputSourceProperty(src, kTISPropertyLocalizedName) {
-                    let n = Unmanaged<CFString>.fromOpaque(p).takeUnretainedValue() as String
-                    if nameKey(n) == key { return src }
-                }
-            }
+            if let source = matchLiveSource(forEntry: entry, pool: list) { return source }
         }
         return nil
     }
@@ -282,6 +345,7 @@ final class LayoutManager {
     func noteCurrentAsUserChoice() {
         guard let src = Self.liveSelectedSource() ?? TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
               let id = Self.stringProp(src, kTISPropertyInputSourceID) else { return }
+        setExactOpinion(id)
         switch Self.script(of: src) {
         case .cyrillic: remember(id, cyrillic: true)
         case .latin:    remember(id, cyrillic: false)
@@ -355,6 +419,7 @@ final class LayoutManager {
         }
         if ok {
             opinionCyr = cyrillic   // память против стейл-чтения (см. opinionCyr)
+            setExactOpinion(Self.stringProp(src, kTISPropertyInputSourceID))
             CapsLED.set(cyrillic: cyrillic)   // лампочка-индикатор языка (если включена)
             lastSelectAt = ProcessInfo.processInfo.systemUptime
             // Кэш — из ТОГО источника, который мы только что выбрали (объект в руках). НЕ через
@@ -408,10 +473,170 @@ final class LayoutManager {
                 // мнение и кэш по тому, что реально выбрано, иначе декодер продолжит считать буквы
                 // не тем алфавитом.
                 self.opinionCyr = real
+                self.setExactOpinion(Self.liveSelectedSource().flatMap {
+                    Self.stringProp($0, kTISPropertyInputSourceID)
+                })
                 KeyboardLayoutCache.refreshOnMain()
                 kbLog("layout: поправка отклонена системой, принимаю реальность (\(code))")
                 return
             }
+        }
+    }
+
+    // MARK: - Цикл всех включённых раскладок (задача 226)
+
+    private var cycleMissCount = 0
+
+    /// Выбрать следующий enabled/select-capable keyboard input source в системном порядке.
+    /// Кандидаты перестраиваются на каждый шаг, а быстрые нажатия идут от точной памяти ID, не от
+    /// запаздывающего TISCopyCurrentKeyboardInputSource.
+    @discardableResult
+    func cycleLayout() -> Bool {
+        let sources = enabledKeyboardSources()
+        let ids = cycleCandidateIDs(sources: sources)
+        guard !ids.isEmpty else {
+            kbLog("layout: цикл нечему — среди включённых нет select-capable раскладок")
+            return false
+        }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let remembered = opinionExactID.flatMap { ids.contains($0) ? $0 : nil }
+        let liveID = Self.liveSelectedSource().flatMap {
+            Self.stringProp($0, kTISPropertyInputSourceID)
+        }.flatMap { ids.contains($0) ? $0 : nil }
+
+        // В коротком окне быстрых повторов TIS/HIToolbox ещё могут показывать прошлый источник —
+        // после settling-окна живое значение главнее и лечит потерянное системное уведомление.
+        let rememberedIsFresh = remembered != nil && now - opinionExactAt < 0.15
+        let anchor = LayoutCycle.anchorID(remembered: remembered,
+                                          live: liveID,
+                                          rememberedIsFresh: rememberedIsFresh,
+                                          in: ids)
+        if !rememberedIsFresh, anchor == liveID, let liveID {
+            setExactOpinion(liveID)
+        }
+
+        guard let nextID = LayoutCycle.nextID(afterCurrent: anchor, in: ids),
+              let source = sources.first(where: {
+                  Self.stringProp($0, kTISPropertyInputSourceID) == nextID
+              })
+        else { return false }
+
+        guard TISSelectInputSource(source) == noErr else {
+            kbLog("layout: TISSelectInputSource (цикл) отказал")
+            return false
+        }
+
+        setExactOpinion(nextID)
+        let script = Self.script(of: source)
+        let cyrillic = script == .cyrillic
+        opinionCyr = cyrillic
+        switch script {
+        case .cyrillic: remember(nextID, cyrillic: true)
+        case .latin:    remember(nextID, cyrillic: false)
+        case .other:    break
+        }
+        CapsLED.set(cyrillic: cyrillic)
+        lastSelectAt = ProcessInfo.processInfo.systemUptime
+        if Thread.isMainThread {
+            KeyboardLayoutCache.refresh(fromSelected: source)
+        } else {
+            DispatchQueue.main.async { KeyboardLayoutCache.refresh(fromSelected: source) }
+        }
+        verifyCycleSelect(requestedID: nextID,
+                          previousID: anchor,
+                          notificationGeneration: selectedNotificationGeneration,
+                          source: source)
+        return true
+    }
+
+    /// Сначала берём порядок AppleEnabledInputSources. Источники, которых в preferences нет, но
+    /// TIS считает их включёнными, дописываем по полному ID — так фолбэк детерминирован.
+    private func cycleCandidateIDs(sources: [TISInputSource]) -> [String] {
+        var ordered: [String] = []
+        var seen = Set<String>()
+
+        func append(_ source: TISInputSource) {
+            guard let id = Self.stringProp(source, kTISPropertyInputSourceID),
+                  seen.insert(id).inserted else { return }
+            ordered.append(id)
+        }
+
+        CFPreferencesAppSynchronize("com.apple.HIToolbox" as CFString)
+        if let entries = CFPreferencesCopyAppValue("AppleEnabledInputSources" as CFString,
+                                                   "com.apple.HIToolbox" as CFString)
+            as? [[String: Any]] {
+            for entry in entries {
+                if let source = Self.matchLiveSource(forEntry: entry, pool: sources) {
+                    append(source)
+                }
+            }
+        }
+
+        let remaining = sources.compactMap {
+            Self.stringProp($0, kTISPropertyInputSourceID)
+        }.filter { !seen.contains($0) }.sorted()
+        for id in remaining where seen.insert(id).inserted { ordered.append(id) }
+        return ordered
+    }
+
+    /// Через тот же 60-мс settling interval убеждаемся, что система выбрала именно requested ID.
+    /// Если нет — повторяем TISSelectInputSource ровно один раз, без бесконечного self-heal.
+    private func acceptCycleReality(_ source: TISInputSource) {
+        guard let id = Self.stringProp(source, kTISPropertyInputSourceID) else { return }
+        setExactOpinion(id)
+        let script = Self.script(of: source)
+        let cyrillic = script == .cyrillic
+        opinionCyr = cyrillic
+        switch script {
+        case .cyrillic: remember(id, cyrillic: true)
+        case .latin:    remember(id, cyrillic: false)
+        case .other:    break
+        }
+        CapsLED.set(cyrillic: cyrillic, authoritative: false)
+        KeyboardLayoutCache.refresh(fromSelected: source)
+    }
+
+    private func verifyCycleSelect(requestedID: String,
+                                   previousID: String?,
+                                   notificationGeneration: UInt64,
+                                   source: TISInputSource) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60)) { [weak self] in
+            guard let self, self.opinionExactID == requestedID else { return }
+            guard let live = Self.liveSelectedSource(),
+                  let liveID = Self.stringProp(live, kTISPropertyInputSourceID),
+                  liveID != requestedID else { return }
+
+            let notificationSeen = self.selectedNotificationGeneration != notificationGeneration
+            // Третий ID — точно не простой лаг предыдущего состояния. Это внешний выбор либо
+            // изменившийся список: принимаем его и не возвращаем пользователя назад.
+            if liveID != previousID {
+                self.acceptCycleReality(live)
+                return
+            }
+            // Нотификация могла быть нашей и прийти раньше обновления preferences, либо внешней.
+            // Дадим HIToolbox ещё одно окно, но не будем повторно select-ить поверх пользователя.
+            if notificationSeen {
+                DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(60)) { [weak self] in
+                    guard let self, self.opinionExactID == requestedID,
+                          let settled = Self.liveSelectedSource(),
+                          let settledID = Self.stringProp(settled, kTISPropertyInputSourceID),
+                          settledID != requestedID else { return }
+                    self.acceptCycleReality(settled)
+                }
+                return
+            }
+
+            self.cycleMissCount += 1
+            if self.cycleMissCount == 1 || self.cycleMissCount % 10 == 0 {
+                kbLog("layout: циклическое переключение не применилось, поправка №\(self.cycleMissCount)")
+            }
+            guard TISSelectInputSource(source) == noErr else {
+                self.acceptCycleReality(live)
+                kbLog("layout: поправка цикла отклонена системой, принимаю реальность")
+                return
+            }
+            self.lastSelectAt = ProcessInfo.processInfo.systemUptime
         }
     }
 

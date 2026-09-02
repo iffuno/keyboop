@@ -36,6 +36,14 @@ final class Engine: EventTapHandler {
     /// но можно НЕ распространять: буфер чистим, следующая конверсия начинает с чистого листа.
     private var inFlightRealKeys = 0
 
+    /// macOS воспринимает два быстрых пробела как точку. Читаем официальный глобальный флаг AppKit
+    /// вне горячего tap-callback и обновляем по его нотификации; внутри клавиш — только дешёвый Bool.
+    private static let doubleSpacePeriodMaximumGap: TimeInterval = 0.45
+    private var systemDoubleSpacePeriodEnabled = false
+    private static func readSystemDoubleSpacePeriodEnabled() -> Bool {
+        NSSpellChecker.isAutomaticPeriodSubstitutionEnabled
+    }
+
     /// Единая точка завершения полёта синтетики (все completion'ы конверсий).
     private func endSyntheticFlight() {
         if inFlightRealKeys > 0 {
@@ -233,6 +241,7 @@ final class Engine: EventTapHandler {
 
     func start() -> Bool {
         if !didSetup {
+            systemDoubleSpacePeriodEnabled = Self.readSystemDoubleSpacePeriodEnabled()
             eventTap.handler = self
             // Смена активного приложения → контекст слова больше не достоверен.
             NSWorkspace.shared.notificationCenter.addObserver(
@@ -246,6 +255,12 @@ final class Engine: EventTapHandler {
                 // клик мышью идёт отдельным путём (handleContextReset → полный clear, каретка сдвинута).
                 self?.pendingSoftReset = true
                 self?.refreshFrontmostAppCache()   // inline-путь читает кеш (в колбэке NSWorkspace нельзя)
+            }
+            NotificationCenter.default.addObserver(
+                forName: NSSpellChecker.didChangeAutomaticPeriodSubstitutionNotification,
+                object: nil, queue: .main
+            ) { [weak self] _ in
+                self?.systemDoubleSpacePeriodEnabled = Self.readSystemDoubleSpacePeriodEnabled()
             }
             // Выбор сниппета МЫШЬЮ. Ведём в тот же обработчик, что и цифра в перехватчике:
             // одна дорога вставки, а не две.
@@ -286,9 +301,11 @@ final class Engine: EventTapHandler {
             let tisNotes: [CFString] = [kTISNotifyEnabledKeyboardInputSourcesChanged,
                                         kTISNotifySelectedKeyboardInputSourceChanged]
             for n in tisNotes {
+                let isSelectedChange = (n as String) == (kTISNotifySelectedKeyboardInputSourceChanged as String)
                 DistributedNotificationCenter.default().addObserver(
                     forName: NSNotification.Name(n as String), object: nil, queue: .main
                 ) { [weak self] _ in
+                    if isSelectedChange { self?.layout.noteSelectedSourceNotification() }
                     // Аудит C1 (24.07): уведомление прилетает и на НАШИ переключения — чуть позже
                     // по ранлупу, и его стейл-чтение «текущего» перезатирало только что
                     // детерминированно установленные кэш и мнение. В grace-окне своего select'а
@@ -479,6 +496,7 @@ final class Engine: EventTapHandler {
     /// Возвращает true, если клавишу надо ПРОГЛОТИТЬ (граница слова раскрыла сниппет — см. expandSnippet).
     @discardableResult
     func handleKeyDown(keyCode: Int64, characters: String, flags: CGEventFlags,
+                       eventTime: TimeInterval = ProcessInfo.processInfo.systemUptime,
                        post: ((CGEvent) -> Void)? = nil) -> Bool {
         // ВАЖНО: больше НЕ гейтим реальный ввод по muted — наша синтетика отсеивается тегом в EventTap
         // (kbSyntheticMarker), а реальные нажатия должны копиться в буфер ВСЕГДА, даже пока летит наша
@@ -533,6 +551,8 @@ final class Engine: EventTapHandler {
         case 49, 48, 36: // Space, Tab, Return — граница слова
             liveFixLast = ""                          // слово завершено — якорь self-heal сброшен
             wordEdited = false                        // новое слово начинается свежим — live-fix снова активен
+            let boundaryHandledAt = ProcessInfo.processInfo.systemUptime
+            lastRealKeyAt = boundaryHandledAt         // второй пробел тоже закрывает Fence A
             let ws = keyCode == 48 ? "\t" : (keyCode == 36 ? "\n" : " ")
             // СНИППЕТ: проверяем ТЕКУЩЕЕ слово ДО boundary (currentWord = триггер, как на экране).
             // Совпало → ГЛОТАЕМ клавишу-границу и раскрываем сами. Не пускаем пробел в приложение →
@@ -570,7 +590,10 @@ final class Engine: EventTapHandler {
             if keyCode == 36, convertBeforeReturn(flags: flags) {
                 return true   // Enter проглочен — уйдёт синтетикой строго после замены
             }
-            buffer.boundary(ws)
+            buffer.boundary(ws, at: eventTime)
+            // Space/Tab/Enter — тоже реальный текстовый ввод. Раньше Fence B видел только буквы,
+            // поэтому второй пробел внутри синтетической замены оставлял модель буфера ложной.
+            if muted { inFlightRealKeys += 1 }
             // Авто-раскладка срабатывает только по разрешённым клавишам-триггерам.
             var autoTrigger = (keyCode == 49 && settings.triggerSpace)
                            || (keyCode == 36 && settings.triggerEnter)
@@ -1191,47 +1214,27 @@ final class Engine: EventTapHandler {
         }
     }
 
-    /// 🌐/Fn/⇪: ТОЛЬКО смена языка, набранное не трогаем (в отличие от хоткея конвертации).
+    /// 🌐/Fn/⇪: ТОЛЬКО смена раскладки, набранное не трогаем (в отличие от хоткея конвертации).
     /// Ровно поведение системной клавиши, но без её задержки — мы срабатываем по факту
     /// чистого отпускания, а macOS ждёт, не начало ли это комбинации.
     ///
-    /// Направление считаем от ПАМЯТИ (currentIsCyrillicOpinion), а не от сырого TIS-чтения:
-    /// баг стейл-кэша давал «→ EN» ×6 подряд — каждое нажатие читало устаревший RU и «переключало»
-    /// туда же (баг-репорт, разбор в LayoutManager.opinionCyr).
+    /// Цикл идёт по всем включённым select-capable источникам в системном порядке и по полному
+    /// TIS ID. Точная память LayoutManager не даёт быстрым нажатиям повторять один источник из-за
+    /// стейл-чтения TIS.
     func handleLayoutSwitchOnly() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            let curCyr = self.layout.currentIsCyrillicOpinion()
-            let toCyr = !curCyr
-            guard self.layout.selectLayout(cyrillic: toCyr) else {
-                kbLog("globe: НЕ переключил — среди включённых раскладок нет \(toCyr ? "RU" : "EN")")
+            guard self.layout.cycleLayout() else {
+                kbLog("globe: НЕ переключил — среди включённых нет раскладок для цикла")
                 return
             }
-            // Слово оборвано сменой языка: дальше пойдут символы другого алфавита, и старый
+            // Слово оборвано сменой раскладки: дальше пойдут символы другого алфавита, и старый
             // префикс в буфере сделал бы из них «смешанное» слово. Начинаем с чистого листа.
             self.liveFixLast = ""
             self.buffer.clear()
             self.onLayoutMaybeChanged?()
             // Звук НЕ играем (просьба автора 24.07): это замена системной смены языка, а она
             // молчит. Индикатор в строке меню и так показывает текущий язык.
-            // ⚠️ ДИАГНОСТИКА ИНВЕРТИРОВАННОГО СИСТЕМНОГО ЗНАЧКА (баг-репорт: «переключаю на
-            // русский, а macOS показывает у каретки латинскую A»). Значок рисует САМА система, мы у
-            // каретки ничего не рисуем, значит она показывает то состояние, которое у неё на руках.
-            // Направление мы считаем от ПАМЯТИ (opinionCyr), а не от чтения TIS, и если память
-            // разошлась с реальностью, мы «переключаем» туда, где уже находимся: система показывает
-            // значок, а раскладка не меняется, и выглядит это ровно как инверсия.
-            // Поэтому пишем три величины разом: мнение, реальность ДО и реальность ПОСЛЕ.
-            let realBefore = self.layout.currentIsCyrillic()
-            kbLog("globe: язык переключён \(curCyr ? "RU" : "EN") → \(toCyr ? "RU" : "EN")"
-                  + " · мнение=\(curCyr ? "RU" : "EN") реальность до=\(realBefore ? "RU" : "EN")")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                guard let self else { return }
-                let realAfter = self.layout.currentIsCyrillic()
-                kbLog("globe: реальность через 250мс = \(realAfter ? "RU" : "EN")"
-                      + (realAfter == toCyr ? " (совпало с намерением)" : " ⚠️ НЕ совпало с намерением"))
-            }
-            // (300мс-диагностику стейл-чтения убрали: механизм подтверждён и уже обслуживается
-            //  opinionCyr + reconcileWithReality; лишний TIS-read на main под globe-шторм не нужен.)
         }
     }
 
@@ -1520,7 +1523,8 @@ final class Engine: EventTapHandler {
         // молча no-op'ала, а завершённое слово сиротело («иногда не переключается» у быстрых рук).
         guard let item = buffer.wordForConversion(completedOnly: !manual) else {
             if !manual { silentLog("emptybuf", "авто молчит: на границе слова буфер пуст") }
-            // Нечего конвертировать (буфер пуст), но нажат хоткей — просто переключаем язык RU↔EN.
+            // Нечего конвертировать (буфер пуст), но нажат хоткей — крутим тот же цикл раскладок,
+            // что у 🌐. Слово или допустимое выделение по-прежнему идут обычным RU↔EN-путём выше.
             // ⚠️ Выделение было, но мы от него отказались (многострочное / вероятная авто-копия).
             // Тогда НИЧЕГО не делаем: смена раскладки со звуком в этот момент — то самое
             // «звук был, а текст не изменился», по которому люди и решают, что программа сломана.
@@ -1532,16 +1536,15 @@ final class Engine: EventTapHandler {
                 return
             }
             if manual {
-                let toCyr = !layout.currentIsCyrillic()
-                layout.selectLayout(cyrillic: toCyr)
+                let cycled = layout.cycleLayout()
                 onLayoutMaybeChanged?()
-                playSound()
+                if cycled { playSound() }
                 // ⚠️ Эта ветка ЗВУЧИТ и МЕНЯЕТ РАСКЛАДКУ, но до 28.07 не писала в лог ни строки.
                 // автор дважды сообщал «во время начала диктовки играет звук конверсии», а
                 // воспроизвести не удаётся — при этом единственный путь, где звук звучит без
                 // всякой конверсии, ровно этот. Пишем, кто и когда его дёрнул: если он сработает
                 // на старте диктовки, в логе это будет видно рядом с `voice:` (задача #47).
-                kbLog("хоткей при пустом буфере: конвертировать нечего, просто сменил язык → \(toCyr ? "RU" : "EN")")
+                kbLog("хоткей при пустом буфере: конвертировать нечего, \(cycled ? "переключил раскладку циклом" : "циклить нечего")")
             }
             return
         }
@@ -1588,15 +1591,46 @@ final class Engine: EventTapHandler {
             silentLog("resonance", "авто молчит: анти-резонанс заморозил конверсию (len \(word.count))")
             liveFixLast = ""; buffer.clear(); return
         }
+
+        // ДВОЙНОЙ ПРОБЕЛ → ТОЧКА (задача #190). Если main задержал boundary-конверсию, второй
+        // физический пробел уже успел прийти, а macOS могла превратить экранный хвост в `. `.
+        // Раньше мы удаляли этот хвост вместе со словом и ретайпили буферные `  `, стирая системную
+        // точку. Теперь меняем ТОЛЬКО ведущую пару в той же замене: длина остаётся прежней, поэтому
+        // уже поставленная системой точка не дублируется. Ручной хоткей и медленные/сомнительные
+        // пары не затрагиваются; официальный глобальный флаг AppKit читается вне tap-callback.
+        let replacementTail: String
+        let completedTail: String
+        if manual {
+            replacementTail = item.tail
+            completedTail = buffer.lastTail
+        } else {
+            replacementTail = DoubleSpacePeriodRule.rewrittenTail(
+                item.tail,
+                after: converted,
+                systemEnabled: systemDoubleSpacePeriodEnabled,
+                doubleSpaceGap: buffer.lastTailDoubleSpaceGap,
+                maximumGap: Self.doubleSpacePeriodMaximumGap
+            )
+            completedTail = DoubleSpacePeriodRule.rewrittenTail(
+                buffer.lastTail,
+                after: converted,
+                systemEnabled: systemDoubleSpacePeriodEnabled,
+                doubleSpaceGap: buffer.lastTailDoubleSpaceGap,
+                maximumGap: Self.doubleSpacePeriodMaximumGap
+            )
+        }
+        let preservedDoubleSpacePeriod = replacementTail != item.tail
         // ФАНТОМНЫЙ ПРЕДОХРАНИТЕЛЬ (24.07): экран уже показывает итог? Тогда буфер отстал от
         // жизни (стейл-переводы) — заменять нечего, только звук и мигание. Молча выравниваем
         // модель по экрану. AX молчит (Electron/веб) → nil → обычный путь.
         // ТОЛЬКО в окне после НАШЕГО переключения раскладки: стейл-фантом возможен лишь там, а AX-чтение
         // синхронно на main (до ~150мс IPC) — гонять его на КАЖДУЮ конверсию congestило main и роняло
         // тап по таймауту у занятых приложений (репорт #8, 0.2.66). Вне окна буфер достоверен, страж не нужен.
-        if !manual, layout.withinOwnSelectGrace, AXScreenCheck.caretEndsWith(converted + item.tail) == true {
+        if !manual, layout.withinOwnSelectGrace,
+           AXScreenCheck.caretEndsWith(converted + replacementTail) == true {
             kbLog("фантом предотвращён: на экране уже итог (AX), len \(converted.count) — буфер выровнен")
-            buffer.applyConversion(converted: converted)
+            buffer.applyCompletedConversion(converted: converted)
+            if preservedDoubleSpacePeriod { buffer.applyCompletedTail(completedTail) }
             return
         }
 
@@ -1604,12 +1638,19 @@ final class Engine: EventTapHandler {
         kbLog("\(autoProp?.rescue == true ? "mixed-rescue" : "convert-word")\(manual ? "(хоткей)" : "(авто)"): \(item.deleteCount) симв. \(Self.scriptClass(word)) → \(toCyrillic ? "RU" : "EN")")   // без контента
         noteConvRepeat(word: word, produced: converted, path: manual ? "хоткей" : "boundary")
         // Снятие muted — в completion (после async-постинга), а не фикс-таймером (см. live-fix выше).
-        TextReplacer.replace(deleteCount: item.deleteCount, with: converted + item.tail) { [weak self] in
+        TextReplacer.replace(deleteCount: item.deleteCount, with: converted + replacementTail) { [weak self] in
             guard let self else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
         }
+        let tailT0 = CACurrentMediaTime()
         if manual { buffer.applyConversion(converted: converted) }
-        else { buffer.applyCompletedConversion(converted: converted) }   // огрызок следующего слова не трогаем (C2)
+        else {
+            buffer.applyCompletedConversion(converted: converted)       // огрызок следующего слова не трогаем (C2)
+            if preservedDoubleSpacePeriod {
+                buffer.applyCompletedTail(completedTail)
+                kbLog("двойной пробел: системная точка сохранена при boundary-конверсии")
+            }
+        }
         // Обучение на отмене: авто-конверсия → кандидат на откат; ручной ре-флип, отменяющий нашу
         // недавнюю авто-конверсию (U1), — засчитываем как откат.
         if manual {
@@ -1622,10 +1663,24 @@ final class Engine: EventTapHandler {
             // mixed-rescue не учим на отмене (артефакт нашего же флипа, не выбор юзера) — как и раньше.
             UndoLearner.shared.noteConversion(original: word, converted: converted)
         }
+        let modelDone = CACurrentMediaTime()
         settings.rescuedCount += 1                      // зверёк расколдовал ещё одно слово
+        let statsDone = CACurrentMediaTime()
         layout.selectLayout(cyrillic: toCyrillic)
+        let layoutDone = CACurrentMediaTime()
         onLayoutMaybeChanged?()
+        let callbackDone = CACurrentMediaTime()
         playSound()
+        let soundDone = CACurrentMediaTime()
+        let tailSpans = ConversionTailSpans(
+            modelMs: (modelDone - tailT0) * 1_000,
+            statsMs: (statsDone - modelDone) * 1_000,
+            layoutMs: (layoutDone - statsDone) * 1_000,
+            callbackMs: (callbackDone - layoutDone) * 1_000,
+            soundMs: (soundDone - callbackDone) * 1_000,
+            totalMs: (soundDone - tailT0) * 1_000
+        )
+        if tailSpans.isSlow { kbLog(tailSpans.logLine(manual: manual)) }
         // muted снимается в completion TextReplacer выше (после постинга синтетики).
     }
 
