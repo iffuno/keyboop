@@ -463,6 +463,18 @@ final class VoiceController {
     /// Считаем по МНОЖЕСТВАМ, а не по счётчику: пока молчаливая расшифровка считается, человек уже
     /// мог начать обычную диктовку, и её плашку прятать нельзя. Плашка нужна, только если есть хотя
     /// бы одна живая расшифровка, которую ждут в поле.
+    /// Идёт ли ПРЯМО СЕЙЧАС запись или расшифровка, результат которой ждут в поле.
+    ///
+    /// Условие дословно то же, что у плашки (`refreshIndicator`), и это не совпадение: «плашка
+    /// висит» и «результата ещё нет» — одно и то же состояние. Нужен вставке последней диктовки
+    /// (задача 242): свежая запись ложится в историю ПОСЛЕ доставки текста, поэтому во время
+    /// записи и расшифровки `lastVisible()` отдаёт ПРЕДЫДУЩУЮ диктовку — хоткей вставил бы вчерашний
+    /// текст, а через секунду в то же поле приехал бы свежий, и человек разбирал бы склейку.
+    /// ⚠️ Только с главного потока: `liveTranscriptions` main-only.
+    var isBusyWithDictation: Bool {
+        recorder.isRecording || liveTranscriptions.contains(where: { !historyOnlyGens.contains($0) })
+    }
+
     private func refreshIndicator() {
         if recorder.isRecording { setState(.recording) }
         else if liveTranscriptions.contains(where: { !historyOnlyGens.contains($0) }) { setState(.processing) }
@@ -895,6 +907,41 @@ final class VoiceController {
 
     /// Язык для whisper — из настроек (по умолчанию язык ОС, НЕ раскладки). "auto" → whisper определит.
     private func languageForWhisper() -> String { settings.voiceLanguage }
+
+    // MARK: - Импорт файла (задача 229)
+
+    /// Расшифровать кусок импортированного файла тем же движком, что и диктовку. nil — модели нет
+    /// или движок отказал. Whisper строго по одному на `transcribeQueue`, поэтому диктовка и импорт
+    /// не пересекаются внутри `whisper_full`; Parakeet — actor. Каждый кусок продлевает «человек
+    /// работает» для выгрузки модели по давлению памяти и снимает таймер выгрузки по простою:
+    /// иначе посреди часового файла модель уехала бы из памяти и вернулась через секунду-две.
+    func transcribeImported(_ samples: [Float]) async -> String? {
+        let lang = languageForWhisper()
+        let useParakeet = settings.voiceEngine == "parakeet" && ParakeetEngine.modelInstalled
+        await MainActor.run {
+            self.lastVoiceUseAt = Date()
+            self.modelIdleRelease?.cancel(); self.modelIdleRelease = nil
+        }
+        if useParakeet {
+            if await ParakeetEngine.shared.loadIfNeeded(),
+               let t = await ParakeetEngine.shared.transcribe(samples: samples, language: lang) { return t }
+            kbLog("импорт: parakeet отказал — пробую whisper")
+        }
+        guard await MainActor.run(body: { self.modelInstalled }) else { return nil }
+        return await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
+            transcribeQueue.async { [weak self] in
+                guard let self else { return c.resume(returning: nil) }
+                self.loadModelIfNeeded()
+                guard let w = self.whisper else { return c.resume(returning: nil) }
+                c.resume(returning: w.transcribe(samples: samples, language: lang))
+            }
+        }
+    }
+
+    /// Импорт закончился: вернуть модели обычный режим выгрузки по простою.
+    func importFinished() {
+        DispatchQueue.main.async { [weak self] in self?.scheduleModelRelease() }
+    }
 
     /// Синхронно освободить модель ПЕРЕД выходом из процесса (applicationWillTerminate).
     /// Swift не запускает deinit при exit(), поэтому без этого whisper_free не случался и Metal-буферы

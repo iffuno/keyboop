@@ -309,9 +309,9 @@ enum HotkeyGuard {
     /// интерфейсе, а не в момент нажатия.** Арбитраж на горячем пути был бы и медленнее, и
     /// необъяснимее для человека: «нажал, сработало не то» без единой подсказки почему.
     ///
-    /// Добавляя СЕДЬМОЙ хоткей, добавь его сюда же. Это единственное место, где перечислены все.
+    /// Добавляя СЛЕДУЮЩИЙ хоткей, добавь его сюда же. Это единственное место, где перечислены все.
     enum Slot: CaseIterable {
-        case convert, voice, translate, instant, snippet, plainPaste, caseChange
+        case convert, voice, translate, instant, snippet, plainPaste, caseChange, pasteDictation
 
         /// Как назвать функцию человеку в тексте «занято: %@».
         var name: String {
@@ -323,6 +323,23 @@ enum HotkeyGuard {
             case .snippet:    return L10n.t("is.busy.snippet")
             case .plainPaste: return L10n.t("is.busy.paste")
             case .caseChange: return L10n.t("is.busy.case")
+            case .pasteDictation: return L10n.t("is.busy.pasteLast")
+            }
+        }
+
+        /// Раздел настроек, где эту комбинацию меняют.
+        ///
+        /// ⚠️ Появился 07.09.2026 вместе с восьмым слотом. До него плашка «Одна клавиша на два
+        /// действия» открывала ВСЕГДА раздел переключения (`AppDelegate.warnHotkeyClashOnce`), и это
+        /// было верно ровно для двух слотов из семи: сниппеты, вставку без форматирования и смену
+        /// регистра настраивают в «Автозамене», диктовку и вставку последней диктовки — в «Голосе».
+        /// То есть человек по кнопке из предупреждения попадал не туда, где чинить.
+        var settingsSection: SettingsSection {
+            switch self {
+            case .convert, .instant:                  return .switching
+            case .voice, .pasteDictation:             return .voice
+            case .translate:                          return .translate
+            case .snippet, .plainPaste, .caseChange:  return .snippets
             }
         }
 
@@ -351,6 +368,9 @@ enum HotkeyGuard {
             case .caseChange:
                 guard s.caseChangeEnabled else { return nil }
                 return ("key", s.caseChangeKeyCode, s.caseChangeModifiers)
+            case .pasteDictation:
+                guard s.pasteDictationEnabled else { return nil }
+                return ("key", s.pasteDictationKeyCode, s.pasteDictationModifiers)
             }
         }
     }
@@ -438,14 +458,14 @@ enum HotkeyGuard {
     ///  • настройки достались от версии, где проверки ещё не было, и просто пережили обновления.
     /// Снаружи это выглядит не как конфликт, а как «переключение тормозит»: одна клавиша на два
     /// действия заставляет ждать, удержание это или нажатие. Именно так жалобу и прислали.
-    static func activeClashes() -> [(String, String)] {
-        var out: [(String, String)] = []
+    static func activeClashes() -> [(Slot, Slot)] {
+        var out: [(Slot, Slot)] = []
         let slots = Slot.allCases
         for (i, a) in slots.enumerated() {
             guard let ta = a.trigger else { continue }
             for b in slots.dropFirst(i + 1) {
                 guard let tb = b.trigger else { continue }
-                if sameTrigger(ta.mode, ta.keyCode, ta.mods, as: tb) { out.append((a.name, b.name)) }
+                if sameTrigger(ta.mode, ta.keyCode, ta.mods, as: tb) { out.append((a, b)) }
             }
         }
         return out

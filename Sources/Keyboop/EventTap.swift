@@ -26,6 +26,8 @@ protocol EventTapHandler: AnyObject {
     func handleTranslateHotkey()
     /// Смена регистра выделенного текста (задача 122).
     func handleCaseHotkey()
+    /// Вставить текст последней диктовки туда, где сейчас каретка (задача 242).
+    func handlePasteDictationHotkey()
 }
 
 /// Глобальный наблюдатель клавиатуры (CGEventTap, АКТИВНЫЙ `.defaultTap` — нужен Accessibility,
@@ -397,10 +399,21 @@ final class EventTap {
            sourceUserData == kbSyntheticMarker {
             return Unmanaged.passUnretained(event)
         }
-        // ПАУЗА: пропускаем событие насквозь, не разбирая. Стоит ЗДЕСЬ, после отсева собственной
-        // синтетики и до всей логики, чтобы молчали разом и авто-исправление, и хоткеи, и диктовка.
-        // Одно сравнение с часами, настройки не читаем (см. `Pause`).
-        if Pause.active { return Unmanaged.passUnretained(event) }
+        // ПАУЗА «НЕ МЕШАТЬ» ЗДЕСЬ БОЛЬШЕ НЕ ГЕЙТИТ (11.09.2026, решение автора в два шага).
+        //
+        // История. Сначала пауза глушила разом всё — и автоматику, и хоткеи, и диктовку; гейт стоял
+        // ровно тут, одним сравнением до всей логики. Утром 11.09 диктовку из-под паузы вывели
+        // белым списком по коду клавиши. Днём выяснилось, что белый список — не та граница:
+        // Escape (отмена диктовки) под него не попадал, ручная конверсия по комбинации тоже, а
+        // главное — буфер набора на паузе не наполнялся вовсе, и конвертировать «последнее слово»
+        // хоткею было бы нечего.
+        //
+        // Настоящая граница проходит не по клавишам, а по СМЫСЛУ: на паузе молчит только то, что
+        // приложение делает САМО (авто-конверсия на границе слова, живая починка, раскрытие
+        // сниппетов, конверсия перед Enter). Всё, что человек нажал сам, работает: диктовка и её
+        // Escape, ручная конверсия, регистр, сниппеты по цифре, мгновенное переключение. Поэтому
+        // тап обрабатывает события как обычно, а `Pause.active` проверяется в `Engine` ровно в тех
+        // точках, где рождается автоматическое действие. Список точек — у `Engine.handleKeyDown`.
         let s = AppSettings.shared
         // Системная клавиша (громкость/яркость/плеер) при зажатом модификаторе это аккорд, а не тап.
         // Гасим все взводы ровно как на обычной клавише и НИЧЕГО не глотаем.
@@ -635,6 +648,15 @@ final class EventTap {
             // передумал и продолжил печатать, отбирать у него нажатие за это нельзя.
             if SnippetPicker.shared.isOpen {
                 if keyCode == 53 { onMain { SnippetPicker.shared.hide() }; return swallowDown(keyCode) }
+                // Цифра `0` — нулевая строка «последняя диктовка» (задача 242). Своя цифра, ничью
+                // нумерацию не сдвигает; если строки на экране нет, клавиша человеку и остаётся.
+                if keyCode == 29, relevantMods(event.flags).isEmpty, SnippetPicker.shared.showsLastDictation {
+                    onMain { [weak self] in
+                        guard SnippetPicker.shared.pickLastDictation() else { return }
+                        self?.handler?.handlePasteDictationHotkey()
+                    }
+                    return swallowDown(keyCode)
+                }
                 if let d = Self.digitIndex(keyCode), let bank = Self.digitBank(relevantMods(event.flags)) {
                     // Нумерация продолжается модификаторами (автор 06.08): 1…9, затем ⇧1…⇧9, затем
                     // ⌘1…⌘9. Дальше только мышью — четвёртый ряд пришлось бы вешать на ⌥ или ⌃, а
@@ -669,7 +691,26 @@ final class EventTap {
             if s.caseChangeEnabled, keyMatches(keyCode, s.caseChangeKeyCode) {
                 let want = relevantMods(CGEventFlags(rawValue: s.caseChangeModifiers))
                 if !want.isEmpty, relevantMods(event.flags) == want {
-                    onMain { [weak self] in self?.handler?.handleCaseHotkey() }
+                    // Автоповтор зажатого сочетания гонял бы регистр туда-сюда: ЗАГЛАВНЫЕ, строчные,
+                    // ЗАГЛАВНЫЕ. Реагируем на первое нажатие, как соседние ветки.
+                    if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                        onMain { [weak self] in self?.handler?.handleCaseHotkey() }
+                    }
+                    return swallowDown(keyCode)
+                }
+            }
+            // Вставка последней диктовки. Стоит здесь же, среди «работы с чужим полем по сочетанию»,
+            // и ДО раскладочных веток: клавиша с модификаторами не должна дойти до конверсии.
+            if s.pasteDictationEnabled, keyMatches(keyCode, s.pasteDictationKeyCode) {
+                let want = relevantMods(CGEventFlags(rawValue: s.pasteDictationModifiers))
+                if !want.isEmpty, relevantMods(event.flags) == want {
+                    // Автоповтор зажатой клавиши обрабатывать нельзя: каждое повторение поставило бы
+                    // в очередь ещё одну полную вставку, и остановить их было бы нечем. Реагируем на
+                    // ПЕРВОЕ нажатие, как диктовка и мгновенное переключение. Глотаем при этом и
+                    // повторы тоже — иначе из-под зажатого сочетания посыплется сама буква.
+                    if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                        onMain { [weak self] in self?.handler?.handlePasteDictationHotkey() }
+                    }
                     return swallowDown(keyCode)
                 }
             }

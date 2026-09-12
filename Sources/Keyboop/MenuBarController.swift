@@ -26,6 +26,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onToggleAuto: ((Bool) -> Void)?
     var onCheckUpdates: (() -> Void)?
     var onQuit: (() -> Void)?
+    /// ⌥-клик по значку: скрытая запись звонка (задача 230).
+    var onToggleCallRecording: (() -> Void)?
+    private var callRecording = false
     var needsPermission = false
     private var voiceState: VoiceController.State = .idle
 
@@ -127,20 +130,21 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     /// Масштабируем под высоту строки меню (~16pt), рендерим как template → системная тонировка.
     private static let brandStatusImage: NSImage? = {
         guard let src = markImage else { return nil }
-        let h: CGFloat = 15, w = h * (src.size.width / max(src.size.height, 1))
-        let img = NSImage(size: NSSize(width: w, height: h))
+        // ⚠️ ТА ЖЕ ГЕОМЕТРИЯ, ЧТО У ЗНАКА В WAVEFORM (renderWave): холст 18 pt, знак 17 pt со
+        // сдвигом 0.5 внутри холста. До 04.09.2026 знак покоя был 15 pt: отзыв #242 («оторван от
+        // соседей») объяснился тем, что чернил в нём меньше, чем у обычных значков (17–18 pt), и
+        // воздуха вокруг больше; заодно при старте диктовки знак прыгал с 15 на 17. Сдвиг остаётся
+        // ВНУТРИ холста, а не полем снаружи: поле снаружи меняет размер картинки, а его NSStatusItem
+        // пересчитывает под строку меню (так прошлая правка увела знак втрое дальше от цели).
+        let H: CGFloat = 18, markS: CGFloat = 17
+        let w = markS * (src.size.width / max(src.size.height, 1))
+        let img = NSImage(size: NSSize(width: ceil(w), height: H))
         img.lockFocus()
-        // ⚠️ СДВИГ НА 1 px ВВЕРХ ВНУТРИ ПРЕЖНЕГО ХОЛСТА, А НЕ ПОЛЕМ СНАРУЖИ. Поле снаружи меняет
-        // размер картинки, а его NSStatusItem пересчитывает под строку меню — именно так прошлая
-        // правка увела знак втрое дальше от цели (см. разбор выше). Здесь холст остаётся 15 pt,
-        // поэтому пересчёта нет. Сдвигать есть куда: у самого PNG сверху пустое поле в 4 пикселя
-        // из 128, это 0.47 pt при нашем размере, то есть срезается прозрачность, а не рисунок.
-        // Замер после сдвига: знак 28.5 против 28.0 у букв языка, полпикселя.
-        src.draw(in: NSRect(x: 0, y: 0.5, width: w, height: h),
+        src.draw(in: NSRect(x: 0, y: (H - markS) / 2, width: w, height: markS),
                  from: .zero, operation: .sourceOver, fraction: 1)
         img.unlockFocus()
         img.isTemplate = true
-        return img                             // БЕЗ поправки — см. замер выше
+        return img
     }()
 
     /// ФЛАГ ЯЗЫКА в строке меню — как когда-то в Punto Switcher (просьба пользователей 25.07).
@@ -297,13 +301,35 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         let lang = settings.menuBarShowLanguage ? code : ""
         let mark = (needsPermission || AppHealth.iconDimmed(health)) ? "⚠︎" : ""
         let parts = [lang, mark].filter { !$0.isEmpty }
+        let bare = settings.menuBarStyle == "hidden"
+        if callRecording {
+            // Красный кружок рядом со значком (задача 230): запись звонка нельзя забыть. Цвет тут
+            // допустим, потому что подсказка значка говорит то же самое словами.
+            let text = parts.joined(separator: " ")
+            let font = NSFont.menuBarFont(ofSize: 0)
+            let s = NSMutableAttributedString(string: (bare ? "" : " ") + (text.isEmpty ? "" : text + " "),
+                                              attributes: [.font: font, .foregroundColor: NSColor.labelColor])
+            s.append(NSAttributedString(string: "●", attributes: [.font: font, .foregroundColor: NSColor.systemRed]))
+            button.attributedTitle = s
+            button.imagePosition = bare ? .noImage : .imageLeading
+            button.toolTip = L10n.t("call.tip")
+            return
+        }
         guard !parts.isEmpty else { button.title = ""; return }
         let text = parts.joined(separator: " ")
         // Без значка (hidden) подпись без ведущего пробела; со значком — с отступом от него.
-        button.title = settings.menuBarStyle == "hidden" ? text : " \(text)"
+        button.title = bare ? text : " \(text)"
     }
 
     /// Индикатор диктовки в статус-баре: запись / распознавание / покой.
+    /// Запись звонка (задача 230): красный кружок в строке меню, пока идёт запись. Во время диктовки
+    /// значок держит её индикатор, кружок вернётся вместе со значком покоя.
+    func setCallRecording(_ on: Bool) {
+        callRecording = on
+        shownIconState = nil          // подсказка значка перечитается на следующем тике
+        applyIconStyle()
+    }
+
     func setVoiceState(_ s: VoiceController.State) {
         voiceState = s
         guard let button = statusItem.button else { return }
@@ -459,6 +485,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // ⌃-клик система штатно считает правым, и человек с трекпадом часто именно им и пользуется.
         let e = NSApp.currentEvent
         let right = e?.type == .rightMouseUp || e?.modifierFlags.contains(.control) == true
+        // ⌥-клик — скрытая запись звонка (задача 230): ни в меню, ни в настройках её нет.
+        if !right, e?.modifierFlags.contains(.option) == true { onToggleCallRecording?(); return }
         if right { runQuickAction() } else { showMenu() }
     }
 
@@ -847,6 +875,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
+        NSPasteboard.general.kbNoteOurs()   // иначе история буфера запишет нашу же копию (задача 228)
         VoiceIndicator.shared.showToast(L10n.t("menu.copyLastDone"))
     }
     /// Пауза изменилась: меню пересобирается при открытии само, но значок и подсказка живут

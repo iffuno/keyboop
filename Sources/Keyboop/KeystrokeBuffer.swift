@@ -258,10 +258,34 @@ final class KeystrokeBuffer {
         }
     }
 
+    private func contextIndex(forCurrent: Bool) -> Int {
+        forCurrent ? sessionWords.count - 1 : sessionWords.count - 2
+    }
+
+    private func breaksLine(_ tail: String) -> Bool {
+        tail.contains("\n") || tail.contains("\r")
+    }
+
     /// Слово, ПРЕДШЕСТВУЮЩЕЕ тому, что сейчас решается детектором, — как оно выглядит на
     /// экране (после applyConversion). Для текущего слова (мид-ввод) это последнее завершённое;
-    /// для только что завершённого — предыдущее завершённое. O(1), без аллокаций.
+    /// для только что завершённого — предыдущее завершённое. Контекст никогда не пересекает Enter:
+    /// новая строка — новая фраза, иначе первая F/Ш наследует язык прошлого сообщения (#232).
+    /// O(1), без аллокаций.
     func contextWord(forCurrent: Bool) -> String? {
-        forCurrent ? sessionWords.last?.word : sessionWords.dropLast().last?.word
+        let i = contextIndex(forCurrent: forCurrent)
+        guard i >= 0, !breaksLine(sessionWords[i].tail) else { return nil }
+        return sessionWords[i].word
+    }
+
+    /// Слово ещё на один шаг левее того же контекста. Нужно только для узкого случая русской
+    /// фразы с латинской аббревиатурой (`… касается iOS, nj`): одного непосредственного соседа
+    /// недостаточно, но сканировать всю строку и менять язык по большинству слишком рискованно.
+    func earlierContextWord(forCurrent: Bool) -> String? {
+        let immediate = contextIndex(forCurrent: forCurrent)
+        let earlier = immediate - 1
+        guard earlier >= 0,
+              !breaksLine(sessionWords[immediate].tail),
+              !breaksLine(sessionWords[earlier].tail) else { return nil }
+        return sessionWords[earlier].word
     }
 }

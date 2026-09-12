@@ -191,6 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if ReleaseFeatures.slap { configureSlapGesture() }
         menuBar.onCheckUpdates = { UpdaterController.shared.checkNow() }
         menuBar.onQuit = { NSApp.terminate(nil) }
+        menuBar.onToggleCallRecording = { CallRecorder.shared.toggle() }   // скрытая запись звонка (230)
         menuBar.openMenuForShot()   // KEYBOOP_MENUSHOT=1: сам открывает меню под снимок, иначе молчит
         menuBar.onToggleAuto = { _ in }
         // Через main: колбэк зовётся СИНХРОННО из обработчика события (Enter-pre конверсия), а
@@ -247,6 +248,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         VoiceController.shared.preload()   // прогрев модели в фоне → первое нажатие диктовки без задержки
         VoiceHistory.migrateKeyIfNeeded()  // ключ истории: старый .histkey → Keychain (security-аудит M1, 01.07)
+        ClipboardWatcher.shared.apply()    // история буфера (задача 228): живёт только при явном тумблере
+        CallRecorder.recoverUnfinishedSessions()   // запись звонка, оборванная крэшем или выключением (230)
 
         // Dev-помощник: запуск с --settings[=snippets] сразу открывает Настройки (на нужном разделе).
         if let arg = CommandLine.arguments.first(where: { $0.hasPrefix("--settings") }) {
@@ -621,6 +624,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 FeedbackWindowController.shared.show()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                     FeedbackWindowController.shared.dumpFieldForDev(to: "/tmp/kb_feedback.png")
+                    FeedbackWindowController.shared.dumpFormForDev(to: "/tmp/kb_feedback_form.png")
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exit(0) }
                 }
             }
@@ -918,15 +922,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func warnHotkeyClashOnce() {
         let clashes = HotkeyGuard.activeClashes()
         guard let first = clashes.first else { return }
-        let key = "warnedClash:\(first.0)|\(first.1)"
-        kbLog("хоткеи: одна комбинация на две функции — \(first.0) и \(first.1)")
+        let (a, b) = (first.0.name, first.1.name)
+        let key = "warnedClash:\(a)|\(b)"
+        kbLog("хоткеи: одна комбинация на две функции — \(a) и \(b)")
         guard !UserDefaults.standard.bool(forKey: key) else { return }
         UserDefaults.standard.set(true, forKey: key)
+        // Открываем раздел ПЕРВОЙ из спорящих функций, а не всегда «Переключение»: кнопка обязана
+        // приводить туда, где комбинацию видно и можно поменять (см. Slot.settingsSection).
+        let section = first.0.settingsSection
         AppBanner.shared.show(
             title: L10n.t("clash.title"),
-            body: String(format: L10n.t("clash.body"), first.0, first.1),
+            body: String(format: L10n.t("clash.body"), a, b),
             actions: [.init(title: L10n.t("clash.open"), coral: true) { [weak self] in
-                self?.openSettings(section: .switching)
+                self?.openSettings(section: section)
             }])
     }
 
@@ -1043,7 +1051,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// крутится в фоне как агент) — macOS не плодит второй экземпляр, а зовёт это.
     /// Открываем настройки, чтобы клик не «проваливался в пустоту».
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        openSettings()
+        // Значок в Dock появляется и ради окна истории (задача 229): клик по нему должен вернуть
+        // именно его, а не открыть настройки поверх.
+        if let history = VoiceHistoryWindowController.frontmost {
+            history.show()
+        } else {
+            openSettings()
+        }
         NSApp.activate(ignoringOtherApps: true)
         return true
     }
@@ -1071,6 +1085,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     UndoLearner.shared.declineLearn(word)
                 }
             ],
+            // Без ответа плашка уходит сама через 20 секунд (задача 139, 05.09.2026). Это НЕ «Не надо»:
+            // таймер зовёт dismiss() → onAbandon → dismissLearn, который лишь сбрасывает счётчик, и
+            // следующий вопрос про это же слово возможен только после трёх новых откатов. «Не надо»
+            // же (declineLearn) запоминает отказ надолго. Человек, который просто не смотрел на экран,
+            // не должен получать наказание как за осознанный отказ.
+            autoDismiss: 20,
             onAbandon: { UndoLearner.shared.dismissLearn(word) }
         )
     }
@@ -1332,6 +1352,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var isSecondaryInstance = false
 
     func applicationWillTerminate(_ notification: Notification) {
+        CallRecorder.shared.stopForTermination()   // сегмент закрывается, расшифровку доберёт следующий запуск
         VoiceController.shared.unloadForTermination()
         slapDetector?.shutdown()
         if let observer = slapSettingsObserver {

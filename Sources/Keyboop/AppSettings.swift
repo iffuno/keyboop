@@ -474,6 +474,9 @@ final class AppSettings {
     var voiceWinOpacity: Double { get { d.double(forKey: "voiceWinOpacity") } set { d.set(newValue, forKey: "voiceWinOpacity") } }
     /// Сохранять небольшую историю диктовок (зашифровано). По умолчанию включено.
     var voiceHistoryEnabled: Bool { get { d.object(forKey: "voiceHistoryEnabled") == nil ? true : d.bool(forKey: "voiceHistoryEnabled") } set { d.set(newValue, forKey: "voiceHistoryEnabled") } }
+    /// Записывать в общую историю текст, скопированный в буфер обмена (задача 228). По умолчанию
+    /// ВЫКЛЮЧЕНО и включается только явно: включённая история диктовок его не включает.
+    var clipboardHistoryEnabled: Bool { get { d.bool(forKey: "clipboardHistoryEnabled") } set { d.set(newValue, forKey: "clipboardHistoryEnabled") } }
     /// Сколько минут хранить историю диктовок (0 = без удаления). По умолчанию 60 мин (1 час).
     /// Миграция с voiceHistoryDays: конвертим дни → минуты, cap 480 (8ч).
     var voiceHistoryMinutes: Int {
@@ -562,6 +565,27 @@ final class AppSettings {
     /// Функция живёт ровно тогда, когда назначено сочетание. Отдельного тумблера-состояния нет:
     /// два источника правды («включено» и «есть комбинация») разъезжаются, это уже проходили.
     var caseChangeEnabled: Bool { caseChangeKeyCode >= 0 }
+
+    /// ВСТАВИТЬ ПОСЛЕДНЮЮ ДИКТОВКУ ПО СОЧЕТАНИЮ (задача 242, отзыв #245 от @KlymenkoOleksandra,
+    /// 05.09.2026): «надиктовал, нажал „Завершить“, а курсор оказался не в том поле».
+    ///
+    /// Комбинация НЕ назначена по умолчанию (`-1`), как у смены регистра и панели сниппетов: новый
+    /// перехват сочетания нельзя включать всем без спроса, у кого-то оно уже работает в чужой
+    /// программе. Отдельного тумблера-состояния нет — функция жива ровно тогда, когда есть
+    /// комбинация (два источника правды разъезжаются, это уже проходили).
+    var pasteDictationKeyCode: Int {
+        get { d.object(forKey: "pasteDictationKeyCode") == nil ? -1 : d.integer(forKey: "pasteDictationKeyCode") }
+        set { d.set(newValue, forKey: "pasteDictationKeyCode") }
+    }
+    var pasteDictationModifiers: UInt64 {
+        get { UInt64(bitPattern: Int64(d.integer(forKey: "pasteDictationMods"))) }
+        set { d.set(Int(bitPattern: UInt(newValue)), forKey: "pasteDictationMods") }
+    }
+    var pasteDictationKeyLabel: String {
+        get { d.string(forKey: "pasteDictationKeyLabel") ?? "" }
+        set { d.set(newValue, forKey: "pasteDictationKeyLabel") }
+    }
+    var pasteDictationEnabled: Bool { pasteDictationKeyCode >= 0 }
 
     /// Скорость воспроизведения клипа диктовки. Запоминается между запусками: человек, слушающий
     /// свои заметки на 2×, не должен возвращать её каждый раз (просьба автора 10.08).

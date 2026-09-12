@@ -160,6 +160,7 @@ enum SecureInputProbe {
         }
         pb.clearContents()
         pb.setString(text, forType: .string)
+        pb.kbNoteOurs()
 
         let src = CGEventSource(stateID: .hidSystemState)
         let vKey: CGKeyCode = 9                       // kVK_ANSI_V
@@ -175,6 +176,7 @@ enum SecureInputProbe {
             for (t, v) in item { it.setData(v, forType: t) }
             pb.writeObjects([it])
         }
+        pb.kbNoteOurs()
     }
 
     /// ⚠️ СТРОГО ЧЕРЕЗ main, И СТРОГО async. Обращение к элементу СВОЕГО процесса Accessibility

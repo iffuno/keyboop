@@ -2,27 +2,19 @@ import Foundation
 import CryptoKit
 import Security
 
-/// Небольшая история диктовок, зашифрованная AES-GCM (ключ — в Keychain). Никогда не покидает Mac
-/// (принцип №2). Можно выключить (voiceHistoryEnabled).
+/// Небольшая история диктовок и, по отдельному тумблеру, скопированного текста (задача 228),
+/// зашифрованная AES-GCM (ключ — в Keychain). Никогда не покидает Mac (принцип №2). Можно выключить
+/// целиком (voiceHistoryEnabled); захват буфера включается отдельно (clipboardHistoryEnabled).
 final class VoiceHistory {
     static let shared = VoiceHistory()
     private let settings = AppSettings.shared
-    private let maxEntries = 50
     private let fileURL: URL
     private var cache: [Entry] = []
 
-    /// ⚠️ `audio` появился 08.08.2026 и ОБЯЗАН оставаться Optional: старые записи в `history.enc`
-    /// этого поля не содержат, и `JSONDecoder` их читает только потому, что отсутствующий ключ у
-    /// Optional это nil, а не ошибка. Сделать его не-опциональным значит обнулить историю всем,
-    /// кто обновится.
-    struct Entry: Codable {
-        let date: Date
-        let text: String
-        var audio: String? = nil
-        /// Огибающая для волны, 64 значения 0…15. Optional по той же причине, что и `audio`:
-        /// записи, сделанные до 10.08.2026, этого поля не содержат.
-        var wave: [UInt8]? = nil
-    }
+    /// Запись живёт в `ClipboardHistoryCore.swift` (`HistoryEntry`): с 04.09.2026 в ленте два типа
+    /// записей, и стенд проверяет чтение старых файлов без самой истории. Правило про Optional-поля
+    /// (`audio` с 08.08, `wave` с 10.08, `kind`/`app` с 04.09) записано там же и остаётся несущим.
+    typealias Entry = HistoryEntry
 
     private init() {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -44,20 +36,66 @@ final class VoiceHistory {
     /// `audio` — идентификатор клипа из `VoiceClips` (nil, если сохранение аудио выключено).
     ///
     /// ⚠️ Клип живёт ровно столько же, сколько запись, поэтому КАЖДЫЙ путь, которым запись отсюда
-    /// исчезает, обязан унести и файл: срок хранения (`prune`), потолок в 50 записей (здесь),
+    /// исчезает, обязан унести и файл: срок хранения (`prune`), потолки по типам (`applyCaps`),
     /// удаление одной (`remove`), «очистить всё» (`clear`).
     func add(_ text: String, audio: String? = nil, wave: [UInt8]? = nil) {
         guard settings.voiceHistoryEnabled else {
             if let a = audio { VoiceClips.delete(a) }   // история выключена — клипу тем более не место
             return
         }
-        cache.append(Entry(date: Date(), text: text, audio: audio, wave: wave))
+        cache.append(Entry(date: Date(), text: text, audio: audio, wave: wave, kind: .dictation))
         _ = prune()
-        if cache.count > maxEntries {
-            let dropped = cache.prefix(cache.count - maxEntries)
-            dropped.compactMap { $0.audio }.forEach(VoiceClips.delete)
-            cache.removeFirst(cache.count - maxEntries)
+        applyCaps()
+        save()
+        notifyChanged()
+    }
+
+    /// Текст из буфера обмена (задача 228). Тумблер захвата проверяет наблюдатель, но и здесь
+    /// стоит защёлка: запись, пришедшая после выключения, не должна проскочить.
+    func addClipboard(_ text: String, app: String?) {
+        guard settings.voiceHistoryEnabled, settings.clipboardHistoryEnabled else { return }
+        cache.append(Entry(date: Date(), text: text, kind: .clipboard, app: app))
+        _ = prune()
+        applyCaps()
+        save()
+        notifyChanged()
+    }
+
+    /// Расшифровка импортированного аудиофайла (задача 229). Не подчиняется сроку хранения: человек
+    /// принёс файл сам и ждал расшифровки минуты, стирать её через час было бы издевательством.
+    /// Уходит только вручную, «очистить историю» или по своему потолку в `HistoryPolicy`.
+    func addImported(_ text: String, fileName: String, audio: String?, wave: [UInt8]?, kind: HistoryKind = .imported) {
+        guard settings.voiceHistoryEnabled else {
+            if let a = audio { VoiceClips.delete(a) }
+            return
         }
+        cache.append(Entry(date: Date(), text: text, audio: audio, wave: wave, kind: kind, app: fileName))
+        _ = prune()
+        applyCaps()
+        save()
+        notifyChanged()
+    }
+
+    /// Потолки считаются отдельно для диктовок и буфера (`HistoryPolicy`), чтобы сотня
+    /// скопированных строк не вытеснила диктовки. У выброшенных диктовок уносим клипы.
+    private func applyCaps() {
+        let (kept, dropped) = HistoryPolicy.capped(cache)
+        guard !dropped.isEmpty else { return }
+        dropped.compactMap { $0.audio }.forEach(VoiceClips.delete)
+        cache = kept
+    }
+
+    /// Сколько записей буфера лежит в истории (для вопроса при выключении захвата).
+    var clipboardCount: Int { cache.filter { $0.isClipboard }.count }
+
+    /// Последний записанный текст буфера: наблюдатель не пишет один и тот же текст дважды подряд.
+    var lastClipboardText: String? { HistoryPolicy.lastClipboardText(cache) }
+
+    /// Удалить только записи буфера (человек выключил захват и попросил стереть собранное).
+    /// Диктовки не трогаем: он выключил буфер, а не историю.
+    func removeClipboardEntries() {
+        guard cache.contains(where: { $0.isClipboard }) else { return }
+        cache.removeAll { $0.isClipboard }
         save()
         notifyChanged()
     }
@@ -69,8 +107,9 @@ final class VoiceHistory {
         guard mins > 0 else { return false }
         let cutoff = Date().addingTimeInterval(-Double(mins) * 60)
         let before = cache.count
-        cache.filter { $0.date < cutoff }.compactMap { $0.audio }.forEach(VoiceClips.delete)
-        cache.removeAll { $0.date < cutoff }
+        // Импортированные файлы срок хранения не трогает (см. addImported).
+        cache.filter { $0.date < cutoff && !$0.isImported }.compactMap { $0.audio }.forEach(VoiceClips.delete)
+        cache.removeAll { $0.date < cutoff && !$0.isImported }
         return cache.count != before
     }
 
@@ -78,7 +117,7 @@ final class VoiceHistory {
     /// Сами тексты остаются: он выключил звук, а не историю.
     func forgetAudio() {
         guard cache.contains(where: { $0.audio != nil }) else { return }
-        cache = cache.map { Entry(date: $0.date, text: $0.text, audio: nil, wave: nil) }
+        cache = cache.map { var e = $0; e.audio = nil; e.wave = nil; return e }
         save()
         notifyChanged()
     }
@@ -108,12 +147,27 @@ final class VoiceHistory {
     /// смене срока в настройках), а между этими моментами в нём спокойно лежит запись, срок которой
     /// уже вышел. Пункт «Скопировать последнюю диктовку» опирается именно на этот метод, иначе он
     /// предлагал бы скопировать то, что человек велел удалить полчаса назад.
+    ///
+    /// Только диктовки: с появлением буфера в ленте (задача 228) последняя ЗАПИСЬ и последняя
+    /// ДИКТОВКА разошлись, а пункт обещает именно диктовку.
     func lastVisible() -> Entry? {
-        guard settings.voiceHistoryEnabled, let e = cache.last else { return nil }
+        guard settings.voiceHistoryEnabled, let e = HistoryPolicy.lastDictation(cache) else { return nil }
         let mins = settings.voiceHistoryMinutes
         guard mins > 0 else { return e }                       // 0 = хранить всё
         return e.date >= Date().addingTimeInterval(-Double(mins) * 60) ? e : nil
     }
+    /// Есть ли в кэше хоть одна диктовка, без учёта срока хранения.
+    ///
+    /// Нужно затем, чтобы отличить «диктовок ещё не было» от «диктовка была, но её срок вышел»:
+    /// для человека это разные новости (задача 242). `all()` для такой проверки не годится — он
+    /// чистит просроченное и пишет на диск, то есть сам стирает признак, который мы пришли измерить.
+    ///
+    /// ⚠️ ЧЕСТНАЯ ГРАНИЦА: `prune()` зовётся не только из `all()`, но и из `init`, `add` и смены
+    /// срока хранения, поэтому просроченная запись доживает до этой проверки не всегда. Значит
+    /// «была, но просрочена» мы говорим, только когда МОЖЕМ это доказать, а в остальных случаях
+    /// сообщение обязано быть верным при обоих раскладах — см. `voice.pasteLastNever`.
+    var hasAnyDictation: Bool { HistoryPolicy.lastDictation(cache) != nil }
+
     func remove(date: Date, text: String) {
         cache.filter { $0.date == date && $0.text == text }.compactMap { $0.audio }.forEach(VoiceClips.delete)
         cache.removeAll { $0.date == date && $0.text == text }

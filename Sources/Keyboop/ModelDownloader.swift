@@ -18,15 +18,30 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
     // size — в EN-единицах (MB/GB); локализуется на показе через L10n.size(). note — КЛЮЧ L10n,
     // резолвится через L10n.t() в SettingsWindow.unifiedModels (каталог статичен, язык — на показе).
     // sha256 — ожидаемый хеш файла модели на pinnedRevision (сверяется после скачивания).
-    struct Model { let name: String; let size: String; let note: String; let sha256: String }
+    /// ⚠️ `help` ХРАНИТСЯ ЗДЕСЬ, А НЕ ВЫВОДИТСЯ ИЗ ИМЕНИ (08.09.2026). Раньше ключ собирал
+    /// SettingsWindow: `model.\(id.hasPrefix("large") ? "large" : id).help`. Пока large-модель была
+    /// одна, это работало. Вторая large-* молча получила бы подсказку первой — то есть чужие цифры
+    /// диска и памяти ровно в том месте, где мы обещали назвать честную цену ДО нажатия «Скачать».
+    /// А любая не-large с суффиксом (medium-q5_0) показала бы человеку сырой ключ строкой: L10n.t
+    /// отдаёт отсутствующий ключ как есть. `note` с самого начала был устроен правильно, ключ в
+    /// записи; `help` был единственным, который угадывался.
+    struct Model {
+        let name: String
+        let size: String
+        let note: String
+        let help: String
+        let sha256: String
+    }
     static let catalog: [Model] = [
-        Model(name: "base",           size: "142 MB", note: "model.base.note",
+        Model(name: "base",           size: "142 MB", note: "model.base.note",   help: "model.base.help",
               sha256: "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe"),
-        Model(name: "small",          size: "466 MB", note: "model.small.note",
+        Model(name: "small",          size: "466 MB", note: "model.small.note",  help: "model.small.help",
               sha256: "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"),
-        Model(name: "medium",         size: "1.5 GB", note: "model.medium.note",
+        Model(name: "medium",         size: "1.5 GB", note: "model.medium.note", help: "model.medium.help",
               sha256: "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208"),
-        Model(name: "large-v3-turbo", size: "1.6 GB", note: "model.large.note",
+        // Ключ подсказки исторически короткий, «model.large.help», а не «model.large-v3-turbo.help».
+        // Оставлен как есть, чтобы не трогать оба перевода: ради таких случаев ключ и сделан явным.
+        Model(name: "large-v3-turbo", size: "1.6 GB", note: "model.large.note",  help: "model.large.help",
               sha256: "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69")
     ]
 

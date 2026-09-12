@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import UniformTypeIdentifiers
 
 /// Подпись-плейсхолдер, ПРОЗРАЧНАЯ для мыши.
 ///
@@ -29,6 +30,16 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
     private let sendBtn = NSButton()
     private let tgBtn = NSButton()
     private let mailBtn = NSButton()
+    // Вложение (задача 191, 05.09.2026): кнопка выбора, подпись «имя · размер», крестик, повтор.
+    private let attachBtn = NSButton()
+    private let attachName = NSTextField(labelWithString: "")
+    private let attachRemove = NSButton()
+    private let retryBtn = NSButton()
+    /// Выбранный файл. Тип и размер фиксируем в момент выбора: заявка серверу должна совпасть с тем,
+    /// что потом польётся в него, байт в байт.
+    private var attachment: (url: URL, type: String, size: Int)?
+    /// Второй шаг, который ещё не удался: текст уже в базе, токен живёт 15 минут, файл можно повторить.
+    private var pendingUpload: (token: String, type: String, url: URL)?
     /// Экран формы и экран «отправлено» — меняем целиком, а не подписью у кнопки (см. showDone).
     private var formContent: NSView?
     private let doneText = NSTextField(wrappingLabelWithString: "")
@@ -178,6 +189,34 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         contactWhy.font = .systemFont(ofSize: 11)
         contactWhy.textColor = .tertiaryLabelColor
 
+        // Вложение (задача 191): скриншот или короткое видео к отзыву. Файл выбирает сам человек
+        // (ask+show+send: имя и размер видны до отправки), а на сервере он не хранится: уходит
+        // разработчику в Telegram и стирается, о чём подпись под кнопкой говорит прямо.
+        attachBtn.title = L10n.t("fb.attach")
+        attachBtn.bezelStyle = .rounded
+        attachBtn.target = self
+        attachBtn.action = #selector(chooseAttachment)
+        attachName.font = .systemFont(ofSize: 12)
+        attachName.textColor = .secondaryLabelColor
+        attachName.lineBreakMode = .byTruncatingMiddle
+        attachName.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        attachName.isHidden = true
+        attachRemove.image = NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: L10n.t("fb.attachRemove"))
+        attachRemove.isBordered = false
+        attachRemove.imagePosition = .imageOnly
+        attachRemove.contentTintColor = .tertiaryLabelColor
+        attachRemove.toolTip = L10n.t("fb.attachRemove")
+        attachRemove.target = self
+        attachRemove.action = #selector(removeAttachment)
+        attachRemove.isHidden = true
+        let attachRow = NSStackView(views: [attachBtn, attachName, attachRemove])
+        attachRow.orientation = .horizontal
+        attachRow.spacing = 8
+        attachRow.alignment = .centerY
+        let attachHint = NSTextField(wrappingLabelWithString: L10n.t("fb.attachHint"))
+        attachHint.font = .systemFont(ofSize: 11)
+        attachHint.textColor = .tertiaryLabelColor
+
         diagCheck.title = L10n.t("fb.diag")
         diagCheck.state = .on
         diagCheck.font = .systemFont(ofSize: 12)
@@ -217,12 +256,18 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         tgBtn.target = self
         tgBtn.action = #selector(sendViaTelegram)
         tgBtn.toolTip = L10n.t("fb.tgTip")
-        let btnRow = NSStackView(views: [status, NSView(), mailBtn, tgBtn, sendBtn])
+        // Повтор файла: появляется, только когда текст уже принят, а второй шаг не удался.
+        retryBtn.title = L10n.t("fb.fileRetry")
+        retryBtn.bezelStyle = .rounded
+        retryBtn.target = self
+        retryBtn.action = #selector(retryUpload)
+        retryBtn.isHidden = true
+        let btnRow = NSStackView(views: [status, NSView(), mailBtn, retryBtn, tgBtn, sendBtn])
         btnRow.orientation = .horizontal
         btnRow.spacing = 10
 
         // AppKit-канон: вертикальный stack с alignment .leading + width-pin для wrapping-строк.
-        let stack = NSStackView(views: [intro, textScroll, contact, contactWhy, diagRow, hint, btnRow])
+        let stack = NSStackView(views: [intro, textScroll, contact, contactWhy, attachRow, attachHint, diagRow, hint, btnRow])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
@@ -238,7 +283,8 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
             content.widthAnchor.constraint(equalToConstant: 480),
         ])
-        for v in [intro, textScroll, contact, contactWhy, diagRow, hint, btnRow] {
+        stack.setCustomSpacing(4, after: attachRow)
+        for v in [intro, textScroll, contact, contactWhy, attachRow, attachHint, diagRow, hint, btnRow] {
             (v as NSView).widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40).isActive = true
         }
         formContent = content
@@ -292,9 +338,10 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         return content
     }
 
-    private func showDone(hasContact: Bool) {
+    private func showDone(hasContact: Bool, withFile: Bool = false) {
         guard let w = window else { return }
         doneText.stringValue = L10n.t(hasContact ? "fb.doneWithContact" : "fb.doneNoContact")
+            + (withFile ? "\n\n" + L10n.t("fb.doneFile") : "")
         let done = makeDoneContent()
         w.contentView = done
         w.setContentSize(done.fittingSize); w.clampToScreen()
@@ -318,6 +365,11 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         // Контакт НЕ чистим: кто написал раз, часто пишет и второй, а перенабирать его каждый раз
         // — ровно тот мелкий труд, из-за которого поле и оставляют пустым.
         mailBtn.isHidden = true
+        retryBtn.isHidden = true
+        pendingUpload = nil
+        attachment = nil
+        attachName.isHidden = true
+        attachRemove.isHidden = true
         sendBtn.isEnabled = true
         w.contentView = form
         w.setContentSize(form.fittingSize); w.clampToScreen()
@@ -367,7 +419,8 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         хоткеи: конверсия=\(s.hotkeyMode)/\(s.hotkeyKeyCode)/\(s.hotkeyModifiers) · \
         диктовка=\(s.voiceHotkeyMode)/\(s.voiceHotkeyKeyCode)/\(s.voiceHotkeyModifiers) (hold=\(s.voiceHoldMode)) · \
         перевод=\(s.translateHotkeyKeyCode)/\(s.translateHotkeyModifiers) · \
-        мгновенное=\(s.instantSwitchEnabled ? s.instantSwitchMode : "выкл")/\(s.instantSwitchKeyCode)/\(s.instantSwitchMods)
+        мгновенное=\(s.instantSwitchEnabled ? s.instantSwitchMode : "выкл")/\(s.instantSwitchKeyCode)/\(s.instantSwitchMods) · \
+        вставка диктовки=\(s.pasteDictationEnabled ? "\(s.pasteDictationKeyCode)/\(s.pasteDictationModifiers)" : "выкл")
         """
         // Список ВКЛЮЧЁННЫХ раскладок: прямая улика для «переключает только в одну сторону»
         // (баг с поиском латиницы по языковому тегу). Только названия, ничего пользовательского.
@@ -428,22 +481,33 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         // и экран «Улетело» обещал бы ответ, которого не будет: в базу контакт не попал.
         sentWithContact = !c.isEmpty
         if diagCheck.state == .on { body["diag"] = Self.buildDiagnostics() }
+        // Файл заявляем в том же JSON (тип и размер), а сам он поедет вторым шагом по токену из
+        // ответа. Снимок берём сейчас, как и контакт: крестик по дороге не должен менять то, что ушло.
+        let sentAttachment = attachment
+        if let a = sentAttachment { body["attachment"] = FeedbackAttachmentPolicy.declaration(type: a.type, size: a.size) }
 
-        var req = URLRequest(url: URL(string: "https://keyboop.com/api/feedback")!)
+        var req = URLRequest(url: FeedbackAttachmentPolicy.endpoint)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         req.timeoutInterval = 15
-        URLSession.shared.dataTask(with: req) { [weak self] _, resp, _ in
+        URLSession.shared.dataTask(with: req) { [weak self] data, resp, _ in
             let ok = (resp as? HTTPURLResponse)?.statusCode == 200
-            DispatchQueue.main.async { self?.sendFinished(ok) }
+            let token = ok ? data.flatMap(FeedbackAttachmentPolicy.uploadToken(fromResponse:)) : nil
+            DispatchQueue.main.async { self?.sendFinished(ok, uploadToken: token, attachment: sentAttachment) }
         }.resume()
     }
 
-    private func sendFinished(_ ok: Bool) {
+    private func sendFinished(_ ok: Bool, uploadToken: String?, attachment: (url: URL, type: String, size: Int)?) {
         sendBtn.isEnabled = true
         if ok {
             kbLog("feedback: отправлен (длина только — принцип №2)")
+            if let a = attachment, let token = uploadToken {
+                pendingUpload = (token, a.type, a.url)
+                uploadAttachment()
+                return
+            }
+            if attachment != nil { kbLog("feedback: сервер файл не ждёт, ушёл только текст") }
             showDone(hasContact: sentWithContact)
         } else {
             status.textColor = .systemOrange
@@ -454,6 +518,103 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
     }
 
     @objc private func sendMail() { Permissions.openFeedbackMail() }
+
+    /// Второй шаг: сам файл. «Отправить» на это время выключена: текст уже в базе, и повторное
+    /// нажатие дало бы дубль отзыва, а не повтор файла. Для повтора есть своя кнопка.
+    private func uploadAttachment() {
+        guard let u = pendingUpload else { return }
+        sendBtn.isEnabled = false
+        retryBtn.isHidden = true
+        status.textColor = .secondaryLabelColor
+        status.stringValue = L10n.t("fb.sendingFile")
+        let req = FeedbackAttachmentPolicy.uploadRequest(token: u.token, type: u.type)
+        URLSession.shared.uploadTask(with: req, fromFile: u.url) { [weak self] _, resp, _ in
+            let ok = (resp as? HTTPURLResponse)?.statusCode == 200
+            DispatchQueue.main.async { self?.uploadFinished(ok) }
+        }.resume()
+    }
+
+    private func uploadFinished(_ ok: Bool) {
+        if ok {
+            pendingUpload = nil
+            kbLog("feedback: файл ушёл")
+            showDone(hasContact: sentWithContact, withFile: true)
+        } else {
+            status.textColor = .systemOrange
+            status.stringValue = L10n.t("fb.fileFail")
+            retryBtn.isHidden = false
+            kbLog("feedback: файл не дошёл, предложен повтор")
+        }
+    }
+
+    @objc private func retryUpload() { uploadAttachment() }
+
+    // MARK: - Вложение
+
+    @objc private func chooseAttachment() {
+        guard let w = window else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.png, .jpeg, .mpeg4Movie, .quickTimeMovie]
+        panel.message = L10n.t("fb.attachHint")
+        panel.beginSheetModal(for: w) { [weak self] r in
+            guard r == .OK, let url = panel.url else { return }
+            self?.attach(url)
+        }
+    }
+
+    private func attach(_ url: URL) {
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        switch FeedbackAttachmentPolicy.verdict(fileExtension: url.pathExtension, size: size) {
+        case .ok(let type):
+            attachment = (url, type, size)
+            attachName.stringValue = "\(url.lastPathComponent) · \(Self.humanSize(size))"
+            attachName.isHidden = false
+            attachRemove.isHidden = false
+            status.textColor = .secondaryLabelColor
+            status.stringValue = ""
+            kbLog("feedback: выбран файл \(type), \(size) байт")   // имя файла в лог не пишем
+        case .tooLarge(let limit):
+            status.textColor = .systemOrange
+            status.stringValue = String(format: L10n.t("fb.attachTooLarge"), Self.humanSize(limit))
+        case .unsupported, .empty:
+            status.textColor = .systemOrange
+            status.stringValue = L10n.t("fb.attachBadType")
+        }
+    }
+
+    @objc private func removeAttachment() {
+        attachment = nil
+        attachName.isHidden = true
+        attachRemove.isHidden = true
+        // Файл не дошёл, а человек передумал его повторять: текст уже у нас, показываем «Улетело».
+        if pendingUpload != nil { pendingUpload = nil; showDone(hasContact: sentWithContact) }
+    }
+
+    private static func humanSize(_ n: Int) -> String {
+        FeedbackAttachmentPolicy.humanSize(n, mb: L10n.t("fb.unitMB"), kb: L10n.t("fb.unitKB"))
+    }
+
+    /// DEV-ХУК (`KEYBOOP_FBDUMP=1`, второй снимок): вся форма с выбранным файлом в PNG. Правило
+    /// проекта: то, что видит человек, смотрим в пикселях до релиза. Ряд вложения появился 05.09.2026
+    /// (задача 191), и без снимка его геометрию никто бы не увидел до первой жалобы.
+    func dumpFormForDev(to path: String) {
+        attachName.stringValue = "screenshot.png · \(Self.humanSize(1_234_567))"
+        attachName.isHidden = false
+        attachRemove.isHidden = false
+        guard let form = formContent else { return }
+        form.layoutSubtreeIfNeeded()
+        let b = form.bounds
+        guard b.width > 1, b.height > 1, let rep = form.bitmapImageRepForCachingDisplay(in: b) else {
+            kbLog("FBDUMP: форма пуста"); return
+        }
+        form.cacheDisplay(in: b, to: rep)
+        if let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+            kbLog("FBDUMP: записан \(path)")
+        }
+    }
 
     /// DEV-ХУК (`KEYBOOP_FBDUMP=1`): напечатать в поле образец и отрисовать сам блок ввода в PNG.
     ///

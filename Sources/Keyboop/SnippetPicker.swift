@@ -24,6 +24,38 @@ final class SnippetPicker {
     /// Что сейчас показано: список пар в том же порядке, что и цифры на экране.
     private(set) var shown: [(String, String)] = []
 
+    /// НУЛЕВАЯ СТРОКА «последняя диктовка» (автор 07.09.2026, задача 242).
+    ///
+    /// Хоткей для вставки последней диктовки уже есть, но хоткеев мало, и раздавать их по штуке на
+    /// функцию нельзя. Здесь та же вставка достаётся бесплатно: панель уже открывается своим
+    /// сочетанием, цифры 1…9 заняты сниппетами, а `0` свободен. Мышечная память не ломается —
+    /// строка не сдвигает ничью нумерацию, она берёт себе цифру, которой ни у кого не было.
+    ///
+    /// Строку показываем, только когда вставлять ЕСТЬ ЧТО и вставка сработает: это список того, что
+    /// можно вставить прямо сейчас, а не витрина возможностей. Под паролем на историю строки нет
+    /// вовсе (см. `lastDictationText`).
+    private(set) var showsLastDictation = false
+
+    /// Выбор нулевой строки МЫШЬЮ. Ведёт в тот же обработчик, что и цифра `0`.
+    var onPickLastDictation: (() -> Void)?
+
+    /// Текст последней диктовки, если её прямо сейчас можно вставить, иначе nil.
+    static func lastDictationText() -> String? {
+        // DEV-ХУК ДЛЯ СНИМКА (`KEYBOOP_SNIPPICK_DEMO=1`, зовёт `Tools/snipshot.sh`). Без него
+        // нулевую строку нельзя увидеть в пикселях: она показывается только когда в истории есть
+        // живая диктовка, а срок хранения у неё бывает и час — то есть снимок пришлось бы ловить
+        // в окно после настоящей диктовки. Правило проекта «посмотри на пиксели до релиза» без
+        // такого хука здесь просто не выполнимо. На боевое поведение не влияет никак.
+        if ProcessInfo.processInfo.environment["KEYBOOP_SNIPPICK_DEMO"] == "1" {
+            return "Образец: сюда попадает текст последней диктовки, длинный обрезается по ширине панели"
+        }
+        // Пароль на историю действует и здесь: показать текст в панели значит показать его тому,
+        // от кого человек и закрывал историю паролем.
+        guard !HistoryGate.enabled else { return nil }
+        guard let t = VoiceHistory.shared.lastVisible()?.text, !t.isEmpty else { return nil }
+        return t
+    }
+
     var isOpen: Bool { panel != nil }
 
     /// Выбор МЫШЬЮ. Ведёт в тот же обработчик, что и цифра: путь вставки обязан быть один,
@@ -41,7 +73,9 @@ final class SnippetPicker {
     @discardableResult
     func show() -> Bool {
         let pairs = TextSnippetStore.shared.orderedPairs
-        guard !pairs.isEmpty else {
+        let dictation = Self.lastDictationText()
+        // Пусто, только если нечего вставить ВООБЩЕ: ни сниппетов, ни свежей диктовки.
+        guard !pairs.isEmpty || dictation != nil else {
             VoiceIndicator.shared.showToast(L10n.t("snip.pickEmpty"))
             return false
         }
@@ -52,7 +86,8 @@ final class SnippetPicker {
         // уликой. Гасим старое ДО того, как записать новое.
         hide()
         shown = pairs
-        let p = makePanel(for: pairs)
+        showsLastDictation = dictation != nil
+        let p = makePanel(for: pairs, dictation: dictation)
         panel = p
         p.orderFrontRegardless()
         // ⚠️ СТОРОЖ ПОЯВИЛСЯ ВМЕСТЕ С МЫШЬЮ. Пока панель игнорировала клики, забытый на экране
@@ -71,6 +106,15 @@ final class SnippetPicker {
         panel?.orderOut(nil)
         panel = nil
         shown = []
+        showsLastDictation = false
+    }
+
+    /// Выбрана нулевая строка. true — она была на экране (значит вставку делаем), false — не было.
+    @discardableResult
+    func pickLastDictation() -> Bool {
+        let was = showsLastDictation
+        hide()
+        return was
     }
 
     /// Выбор цифрой 1…9. Возвращает раскрытие или nil, если такой строки нет.
@@ -83,7 +127,7 @@ final class SnippetPicker {
 
     // MARK: - Отрисовка
 
-    private func makePanel(for pairs: [(String, String)]) -> NSPanel {
+    private func makePanel(for pairs: [(String, String)], dictation: String? = nil) -> NSPanel {
         let rowH: CGFloat = 28, padV: CGFloat = 12, width: CGFloat = 620, tipH: CGFloat = 22
         // ВЫСОТА ОГРАНИЧЕНА ЭКРАНОМ, дальше прокрутка (автор 06.08). Без потолка список из тридцати
         // строк вырос бы за пределы экрана, и нижние оказались бы недостижимы вообще ничем.
@@ -94,7 +138,7 @@ final class SnippetPicker {
         let anchor = Self.anchorPoint()
         let visible = (NSScreen.screens.first { $0.frame.contains(anchor) } ?? NSScreen.main)?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let rowsH = rowH * CGFloat(pairs.count)
+        let rowsH = rowH * CGFloat(pairs.count + (dictation != nil ? 1 : 0))
         let maxRowsH = max(rowH * 3, visible.height * 0.6 - padV * 2 - tipH)   // хотя бы три строки видно всегда
         let shownRowsH = min(rowsH, maxRowsH)
         let height = padV * 2 + shownRowsH + tipH
@@ -131,7 +175,9 @@ final class SnippetPicker {
         // Фиксированная колонка держала пустоту: названия обычно короткие, а место рядом нужно
         // тексту, ради которого список и открывают. Потолок оставляем, иначе одно длинное название
         // съело бы всю строку и от текста осталось бы многоточие.
-        let nameW = Self.nameColumnWidth(for: pairs)
+        // Нулевая строка участвует в замере колонки наравне с остальными: иначе её название
+        // обрезалось бы многоточием на списке из коротких аббревиатур.
+        let nameW = Self.nameColumnWidth(for: pairs + (dictation != nil ? [(L10n.t("snip.pickDictation"), "")] : []))
 
         // Строки живут в прокручиваемой области. Когда всё влезает, полосы не видно и ведёт себя
         // ровно как раньше: `hasVerticalScroller` рисует её только при переполнении.
@@ -140,9 +186,20 @@ final class SnippetPicker {
         // четырнадцатую строку сверху (стенд 06.08). С `isFlipped` верх это y = 0, строки кладутся
         // сверху вниз в порядке чтения, а начальное положение прокрутки не требует расчётов вовсе.
         let doc = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: rowsH))
+        var top: CGFloat = 0
+        if let dictation {
+            // Цифра `0`: своя, ничью не занимает. Текст показываем как у сниппета — человек должен
+            // видеть, что именно вставится, а не только обещание.
+            let r = row(index: 0, trigger: L10n.t("snip.pickDictation"), expansion: dictation, nameW: nameW,
+                        frame: NSRect(x: 0, y: 0, width: width, height: rowH),
+                        separator: !pairs.isEmpty)
+            r.onClick = { [weak self] in self?.onPickLastDictation?() }
+            doc.addSubview(r)
+            top = rowH
+        }
         for (i, pair) in pairs.enumerated() {
             let r = row(index: i + 1, trigger: pair.0, expansion: pair.1, nameW: nameW,
-                        frame: NSRect(x: 0, y: CGFloat(i) * rowH, width: width, height: rowH),
+                        frame: NSRect(x: 0, y: top + CGFloat(i) * rowH, width: width, height: rowH),
                         separator: i < pairs.count - 1)
             let idx = i
             r.onClick = { [weak self] in self?.onPick?(idx) }
@@ -338,6 +395,7 @@ final class SnippetPicker {
     /// нарисовать клавишу, которой не существует, хуже, чем не рисовать ничего.
     static func shortcutLabel(for index: Int) -> String {
         switch index {
+        case 0:       return "0"      // нулевая строка: последняя диктовка (задача 242)
         case 1...9:   return "\(index)"
         case 10...18: return "⇧\(index - 9)"
         case 19...27: return "⌘\(index - 18)"

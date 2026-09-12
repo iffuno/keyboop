@@ -57,6 +57,10 @@ enum PlainPaste {
             return true
         }
 
+        // Окно владения для наблюдателя истории буфера (задача 228): подмена и восстановление это
+        // наши служебные записи, а не то, что человек скопировал.
+        PasteboardOwnership.beginOwnedWindow()
+        defer { PasteboardOwnership.endOwnedWindow() }
         let before = pb.changeCount
         let snapshot: [[(type: NSPasteboard.PasteboardType, data: Data)]] = (pb.pasteboardItems ?? []).map { item in
             item.types.compactMap { t in item.data(forType: t).map { (type: t, data: $0) } }
@@ -68,6 +72,7 @@ enum PlainPaste {
         item.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
         pb.writeObjects([item])
         let ours = pb.changeCount
+        pb.kbNoteOurs()
 
         sendCmdV()
 
@@ -93,6 +98,7 @@ enum PlainPaste {
                 return it
             })
         }
+        pb.kbNoteOurs()
         kbLog("вставка без форматирования: \(plain.count) симв., буфер восстановлен (типов было \(snapshot.first?.count ?? 0))")
         return true
     }

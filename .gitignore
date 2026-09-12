@@ -4,6 +4,7 @@
 
 # Сборка и дистрибутивы (пересобираются)
 .build/
+build/
 Keyboop.app/
 *.dmg
 *.delta
@@ -26,8 +27,8 @@ site/**/*.mp4
 site/models/
 
 # Разбор чужих приложений — не наше, в историю не кладём
-Handy Files/
-PuntoS files/
+research/handy-files/
+research/punto-files/
 
 # Мусор системы и инструментов
 .DS_Store

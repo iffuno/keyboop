@@ -251,7 +251,13 @@ final class VoiceIndicator {
             // дефект, ради которого весь этот метод и написан: в островном режиме обычная панель
             // спрятана, `wasRecording` выходил ложью, и тост посреди диктовки гасил запись насовсем.
             // В логе это видно как лишнее «спрятал» ровно через 2.2 с после тоста.
-            let wasRecording = (self.mode == .recording && self.onScreen)
+            // ⚠️ И `.processing` ТОЖЕ (07.09.2026, задача 245). Возврат умел только запись, поэтому
+            // любой тост во время расшифровки гасил «Распознаю» насовсем: `refreshIndicator` зовут
+            // лишь по её завершении, и до конца транскрипции человек оставался без плашки. Повод
+            // нашёлся сразу, как вставка последней диктовки начала отказывать словами во время
+            // расшифровки, но дыра общая для всех тостов.
+            let restore: Mode? = self.onScreen && (self.mode == .recording || self.mode == .processing)
+                ? self.mode : nil
             self.toastAction = onClick
             self.present(text, .toast)
             let gen = self.presentGen
@@ -260,11 +266,11 @@ final class VoiceIndicator {
             let duration = onClick == nil ? 2.2 : 4.5
             DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
                 guard let self, self.presentGen == gen else { return }   // показали что-то новее — не наше дело
-                if wasRecording {
-                    // Запись всё ещё идёт: если бы она кончилась, VoiceController уже позвал бы
+                if let restore {
+                    // Состояние всё ещё то же: если бы запись кончилась, VoiceController позвал бы
                     // showProcessing или hide, а это сменило бы номер показа и мы бы сюда не дошли.
-                    kbLog("hud: тост отыграл, возвращаю плашку записи (запись продолжается)")
-                    self.present("", .recording)
+                    kbLog("hud: тост отыграл, возвращаю плашку (\(restore == .recording ? "запись" : "расшифровка") продолжается)")
+                    self.present(restore == .recording ? "" : L10n.t("voice.recognizing"), restore)
                 } else {
                     self.hide()
                 }
@@ -467,8 +473,22 @@ final class VoiceIndicator {
     /// равноудалённых пятна. Группировка требует, чтобы внутренний зазор был ЗАМЕТНО меньше внешнего
     /// поля, иначе элементы распадаются.
     private func relayout(text: String, showWave: Bool) {
+        // ⚠️ МЕРИМ ЯЧЕЙКОЙ ПОЛЯ, А НЕ `NSString.size` (11.09.2026, жалоба пользователя на плашку «Не мешать»).
+        // Раньше ширину считали через `NSString.size(withAttributes:)` плюс один пункт запаса.
+        // Этого запаса не хватает: `NSTextField` рисует ту же строку тем же шрифтом ШИРЕ примерно на
+        // 2–3 пункта (замерено: «Не мешаю. Повторите быстрое действие, чтобы вернуть» — NSString 345,
+        // ячейка 347.8; английская строка 314 против 316.2). Рамка выходила уже текста на пару
+        // пунктов, а `byTruncatingMiddle` не умеет отрезать два пикселя — он выбрасывает несколько
+        // символов и ставит многоточие. На экране это выглядело как «Повторите быс…ое действие»:
+        // строка, которая заведомо влезала в потолок 460, всё равно оказывалась усечённой.
+        // `label.stringValue` к этому месту уже выставлен (см. `present`), поэтому ячейку можно
+        // спрашивать про её собственный текст.
         let font = label.font ?? .systemFont(ofSize: 12, weight: .medium)
-        let measuredLabelW = ceil((text as NSString).size(withAttributes: [.font: font]).width) + 1
+        let byString = ceil((text as NSString).size(withAttributes: [.font: font]).width) + 1
+        let byCell = label.cell.map {
+            ceil($0.cellSize(forBounds: NSRect(x: 0, y: 0, width: 10_000, height: rowH)).width)
+        }
+        let measuredLabelW = max(byString, byCell ?? byString)
         // Имя выбранной папки может быть сколь угодно длинным. Тост не имеет права стать шире
         // экрана или превратить остров в полосу; середина усекается, полный текст остаётся tooltip.
         let maxToastLabelW: CGFloat = 460

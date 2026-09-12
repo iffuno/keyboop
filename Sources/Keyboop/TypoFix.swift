@@ -241,8 +241,46 @@ final class TypoFix {
     ///
     /// Таблица первой: она курирована человеком и потому надёжнее любой догадки. Механический
     /// разбор вторым — он покрывает то, чего в таблице нет и быть не может (промахи пальцев).
+    private func tableCandidate(_ w: String) -> String? {
+        (w.hasCyrillic ? rulesRu : rulesEn)[w]
+    }
+
     private func candidate(_ w: String) -> String? {
-        (w.hasCyrillic ? rulesRu : rulesEn)[w] ?? mechanical(w)
+        if let fixed = tableCandidate(w) { return fixed }
+        // Пунктуацию имеет право пропускать только точная курируемая запись. Механический поиск
+        // по строкам вроде `раз,или` превратил бы безопасное правило в глобальную догадку.
+        guard w.allSatisfy({ $0.isLetter }) else { return nil }
+        return mechanical(w)
+    }
+
+    private func isProtected(_ w: String) -> Bool {
+        let exc = ExceptionStore.shared
+        return exc.ignored.contains(w) || exc.learned.contains(w)
+            || UndoLearner.shared.isSessionProtected(w)
+    }
+
+    private func restoringLeadingCase(of original: String, in fixed: String) -> String {
+        original.first?.isUppercase == true
+            ? fixed.prefix(1).uppercased() + fixed.dropFirst()
+            : fixed
+    }
+
+    /// Снимаем только внешние знаки препинания и возвращаем их после точной табличной правки.
+    /// Цифры, символы и буквы не считаем обёрткой: `123про,лему` не должно внезапно совпасть с
+    /// правилом для `про,лему`. Внутренняя запятая остаётся частью ключа таблицы.
+    private func punctuationWrappedCore(_ word: String) -> (prefix: String, core: String, suffix: String)? {
+        var start = word.startIndex
+        while start < word.endIndex, word[start].isPunctuation {
+            word.formIndex(after: &start)
+        }
+        var end = word.endIndex
+        while end > start {
+            let previous = word.index(before: end)
+            guard word[previous].isPunctuation else { break }
+            end = previous
+        }
+        guard start < end else { return nil }
+        return (String(word[..<start]), String(word[start..<end]), String(word[end...]))
     }
 
     /// Исправление для слова, либо nil. Стоимость — один поиск в словаре, никакого перебора.
@@ -252,27 +290,46 @@ final class TypoFix {
         // исправление опечатки, поэтому оно уважает общий тумблер и штатную отмену нашей правки.
         // Раскладку целиком не переключаем: после `1.8` человек может продолжить русским `мм`.
         guard let fixed = NumericTypoRule.suggestion(for: word) else { return nil }
-        let w = word.lowercased(), exc = ExceptionStore.shared
-        guard !exc.ignored.contains(w), !exc.learned.contains(w),
-              !UndoLearner.shared.isSessionProtected(w) else { return nil }
+        let w = word.lowercased()
+        guard !isProtected(w) else { return nil }
         return fixed
+    }
+
+    /// Только точная запись из курируемой таблицы. В отличие от механики, этот путь допускает
+    /// пунктуацию внутри токена: так две подтверждённые опечатки с клавишей `б` можно исправить,
+    /// не вводя опасное общее правило «запятая внутри слова всегда означает `б`».
+    ///
+    /// Метод O(1) и поэтому годится для синхронного enter-pre: Telegram не успеет отправить слово
+    /// до правки, а полный механический перебор в горячий callback мы не переносим.
+    func curatedSuggestion(_ word: String) -> String? {
+        guard ready, AppSettings.shared.typoFix else { return nil }
+        guard let parts = punctuationWrappedCore(word) else { return nil }
+        let w = parts.core.lowercased()
+        guard w.count >= 4 else { return nil }
+        // Смешанные огрызки остаются за конверсией раскладки, не за опечатками.
+        guard parts.core.hasCyrillic != parts.core.hasLatinLetter else { return nil }
+        let whole = word.lowercased()
+        guard !inDictionaries(w), !isPersonal(w), !isPersonal(whole),
+              !isProtected(w), !isProtected(whole) else { return nil }
+        guard let fixed = tableCandidate(w) else { return nil }
+        return parts.prefix + restoringLeadingCase(of: parts.core, in: fixed) + parts.suffix
     }
 
     /// Исправление для слова, либо nil. Стоимость — один поиск в словаре, никакого перебора.
     func suggest(_ word: String) -> String? {
         guard ready, AppSettings.shared.typoFix else { return nil }
         if let fixed = numericSuggestion(word) { return fixed }
+        if let fixed = curatedSuggestion(word) { return fixed }
         let w = word.lowercased()
         guard w.count >= 4, w.allSatisfy({ $0.isLetter }) else { return nil }
         // Смешанные огрызки не наши: там работает конверсия раскладки, а не правка опечаток.
         guard word.hasCyrillic != word.hasLatinLetter else { return nil }
         // Сначала защиты, потом поиск: они дешевле и отсекают большую часть слов.
         guard !inDictionaries(w), !isPersonal(w) else { return nil }
-        let exc = ExceptionStore.shared
-        guard !exc.ignored.contains(w), !exc.learned.contains(w) else { return nil }
-        guard !UndoLearner.shared.isSessionProtected(w) else { return nil }
-        guard let fixed = candidate(w) else { return nil }
+        guard !isProtected(w) else { return nil }
+        // Точная таблица уже проверена выше; здесь остаётся только безопасная буквенная механика.
+        guard let fixed = mechanical(w) else { return nil }
         // Регистр возвращаем человеку: «Извените» → «Извините», а не «извините».
-        return word.first?.isUppercase == true ? fixed.prefix(1).uppercased() + fixed.dropFirst() : fixed
+        return restoringLeadingCase(of: word, in: fixed)
     }
 }

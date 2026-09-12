@@ -142,6 +142,44 @@ enum LayoutDetector {
     /// одиночная «c» перед пробелом в русском тексте = предлог «с» в 99% случаев.
     static let ruSingleLetter: Set<String> = ["а", "в", "и", "к", "о", "с", "у", "я"]
 
+    /// СМАЙЛИК ЗАПАДНОГО ТИПА: «глаза» знаком, необязательный «нос», «рот». Никогда не трогаем.
+    ///
+    /// Отзывы #247–248 (@aklimov, 06.09.2026): «:D» превращалось в «:В», и человек не смог спастись
+    /// даже исключением. Дело не в словаре: `letterCore` срезает ведущее двоеточие, остаётся «d», а
+    /// «d»→«в» это правило одиночных русских предлогов, набранных в EN-раскладке. Тем же путём
+    /// ломались «:C»→«:С», «:B»→«:И», «:-D», «=D». Предлог никогда не приклеен к двоеточию, поэтому
+    /// смайлик отсекаем целиком и до всех правил. «;D», «:P», «XD» сегодня выживают СЛУЧАЙНО (так
+    /// легли словарь и триграммы) — здесь они становятся осознанным keep, иначе следующая правка
+    /// словаря сломает их молча.
+    ///
+    /// ⚠️ ПОЧЕМУ «ГЛАЗА» РАЗДЕЛЕНЫ НА ТРИ КЛАССА (замер: прогон всех 2545 коротких токенов до и
+    /// после правки, разошлось 73 решения, все ожидаемые). `:` и `=` в русской раскладке букв не
+    /// дают, пара с ними не может быть словом ни при каком чтении — там разрешён любой «рот».
+    /// У `;` (русская «ж») и `8` строчный рот даёт живые токены («;t» = «же», «;l» = «жд»), поэтому
+    /// рот обязан быть заглавным (второй заглавной в русском слове не бывает) или знаком. А `x` это
+    /// «ч», и заглавный рот там сплошь живые аббревиатуры: «XG» = «ЧП», «XR» = «ЧК». Первая версия
+    /// правила их ломала, поэтому у иксовых глаз оставлен ровно классический «XD».
+    static func isEmoticon(_ raw: String) -> Bool {
+        var s = Substring(raw)
+        // Концевая пунктуация предложения смайлику не мешает: «:D.» и «:D,» это тот же смайлик.
+        while let l = s.last, ".,!?…".contains(l) { s = s.dropLast() }
+        guard let eyes = s.first else { return false }
+        s = s.dropFirst()
+        if let nose = s.first, s.count > 1, "-~^'".contains(nose) { s = s.dropFirst() }
+        guard s.count == 1, let mouth = s.first else { return false }
+        let mouthSymbols = ")(|/\\*$@[]{}3"
+        switch eyes {
+        case ":", "=":
+            return mouth.isLetter || mouthSymbols.contains(mouth)
+        case ";", "8":
+            return (mouth.isLetter && mouth.isUppercase) || mouthSymbols.contains(mouth)
+        case "X", "x":
+            return mouth == "D" || mouth == "d"
+        default:
+            return false
+        }
+    }
+
     /// Символ — буква, ИЛИ его клавиша в другой раскладке даёт букву (х=[, ж=;, э=', ё=`, ъ=]).
     static func isLayoutLetter(_ c: Character) -> Bool {
         if c.isLetter { return true }
@@ -258,15 +296,38 @@ enum LayoutDetector {
         return .keep
     }
 
+    /// Узкий мост для русской фразы, внутри которой стоит латинская аббревиатура:
+    /// `… касается iOS, nj` / `… нашего EPG, nj`. Непосредственный сосед тут латинский и обычный
+    /// enKeepShort-гейт оставляет `nj`, хотя до него продолжается русская фраза.
+    ///
+    /// Не используем «язык большинства строки»: он сломал бы живое `Сегодня матч Loko vs CSKA`.
+    /// Требуем одновременно точное строчное `nj`, запятую после ASCII-лейбла, минимум две заглавные
+    /// буквы в нём и чисто кириллическое слово ещё левее. `New, NJ` и `the EPG, nj` остаются как есть.
+    private static func russianNJAfterLatinLabel(word: String, rawCore: String,
+                                                  prev: String?, earlier: String?) -> Bool {
+        guard word == "nj", rawCore == word,
+              let prev, prev.last == ",",
+              let earlier, earlier.hasCyrillic, !earlier.hasLatinLetter else { return false }
+        let label = prev.dropLast()
+        guard !label.isEmpty,
+              label.allSatisfy({ ch in
+                  ch.isLetter && ch.unicodeScalars.allSatisfy({ $0.isASCII })
+              }) else { return false }
+        return label.filter({ $0.isUppercase }).count >= 2
+    }
+
     /// Решение для АВТО-режима. Manual-хоткей в это не заходит (юзер решил сам).
     /// prev — ПРЕДЫДУЩЕЕ слово фразы (как на экране): из него берём язык-контекст (разрешает
     /// короткие коллизии) И проверку слова-классификатора (vitamin/gen/plan → буква-маркер).
+    /// earlier — ещё одно слово слева в пределах той же строки; используется только узким мостом
+    /// для `iOS, nj`, а не как общий языковой приор.
     /// На однозначные и длинные слова (5+ букв, 100% точность) НЕ влияет.
     /// `afterCaretJump` — это ПЕРВОЕ слово после того, как каретку двигали мышью или навигацией.
     /// Нужен только для одиночных букв: без него «нет соседей» означает сразу два разных случая,
     /// начало ввода и середину чужого слова, а поступать в них надо противоположно (см. ниже).
     static func decide(word raw: String, exceptions: ExceptionStore,
-                       prev: String? = nil, afterCaretJump: Bool = false) -> SwapDecision {
+                       prev: String? = nil, earlier: String? = nil,
+                       afterCaretJump: Bool = false) -> SwapDecision {
         let context = ContextHint.of(prev)
         let letterCore = Self.letterCore(of: raw)
         let literal = letterCore.lowercased()
@@ -276,8 +337,16 @@ enum LayoutDetector {
         // Проверяем и literal: интерфейс исторически разрешает сохранить конечную пунктуацию,
         // а `Keymap.core` её снимает. Затем проверяем форму без внешнего знака, чтобы обычное
         // исключение `1gt.it` защищало и предложение `1GT.IT.`.
+        // ⚠️ И ПОЛНЫЙ ТОКЕН ЦЕЛИКОМ. Человек добавляет в исключения ровно то, что видит на экране
+        // («:D», «и/или», «C++»), а оба ключа выше — это буквенное ядро, из которого ведущий знак уже
+        // срезан. Исключение со знаком в начале не совпадало ни с одним ключом и молча не работало:
+        // ровно на это жаловался @aklimov (#247–248, 06.09.2026), добавив «:D» и не получив ничего.
+        let whole = raw.lowercased()
         if exceptions.ignored.contains(literal) || exceptions.learned.contains(literal)
-            || exceptions.ignored.contains(typed) || exceptions.learned.contains(typed) { return .keep }
+            || exceptions.ignored.contains(typed) || exceptions.learned.contains(typed)
+            || exceptions.ignored.contains(whole) || exceptions.learned.contains(whole) { return .keep }
+        // Смайлик — не слово ни в одной раскладке (см. isEmoticon).
+        if Self.isEmoticon(raw) { return .keep }
         // Анализируем БУКВЕННОЕ ЯДРО (без ведущих/концевых скобок, кавычек, тире, пунктуации):
         // "(tckb"→"tckb", "привет."→"привет". Решаем по ядру, конвертим (в Engine) полный токен.
         var coreSub = Substring(letterCore)
@@ -398,7 +467,8 @@ enum LayoutDetector {
                 trimmed = trimmed.dropLast()
             }
             guard !trimmed.isEmpty else { return .keep }
-            return decide(word: String(trimmed), exceptions: exceptions, prev: prev, afterCaretJump: afterCaretJump)
+            return decide(word: String(trimmed), exceptions: exceptions, prev: prev, earlier: earlier,
+                          afterCaretJump: afterCaretJump)
         }
         guard swapped != w, swapped.allSatisfy({ $0.isLetter || $0 == "'" }) else { return .keep }
 
@@ -566,7 +636,9 @@ enum LayoutDetector {
                 // — намеренный английский, не каша. При русском/пустом — чиним (vs→мы).
                 // НЕ гейтим плаузибельностью: латинский гиббериш → реальное RU-слово = сильный сигнал
                 // (RU-словарь = настоящие слова, не мусор), на эту сторону юзер не жаловался.
-                if context == .latin, ExtraWords.enKeepShort.contains(w) { return .keep }
+                if context == .latin, ExtraWords.enKeepShort.contains(w),
+                   !Self.russianNJAfterLatinLabel(word: w, rawCore: coreRaw,
+                                                  prev: prev, earlier: earlier) { return .keep }
                 return .convert(toCyrillic: true)
             }
         } else {

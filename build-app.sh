@@ -275,8 +275,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key>            <string>Keyboop</string>
     <key>CFBundleDisplayName</key>     <string>Keyboop</string>
     <key>CFBundleIdentifier</key>      <string>ru.keyboop.app</string>
-    <key>CFBundleVersion</key>         <string>0.4.7</string>
-    <key>CFBundleShortVersionString</key> <string>0.4.7</string>
+    <key>CFBundleVersion</key>         <string>0.4.8</string>
+    <key>CFBundleShortVersionString</key> <string>0.4.8</string>
     <!-- Штамп сборки: подставляется ниже (sed по __BUILD_STAMP__). Логируется при запуске, чтобы по
          логу было ВИДНО, какую именно сборку гоняем. Прецедент 21.07: диагностировали баг по логу
          процесса, стартовавшего на 11 минут РАНЬШЕ пересборки, — то есть по коду без свежих правок. -->
@@ -303,6 +303,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     </dict>
     <key>LSUIElement</key>             <true/>
     <key>NSAccentColorName</key>       <string>AccentColor</string>
+    <key>NSAudioCaptureUsageDescription</key> <string>Keyboop записывает системный звук и микрофон только по вашему ⌥-клику по значку, расшифровывает запись на этом Mac и никуда не отправляет.</string>
     <key>NSMicrophoneUsageDescription</key> <string>Keyboop распознаёт надиктованный текст локально, на вашем Mac. Аудио никуда не отправляется.</string>
     <!-- ⚠️ ЯВНЫЙ ОТКАЗ ОТ РЕЖИМА СОВМЕСТИМОСТИ С КОРПУСОМ КАМЕРЫ (13.08.2026).
          На маках с чёлкой система умеет менять активную область экрана так, чтобы она обходила
