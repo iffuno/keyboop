@@ -50,6 +50,27 @@ enum L10n {
         return ru ? "\(m) мин" : "\(m) min"
     }
 
+    /// Подпись срока хранения истории по минутам (0 значит «не удалять»). Пункты 2 и 4 часа
+    /// из списка убраны 24.09.2026, но их подписи живут: у кого они выбраны, тот видит свой
+    /// вариант (`HistoryPolicy.retentionMenu`).
+    static func retentionTitle(_ mins: Int) -> String {
+        switch mins {
+        case 0: return t("ret.never")
+        case 30: return t("ret.30m")
+        case 60: return t("ret.1h")
+        case 120: return t("ret.2h")
+        case 240: return t("ret.4h")
+        case 480: return t("ret.8h")
+        case 7 * 24 * 60: return t("ret.7d")
+        case 30 * 24 * 60: return t("ret.30d")
+        default:
+            let ru = current == .ru
+            if mins % (24 * 60) == 0 { let d = mins / (24 * 60); return ru ? "\(d) дн." : "\(d) d" }
+            if mins % 60 == 0 { let h = mins / 60; return ru ? "\(h) ч" : "\(h) h" }
+            return ru ? "\(mins) мин" : "\(mins) min"
+        }
+    }
+
     private static let strings: [String: [Lang: String]] = [
         "tagline":        [.ru: "wrong layout? keyboop.", .en: "wrong layout? keyboop."],
 
@@ -468,6 +489,8 @@ enum L10n {
         "ret.2h":         [.ru: "2 часа",   .en: "2 hours"],
         "ret.4h":         [.ru: "4 часа",   .en: "4 hours"],
         "ret.8h":         [.ru: "8 часов",  .en: "8 hours"],
+        "ret.7d":         [.ru: "7 дней",   .en: "7 days"],
+        "ret.30d":        [.ru: "30 дней",  .en: "30 days"],
         "ret.never":      [.ru: "Не удалять", .en: "Keep all"],
         // Описания моделей Whisper (ModelDownloader.catalog хранит ключи)
         // ⚠️ ЧЕТЫРЕ ЧИСЛА НА КАЖДУЮ МОДЕЛЬ (задача автора 04.08.2026, повод — жалоба на память).
@@ -1185,6 +1208,12 @@ enum L10n {
                                 .en: "Everything you copy as text lands in the shared history next to dictations, and search covers both at once. Not recorded: anything while a password field is open somewhere, entries password managers mark as secret, plus files, images and formatting. Keyboop's own clipboard housekeeping never lands here. Retention, the history password and clearing are shared."],
         "gen.historyHint":     [.ru: "Скопированный текст попадает в ту же историю, что и диктовки: меню значка → «История диктовки и буфера…». Срок хранения, пароль на историю и запись голоса настраиваются в разделе «Голосовой набор» → «История».",
                                 .en: "Copied text lands in the same history as dictations: menu icon → “Dictation and clipboard history…”. Retention, the history password and audio recording are set in “Voice input” → “History”."],
+        // Сокращение срока хранения (ревью 24.09.2026): без вопроса промах мышью стирал историю.
+        "voice.retShrink.title":  [.ru: "Записей старше нового срока: %d", .en: "Entries older than the new period: %d"],
+        "voice.retShrink.msg":    [.ru: "Они удалятся сразу вместе с записью голоса, и вернуть их будет нельзя. Расшифровки файлов останутся.",
+                                   .en: "They will be deleted right away together with their voice recordings and cannot be brought back. Transcribed files stay."],
+        "voice.retShrink.keep":   [.ru: "Оставить как было", .en: "Keep as it was"],
+        "voice.retShrink.delete": [.ru: "Удалить и сократить срок", .en: "Delete and shorten"],
         "gen.clipOff.title":   [.ru: "Записей буфера в истории: %d", .en: "Clipboard entries in history: %d"],
         "gen.clipOff.msg":     [.ru: "Новые записи больше не сохраняются. Уже сохранённые можно оставить или удалить сейчас. Диктовки останутся в любом случае.",
                                 .en: "New entries are no longer saved. The ones already saved can stay or be deleted now. Dictations stay either way."],
@@ -1218,6 +1247,7 @@ enum L10n {
         "hist.saveTextFailed":[.ru: "Не удалось сохранить текст", .en: "The text could not be saved"],
         "hist.expand":        [.ru: "Показать целиком (%@ симв.)", .en: "Show all (%@ chars)"],
         "hist.collapse":      [.ru: "Свернуть", .en: "Collapse"],
+        "hist.more":          [.ru: "Показать ещё %@ из %@", .en: "Show %@ more of %@"],
         /// Подпись на значке в Dock, пока открыто окно истории.
         "dock.history":       [.ru: "История", .en: "History"],
         // Запись звука с Mac (задача 230, скрытая: ⌥-клик по значку). В интерфейсе это «запись», не
@@ -1228,6 +1258,9 @@ enum L10n {
         "call.saved":         [.ru: "Запись расшифрована и добавлена в историю", .en: "The recording is transcribed and added to History"],
         "call.savedAfterStall":[.ru: "Запись прервалась, но записанное расшифровано и в истории", .en: "Recording was interrupted, but what was recorded is transcribed and in History"],
         "call.empty":         [.ru: "В записи не нашлось речи, ничего не сохранено", .en: "No speech in the recording, nothing saved"],
+        "call.noSystemAudioTitle": [.ru: "Записан только микрофон", .en: "Only the microphone was recorded"],
+        "call.noSystemAudioBody":  [.ru: "Ваш голос слышно, а звук от собеседников не пришёл: скорее всего, macOS не дала нам его записывать. Это отдельное разрешение, оно не то же самое, что микрофон. Откройте «Запись экрана и системного звука», найдите там список «Только запись системного звука» и включите в нём Keyboop.",
+                                    .en: "Your voice came through, but the other side did not: macOS most likely did not let us record it. That is a separate permission, not the same as the microphone. Open “Screen & System Audio Recording”, find the “System Audio Recording Only” list there and switch Keyboop on."],
         "call.silenceTitle":  [.ru: "Пять минут тишины", .en: "Five minutes of silence"],
         "call.silenceBody":   [.ru: "Звук, похоже, закончился. Остановить запись? Через две минуты остановлю сам.",
                                .en: "The audio seems to be over. Stop recording? I will stop on my own in two minutes."],
@@ -1354,10 +1387,21 @@ enum L10n {
         // Коротко: сначала что делает, потом потолок, потом шутка. Не расписывать (автор 30.07).
         "voice.duckLevelHelp": [.ru: "Во время диктовки громкость опустится до этого уровня, потом вернётся. Выше 77% не поднимается. Просто потому что.",
                                  .en: "While you dictate the volume drops to this level, then comes back. It will not go above 77%. Just because."],
+        // Выгрузка модели после каждой диктовки (автор 24.09.2026). Подпись однострочная и
+        // усекается, поэтому в ней только главное: кому НЕ нужно. Цена и механика — в «i».
+        "voice.unloadAfter":    [.ru: "Выгружать модель после каждой диктовки",
+                                 .en: "Unload the model after each dictation"],
+        "voice.unloadAfterSub": [.ru: "Не нужно, если объединённой памяти хватает",
+                                 .en: "Not needed if you have enough unified memory"],
+        // У Intel-Mac объединённой памяти нет, там это обычная оперативная (ревью 24.09).
+        "voice.unloadAfterSubIntel": [.ru: "Не нужно, если оперативной памяти хватает",
+                                      .en: "Not needed if you have enough memory"],
+        "voice.unloadAfterHelp":[.ru: "Для Mac с небольшой памятью, например 8 ГБ. Модель распознавания занимает от полутора сотен мегабайт до 1,6 ГБ и обычно остаётся в памяти между диктовками, чтобы следующая начиналась сразу. С этой настройкой Keyboop отдаёт память системе после каждой диктовки, а следующая загружает модель заново. Загрузка начинается в момент нажатия и прячется, пока вы говорите, но короткая фраза может закончиться на секунду-две позже. Если памяти хватает, оставьте выключенным: модель в памяти работает быстрее.",
+                                 .en: "For Macs with little memory, such as 8 GB. A recognition model takes from about 150 MB to 1.6 GB and normally stays in memory between dictations so the next one starts right away. With this on, Keyboop hands the memory back to the system after every dictation, and the next one loads the model again. Loading starts the moment you press the shortcut and hides while you speak, but a short phrase may finish a second or two later. If you have enough memory, leave it off: a model kept in memory is faster."],
         "voice.retentionSub": [.ru: "По нему же пропадает копирование из меню",
                                .en: "Also drops copy-from-menu"],
-        "voice.retentionHelp": [.ru: "Через это время записи удаляются, и вместе с ними пропадает пункт «Скопировать последнюю диктовку» в меню: копировать ему становится нечего. Если диктуете подолгу и возвращаетесь к сказанному через час, ставьте срок побольше. «Не удалять» хранит последние 50 записей, пока вы сами их не сотрёте.",
-                                .en: "After this time entries are deleted, and the menu item “Copy last dictation” goes with them: there is nothing left for it to copy. If you dictate over long sessions and come back to what you said an hour later, pick a longer period. “Keep” holds the last 50 entries until you erase them yourself."],
+        "voice.retentionHelp": [.ru: "Через это время записи удаляются, и вместе с ними пропадает пункт «Скопировать последнюю диктовку» в меню: копировать ему становится нечего. Если диктуете подолгу и возвращаетесь к сказанному через час, ставьте срок побольше. 7 и 30 дней превращают историю в журнал с поиском. При любом сроке хранятся не больше 3000 последних диктовок и 100 скопированных строк: более старые уходят сами, даже при «Не удалять».",
+                                .en: "After this time entries are deleted, and the menu item “Copy last dictation” goes with them: there is nothing left for it to copy. If you dictate over long sessions and come back to what you said an hour later, pick a longer period. 7 and 30 days turn History into a searchable log. Whatever the period, at most the last 3000 dictations and 100 copied snippets are kept: older ones go on their own, even with “Keep all”."],
         // ⚠️ ГОВОРИМ, ЧТО ИМЕННО СКОПИРОВАНО (автор 08.08). Голое «Скопировано» ничего не сообщало,
         // а у того, кто настроил правый клик не на копирование, оно и вовсе подтверждало действие,
         // которого человек не совершал.

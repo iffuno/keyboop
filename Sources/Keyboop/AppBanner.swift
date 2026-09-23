@@ -134,7 +134,7 @@ final class AppBanner {
         content.layer?.borderWidth = 1
         content.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
 
-        let icon = NSImageView(); icon.image = NSApp.applicationIconImage
+        let icon = NSImageView(); icon.image = DockPresence.bundleIcon
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.widthAnchor.constraint(equalToConstant: iconSize).isActive = true
         icon.heightAnchor.constraint(equalToConstant: iconSize).isActive = true

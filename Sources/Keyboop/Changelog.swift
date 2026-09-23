@@ -82,6 +82,49 @@ enum Changelog {
         // 0.4.8 — БЕТА. Единая история с буфером обмена это новая функция вокруг зашифрованного
         // хранилища, а три правки из отзыва #232 лежат в детекторе и исправлении опечаток, то есть
         // в горячем пути. Захват буфера выключен по умолчанию и буфер сам не трогает.
+        // 0.4.9 — СРАЗУ СТАБИЛЬНАЯ, осознанно против протокола (решение автора 24.09.2026). Протокол
+        // требовал бету: починки Spotlight и Siri меняют уровень, на который уходит наша синтетика.
+        // автор выбрал стабильную, зная, что вместе с ней стабильные пользователи с 0.4.7 получат и
+        // всё из беты 0.4.8, которая обкатывалась 12 дней. Откат, если понадобится, по разделу 6
+        // протокола: demote-from-stable.sh.
+        Release(version: "0.4.9",
+            ru: [
+                "В Spotlight снова работает переключение раскладки, и автоматическое, и по сочетанию. В прошлой бете оно сломалось: исправленное слово уходило не в строку поиска, а в окно, открытое за ней. Так же вернулись Launchpad и другие панели, которые открываются поверх окон.",
+                "Mission Control больше не сжимает окна до точек. Это случалось после первого перевода по сочетанию: служебное окно переводчика, невидимое и стоящее далеко за краем экрана, попадало в раскладку Mission Control, и тот уменьшал всё остальное, чтобы уместить его в кадр. Раньше помогал только перезапуск Keyboop.",
+                "Историю можно хранить 7 или 30 дней. Варианты 2 и 4 часа из списка убраны; у кого они выбраны, срок остаётся прежним, пока вы не смените его сами. Потолок в 50 диктовок, действовавший при любом сроке, поднят до 3000, а окно истории показывает ленту порциями с кнопкой «Показать ещё»; поиск по-прежнему ищет по всей истории. Если новый срок короче и под него попадают записи, Keyboop сначала спросит.",
+                "Новая настройка в разделе моделей распознавания: «Выгружать модель после каждой диктовки». Она для Маков с небольшой памятью: модель уходит из памяти сразу после диктовки и загружается заново при следующем нажатии, пока вы говорите. Короткая фраза может закончиться на секунду-две позже, поэтому, если памяти хватает, оставьте её выключенной.",
+                "Буквенные сочетания в меню значка работают на русской и других нелатинских раскладках: «к» открывает «Сообщить о проблеме» так же, как «r».",
+                "Выделенные знаки без букв тоже переключаются, если знак можно набрать только в одной из раскладок: «^» становится запятой. Точку, запятую, скобки и другие знаки, которые есть в обеих раскладках, Keyboop не трогает: по ним не понять, что имелось в виду.",
+                "Мелочи. Окно знакомства, плашки и «О программе» снова показывают значок Keyboop, а не значок окна истории. Подзаголовки в настройках голосового набора стоят рядом со своими блоками, как в остальных разделах.",
+            ],
+            en: [
+                "Layout switching works in Spotlight again, both automatic and by shortcut. The previous beta broke it: the corrected word went not to the search field but to the window behind it. Launchpad and other panels that open over windows are back too.",
+                "Mission Control no longer shrinks windows to dots. It happened after the first translation by shortcut: the translator's service window, invisible and parked far off screen, got into Mission Control's layout, and it shrank everything else to fit it in. Only restarting Keyboop used to help.",
+                "History can be kept for 7 or 30 days. The 2 and 4 hour options are gone from the list; if you had one of them, it stays until you change it yourself. The 50-dictation cap that applied whatever the period is raised to 3000, and the History window shows the feed in portions with a “Show more” button; search still covers the whole history. If a new, shorter period would remove entries, Keyboop asks first.",
+                "A new setting in the recognition model section: “Unload the model after each dictation”. It is for Macs with little memory: the model leaves memory right after a dictation and loads again on the next press, while you speak. A short phrase may finish a second or two later, so if you have enough memory, leave it off.",
+                "Letter shortcuts in the menu-bar menu work on Russian and other non-Latin layouts: “к” opens “Report a problem…” just like “r”.",
+                "Selected symbols without letters are switched too when the symbol can only be typed in one of the layouts: “^” becomes a comma. Full stops, commas, brackets and other symbols that exist in both layouts are left alone: they do not say what was meant.",
+                "Small things. The welcome window, banners and About show the Keyboop icon again instead of the History window icon. Section headings in Voice input settings sit next to their blocks, as in the other sections.",
+            ],
+            announce: """
+                Час ночи, завтра на работу, а я выпускаю обновление.
+
+                Работаю product manager'ом, кажется, нашёл призвание и прямо кайфую. Работа съедает всё время и ещё чуть-чуть, но починки копились, и совесть победила сон.
+
+                На работе делаем похожий проект, только намного круче: одна голова хорошо, а пять лучше, особенно когда четыре из них ночью спят. Скоро расскажу.
+                """,
+            announceItems: [
+                "Spotlight и Launchpad снова работают.",
+                "Mission Control перестал сжимать окна в точки.",
+                "Историю можно хранить 7 или 30 дней, а не до конца рабочего дня.",
+                "Буквы в меню значка понимают русскую раскладку, а то было неловко.",
+                "Для Маков с малой памятью: «Выгружать модель после каждой диктовки».",
+            ],
+            announceEnd: """
+                Отзывы шлите всё равно: я вижу каждый, всё падает в базу и не теряется. Разбираю по очереди, с самого мешающего.
+
+                Спасибо всем, кто поддержал на keyboop.com/tips: выпуск собран на вашем чае и моём недосыпе. А звезда на GitHub дешевле чая: github.com/iffuno/keyboop
+                """),
         Release(version: "0.4.8",
             ru: [
                 "История стала общей для диктовок и буфера обмена. В окне истории одна лента по времени, у каждой записи видно, диктовка это или скопированный текст, а поиск ищет по обоим сразу. Запоминание буфера включается отдельным тумблером в разделе «Общие» и по умолчанию выключено; пока где-то открыто поле пароля, ничего не записывается, записи менеджеров паролей и собственные служебные операции Keyboop с буфером пропускаются. Только текст, зашифровано, с общими сроком хранения, паролем и очисткой.",

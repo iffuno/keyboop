@@ -58,7 +58,25 @@ final class SystemAudioCapture {
             kAudioAggregateDeviceNameKey: "Keyboop Call",
             kAudioAggregateDeviceUIDKey: "ru.keyboop.call." + UUID().uuidString,
             kAudioAggregateDeviceIsPrivateKey: true,
-            kAudioAggregateDeviceTapAutoStartKey: true,
+            // ⚠️ `kAudioAggregateDeviceTapAutoStartKey` УБРАН НАМЕРЕННО (13.09.2026, отзыв #269).
+            // Заголовок Apple (AudioHardware.h): «calling AudioDeviceStart with the aggregate device
+            // will wait until a tapped process begins receiving its first audio from any tapped
+            // applications». То есть с этим ключом старт откладывается до первого звука В СИСТЕМЕ, и
+            // до тех пор обработчик не зовётся ВООБЩЕ — молчит и микрофонный сабдевайс тоже.
+            //
+            // Что это стоило человеку: он включал запись в тишине, чтобы проверить функцию, и каждый
+            // раз получал «в записи не нашлось речи». В логе это выглядело как «микрофон есть, 48000
+            // Гц» и следом ноль кадров. Функция работала бы только если начать запись ПОСЛЕ того,
+            // как собеседник заговорил, и об этом нигде не сказано.
+            //
+            // Второй, менее очевидный ущерб: macOS спрашивает разрешение на запись системного звука
+            // при ПЕРВОМ РЕАЛЬНОМ СТАРТЕ агрегата с тапом. Отложенный старт означает, что диалога
+            // человек может не увидеть никогда — он честно пишет «все разрешения выданы», потому что
+            // то, которого не хватает, у него никто не спрашивал.
+            //
+            // Без ключа старт происходит сразу: микрофон пишется с первой секунды, системный звук
+            // подмешивается, когда появится, а диалог разрешения всплывает тогда же, когда человек
+            // нажал на запись.
             kAudioAggregateDeviceSubDeviceListKey: subDevices,
             kAudioAggregateDeviceTapListKey: [[kAudioSubTapUIDKey: desc.uuid.uuidString,
                                               kAudioSubTapDriftCompensationKey: true]],
@@ -119,9 +137,37 @@ final class SystemAudioCapture {
             let arr = Array(UnsafeBufferPointer(start: ptr, count: count))
             sources.append(MonoMixer.monoFromInterleaved(arr, channels: max(1, Int(buf.mNumberChannels))))
         }
+        notePerStreamLevels(sources)
         let mono = MonoMixer.mix(sources)
         if !mono.isEmpty { onSamples(mono) }
     }
+
+    /// ГРОМКОСТЬ КАЖДОГО ПОТОКА ОТДЕЛЬНО — ЕДИНСТВЕННЫЙ СПОСОБ УЗНАТЬ ПРО РАЗРЕШЕНИЕ (13.09.2026).
+    ///
+    /// Спросить систему, разрешена ли нам запись системного звука, нельзя: API не существует, и это
+    /// сказано инженером Apple прямым текстом (форум 756783, «There is no API to determine whether
+    /// an app still has permission to capture system audio… In some situations, you might be able to
+    /// detect if a tap is silent by measuring the loudness of the incoming buffers»). Без разрешения
+    /// всё возвращает `noErr` и отдаёт тишину: так сделано нарочно, чтобы вредонос не мог отличить
+    /// отказ от молчания.
+    ///
+    /// Поэтому меряем сами. Порядок потоков в агрегате повторяет состав: сначала сабдевайсы
+    /// (микрофон), потом тапы. Когда микрофон есть, поток 0 это он, поток 1 это системный звук.
+    /// Допущение записано здесь, а не подразумевается: если Apple когда-нибудь переставит порядок,
+    /// сломается диагностика, а не запись.
+    private func notePerStreamLevels(_ sources: [[Float]]) {
+        for (i, s) in sources.enumerated() where !s.isEmpty {
+            var peak: Float = 0
+            for v in s { let a = abs(v); if a > peak { peak = a } }
+            if peak > 0.002 { heardStreams.insert(i) }      // −54 dBFS: тише этого и человека не слышно
+        }
+        streamCount = max(streamCount, sources.count)
+    }
+
+    /// Какие потоки хоть раз дали звук за эту запись, и сколько их было. Читает `CallRecorder`,
+    /// чтобы на финале сказать человеку правду, а не «речи не нашлось».
+    private(set) var heardStreams = Set<Int>()
+    private(set) var streamCount = 0
 }
 
 // MARK: - Ресемплер в 16 кГц
@@ -199,6 +245,9 @@ final class CallRecorder {
     private var micUID: String?
     /// Читается с главного потока (меню, ⌥-клик).
     private(set) var isRecording = false
+    /// Запись ИЛИ её хвост: после stop() последние куски ещё расшифровываются, и модель им нужна.
+    /// Этим признаком выгрузка модели после диктовки понимает, что звонок её пока держит.
+    var isBusy: Bool { isRecording || stopping }
     private let chunkTimeout: TimeInterval = 180
 
     private init() {}
@@ -284,6 +333,21 @@ final class CallRecorder {
         return nil
     }
 
+    /// РАЗДЕЛ НАСТРОЕК, КУДА ВЕСТИ ЧЕЛОВЕКА ЗА РАЗРЕШЕНИЕМ НА СИСТЕМНЫЙ ЗВУК.
+    ///
+    /// ⚠️ Адрес сменился, и старый ведёт не туда (проверено на macOS 26.3, 13.09.2026). Раздел
+    /// теперь живёт внутри «Запись экрана и системного звука» отдельным списком «Только запись
+    /// системного звука», а панель приватности переехала в расширение настроек. Старый якорь
+    /// `com.apple.preference.security?Privacy_AudioCapture` открывал общие настройки, и человек
+    /// включал не тот переключатель либо не находил ничего. Пробуем новый, при неудаче старый.
+    static func openAudioCaptureSettings() {
+        let modern = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AudioCapture"
+        let legacy = "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture"
+        for s in [modern, legacy] {
+            if let u = URL(string: s), NSWorkspace.shared.open(u) { return }
+        }
+    }
+
     private func captureFailed(_ error: Error) {
         kbLog("звонок: захват не поднялся (\(error))")
         isRecording = false
@@ -292,9 +356,7 @@ final class CallRecorder {
         session = nil; sessionDir = nil
         AppBanner.shared.show(title: L10n.t("call.noPermissionTitle"), body: L10n.t("call.noPermissionBody"),
                               actions: [AppBanner.Action(title: L10n.t("call.noPermissionOpen"), coral: true) {
-                                  if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture") {
-                                      NSWorkspace.shared.open(u)
-                                  }
+                                  CallRecorder.openAudioCaptureSettings()
                               }], autoDismiss: 20)
     }
 
@@ -418,7 +480,6 @@ final class CallRecorder {
     }
 
     private func finalize(_ reason: StopReason) {
-        VoiceController.shared.importFinished()
         let text = TranscriptAssembler.join(pieces)
         let dir = sessionDir
         let s = session
@@ -433,10 +494,36 @@ final class CallRecorder {
             defer {
                 if let dir { try? FileManager.default.removeItem(at: dir) }
                 session = nil; sessionDir = nil; stopping = false
+                // Модели звонок больше не нужен. Зовём ПОСЛЕ снятия `stopping`: выгрузка после
+                // диктовки (настройка) смотрит на `isBusy` и иначе пропустила бы этот раз.
+                VoiceController.shared.importFinished()
             }
             guard !text.isEmpty, let s else {
-                kbLog("звонок: речи не нашлось (\(segmentsCount) сегментов, \(ImportProgressFormat.clock(seconds)))")
-                VoiceIndicator.shared.showToast(L10n.t("call.empty"))
+                // ⚠️ ПУСТАЯ ЗАПИСЬ БЫВАЕТ ДВУХ РОДОВ, И ЧЕЛОВЕКУ ВАЖНО ЗНАТЬ, КАКОГО (13.09.2026).
+                // «Речи не нашлось» честно только если звук ШЁЛ, а речи в нём не было. Если же от
+                // системного звука не пришло ни одного ненулевого кадра, а от микрофона пришли, то
+                // почти наверняка не выдано отдельное разрешение на запись системного звука: без
+                // него Core Audio возвращает успех и отдаёт тишину, и узнать это иначе как замером
+                // громкости нельзя (инженер Apple, форум 756783). Отзыв #269: человек трижды получил
+                // «в записи не нашлось речи» и написал «разрешения все выданы» — то, которого не
+                // хватало, у него просто никто не спросил.
+                var tapSilent = false, micHeard = false, streams = 0, heardList = "—"
+                if #available(macOS 14.2, *), let cap = capture as? SystemAudioCapture {
+                    streams = cap.streamCount
+                    tapSilent = cap.streamCount > 1 && !cap.heardStreams.contains(1)
+                    micHeard = cap.heardStreams.contains(0)
+                    heardList = cap.heardStreams.sorted().map(String.init).joined(separator: ",")
+                }
+                kbLog("звонок: речи не нашлось (\(segmentsCount) сегментов, \(ImportProgressFormat.clock(seconds)), потоков \(streams), звучали \(heardList))")
+                if tapSilent, micHeard {
+                    AppBanner.shared.show(title: L10n.t("call.noSystemAudioTitle"),
+                                          body: L10n.t("call.noSystemAudioBody"),
+                                          actions: [AppBanner.Action(title: L10n.t("call.noPermissionOpen"), coral: true) {
+                                              CallRecorder.openAudioCaptureSettings()
+                                          }], autoDismiss: 30)
+                } else {
+                    VoiceIndicator.shared.showToast(L10n.t("call.empty"))
+                }
                 return
             }
             VoiceHistory.shared.addImported(text, fileName: CallSession.title(app: s.app, recovered: false),

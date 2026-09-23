@@ -65,7 +65,7 @@ final class AnimatedLogoView: NSView {
 
     private func installFallback() {
         let iv = NSImageView()
-        iv.image = NSApp.applicationIconImage
+        iv.image = DockPresence.bundleIcon
         iv.imageScaling = .scaleProportionallyUpOrDown
         iv.translatesAutoresizingMaskIntoConstraints = false
         addSubview(iv)

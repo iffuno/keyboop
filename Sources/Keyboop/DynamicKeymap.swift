@@ -12,6 +12,10 @@ import Foundation
 enum DynamicKeymap {
     private(set) static var enToRu: [Character: Character] = [:]
     private(set) static var ruToEn: [Character: Character] = [:]
+    /// Физическая клавиша каждой строчной латинской буквы в ЛАТИНСКОЙ раскладке человека (той же,
+    /// что в паре выше): у AZERTY «a» стоит не там, где у U.S. Нужна скрытым дублям пунктов меню
+    /// (задача 255, `MenuBarController.addLayoutTwins`). Пусто, пока таблица не построена.
+    private(set) static var latinKeyCodes: [Character: UInt16] = [:]
     static var isReady: Bool { !enToRu.isEmpty }
 
     /// Перестраивает таблицу из включённых раскладок. Идемпотентно, дёшево (~200 UCKeyTranslate).
@@ -62,6 +66,13 @@ enum DynamicKeymap {
         let L0 = latin ?? latFallback
         let C0 = cyrillic ?? cyrFallback
         guard let L = L0, let C = C0 else { return }
+
+        var keys: [Character: UInt16] = [:]
+        for kc in UInt16(0)...UInt16(50) {
+            let ls = translate(L, kc, false)
+            if ls.count == 1, let ch = ls.first, ch.isASCII, ch.isLetter, keys[ch] == nil { keys[ch] = kc }
+        }
+        latinKeyCodes = keys
 
         var e2r: [Character: Character] = [:]
         var r2e: [Character: Character] = [:]

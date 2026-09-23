@@ -146,6 +146,15 @@ final class VoiceController {
         // платил бы ПЕРВЫЙ buildEngine на main. Только lookup — capture-объектов не создаёт, TCC-промпт
         // не триггерит (инвариант «ничего до requestAccess» цел).
         DispatchQueue.global(qos: .utility).async { _ = AVCaptureDevice.default(for: .audio) }
+        // Человек сам попросил не держать модель в памяти между диктовками: прогрев со старта
+        // положил бы её туда до первой же диктовки, то есть сделал бы ровно то, от чего он отказался.
+        if settings.voiceUnloadAfterDictation {
+            kbLog("voice: прогрев модели пропущен — включена выгрузка после каждой диктовки")
+            // Сюда же приходят после скачивания модели (activateModel): скачивание само оставляет
+            // Parakeet загруженным, и без этой строки он висел бы до первой диктовки.
+            releaseModelsNow()
+            return
+        }
         // Греем ТОТ движок, которым реально пойдёт диктовка.
         // Parakeet раньше не грелся вообще, хотя он движок ПО УМОЛЧАНИЮ: его CoreML-модель грузится
         // и компилируется под ANE лениво, при первой транскрипции — замер 21.07 на чистом контейнере:
@@ -240,6 +249,12 @@ final class VoiceController {
             // сама очередь. Параллельно: старт мгновенный, загрузка прячется под время речи.
             if !willUseParakeet {
                 transcribeQueue.async { [weak self] in self?.loadModelIfNeeded() }
+            } else if !ParakeetEngine.shared.ready {
+                // Тот же приём для Parakeet (24.09.2026): холодная модель начинает грузиться на
+                // нажатии, а не после отпускания, и загрузка прячется под время речи. Раньше холодной
+                // она бывала только после смены движка на ходу, а с выгрузкой после каждой диктовки
+                // холодна КАЖДАЯ диктовка. Двойной загрузки не будет: `loadIfNeeded` ждёт уже идущую.
+                Task { _ = await ParakeetEngine.shared.loadIfNeeded() }
             }
             if abortStart { VoiceGate.set(false); setState(.idle); return }
             // ⚠️ УРОВЕНЬ ВХОДА ПОДНИМАЕМ ЗДЕСЬ, А НЕ В setState(.recording): тот вызывается уже ПОСЛЕ
@@ -401,6 +416,10 @@ final class VoiceController {
                     guard self.endTranscription(gen) else { clip.map { VoiceClips.delete($0.id) }; return }   // сторож уже бросил — поздний результат в топку
                     self.deliver(text, historyOnly: self.historyOnlyGens.remove(gen) != nil, audio: clip?.id, wave: clip?.wave)
                     self.refreshIndicator()
+                    // Выгрузка после диктовки, если человек её включил. Без настройки это ещё и
+                    // заводит таймер простоя для Whisper, если он понадобился как запасной движок:
+                    // раньше такой запасной Whisper оставался в памяти насовсем.
+                    self.scheduleModelRelease()
                 }
             }
             return
@@ -719,6 +738,14 @@ final class VoiceController {
         case .idle:
             SystemVolume.restore()
             VoiceIndicator.shared.hide()
+            // Выгрузка после диктовки ловится ЗДЕСЬ, а не только в конце доставки текста (ревью
+            // 24.09): у записи много выходов без расшифровки — слишком короткое нажатие, тишина,
+            // Escape, смерть устройства, прерванный старт, брошенная сторожем расшифровка. Модель
+            // к тому моменту уже грузилась с нажатия, и без этой строки оставалась бы в памяти.
+            // На следующий такт: флаги активности снимаются рядом с этим вызовом, пусть осядут.
+            if settings.voiceUnloadAfterDictation {
+                DispatchQueue.main.async { [weak self] in self?.releaseModelsNow() }
+            }
         }
     }
 
@@ -889,6 +916,7 @@ final class VoiceController {
     /// Выгружаем ТОЛЬКО когда реально простаиваем: идёт запись/транскрипция → откладываем.
     private func scheduleModelRelease() {
         modelIdleRelease?.cancel(); modelIdleRelease = nil
+        if settings.voiceUnloadAfterDictation { releaseModelsNow(); return }
         let minutes = settings.voiceModelIdleMinutes
         guard minutes > 0, whisper != nil else { return }
         let work = DispatchWorkItem { [weak self] in
@@ -903,6 +931,51 @@ final class VoiceController {
         }
         modelIdleRelease = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Double(minutes) * 60, execute: work)
+    }
+
+    /// Настройку выгрузки переключили в окне настроек: включили — выгрузить сейчас, выключили —
+    /// прогреть модель обратно, как на старте.
+    func applyUnloadSetting() {
+        if settings.voiceUnloadAfterDictation { releaseModelsNow() } else { preload() }
+    }
+
+    /// Выгрузка «после каждой диктовки» (настройка, 24.09.2026): обе модели уходят из памяти сразу,
+    /// как только мы простаиваем.
+    ///
+    /// ⚠️ ТОЛЬКО В ПРОСТОЕ. Если человек уже зажал следующую диктовку, её модель грузится прямо
+    /// сейчас, и выгрузить её значило бы заставить ту диктовку ждать второй загрузки. Такую диктовку
+    /// выгрузит её собственный конец. Импорт файла идёт кусками, и между кусками модель тоже не
+    /// трогаем: иначе часовой файл перезагружал бы её сотню раз, а `importFinished` выгрузит в конце.
+    ///
+    /// ⚠️ ЗАПИСЬ ЗВОНКА ТОЖЕ ДЕРЖИТ МОДЕЛЬ (`CallRecorder.isBusy`, ревью 24.09): её куски идут через
+    /// тот же `transcribeImported` прямо во время звонка, и выгрузка после случайной диктовки
+    /// заставляла бы следующий кусок грузить модель заново.
+    ///
+    /// ⚠️ ЕСЛИ PARAKEET КАК РАЗ ГРУЗИТСЯ, выгрузить его нельзя, и молча сдаваться тоже нельзя. Так
+    /// бывает при коротком случайном нажатии: загрузка стартовала на нажатии, диктовки не
+    /// случилось, и без повтора 465 МБ висели бы до следующей настоящей диктовки. Ждём конца
+    /// загрузки и пробуем снова; если к тому моменту началась новая диктовка, проверка простоя
+    /// выше отложит выгрузку до её конца.
+    private func releaseModelsNow() {
+        guard transcribing == 0, !isActive, !recorder.isRecording, !starting,
+              !AudioImporter.shared.isRunning, !CallRecorder.shared.isBusy else { return }
+        transcribeQueue.async { [weak self] in
+            guard let self, self.whisper != nil else { return }
+            self.whisper = nil                   // deinit → whisper_free
+            kbLog("voice: модель Whisper выгружена после диктовки (настройка)")
+        }
+        if !ParakeetEngine.shared.unload() {
+            Task { [weak self] in
+                await ParakeetEngine.shared.waitForPendingLoad()
+                // Тот, кто начал загрузку, снимает свою пометку «гружу» чуть позже, чем её
+                // дожидаются остальные; без паузы повтор мог бы крутиться вхолостую.
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                await MainActor.run {
+                    guard let self, self.settings.voiceUnloadAfterDictation else { return }
+                    self.releaseModelsNow()
+                }
+            }
+        }
     }
 
     /// Язык для whisper — из настроек (по умолчанию язык ОС, НЕ раскладки). "auto" → whisper определит.

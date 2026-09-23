@@ -104,6 +104,18 @@ final class TranslationEngine {
         let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
                          styleMask: [.borderless], backing: .buffered, defer: false)
         w.alphaValue = 0; w.ignoresMouseEvents = true
+        // ⚠️ MISSION CONTROL НЕ ДОЛЖЕН ВИДЕТЬ ЭТО ОКНО (задача 83, отзывы #92/#93 и #201/#202).
+        // Без явного collectionBehavior окно обычного уровня получает `.managed`, то есть
+        // «участвует в Spaces и Exposé» (NSWindow.h). Mission Control без группировки по
+        // приложениям подгоняет масштаб под рамку ВСЕХ таких окон, и наше, стоящее в -10000,
+        // растягивало эту рамку в разы: настоящие окна сжимались в точки, со стороны «все окна
+        // исчезли». Прозрачность 0 от этого НЕ спасает — проверено на реальной машине 23.09.2026:
+        // до первого перевода окна в Mission Control видны, после ⌥⇧T пропадают, перезапуск
+        // «чинит», потому что окно умирает вместе с процессом. С группировкой раскладка идёт
+        // кучками по приложениям, и чужие кучки наше окно не трогает — отсюда деталь из #202.
+        // `.transient` — «hidden by exposé», то же поведение, что у окон выше обычного уровня.
+        // Сам хост нужен: `.translationTask` живёт только в SwiftUI-иерархии окна.
+        w.collectionBehavior = [.transient, .ignoresCycle]
         w.contentView = NSHostingView(rootView: TranslateHost(model: model))
         w.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         w.orderFrontRegardless()

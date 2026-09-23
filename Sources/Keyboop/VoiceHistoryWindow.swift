@@ -23,6 +23,17 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
     private let progressCancel = NSButton(title: "", target: nil, action: nil)
     private var progressHeight: NSLayoutConstraint?
     private var expanded = Set<Date>()
+    /// Сколько карточек ленты нарисовано. Лента рисуется порциями: с 24.09.2026 история держит до
+    /// 3000 диктовок (срок хранения 7 и 30 дней), а карточки здесь настоящие вьюхи со своим
+    /// текстом, плеером и кнопками. ЗАМЕР 24.09 (M1 Max, `KEYBOOP_HISTDUMP_PAD=400`): карточка
+    /// стоит около 4 мс, вся лента из 408 записей собиралась 2,3 с, порция из 150 — 0,6 с, из 50 —
+    /// 0,2 с. Пересборка идёт на каждое открытие, новую запись и запрос в поиске, поэтому 50.
+    /// Для сравнения: прежние потолки пускали до 170 карточек, то есть те же 0,6 с у тех, кто
+    /// копил буфер, так что порция это заодно и ускорение для них.
+    static let pageSize = 50
+    private var shownLimit = pageSize
+    /// Поиск пересобирает ленту не на каждую букву, а после короткой паузы в наборе.
+    private var searchDebounce: DispatchWorkItem?
     private let recordBtn = PillButton()
     private let pinBtn = NSButton()
     private let translBtn = SecondaryClickButton()
@@ -71,6 +82,7 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
     }
 
     private func reallyShow() {
+        shownLimit = Self.pageSize
         reload()
         // Пока окно открыто, в Dock стоит значок с подписью (автор 04.09): иначе окно, ушедшее под
         // чужое, не найти без повторного вызова через меню.
@@ -91,8 +103,15 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
 
     @objc private func historyChanged() {
         DispatchQueue.main.async { [weak self] in
-            self?.reload()
-            self?.scrollToTop()   // новая запись сверху — показываем её сразу
+            guard let self else { return }
+            // Новая запись сверху: порцию сбрасываем и мотаем к ней. Удаление карточки и тихая
+            // чистка по сроку приходят ТЕМ ЖЕ уведомлением, и там человек читает ленту где-то в
+            // середине: сбросить её к первым 50 значило бы выбросить его из места (ревью 24.09).
+            let newest = VoiceHistory.shared.all().last?.date
+            let isNew = newest != nil && newest != self.all.first?.date
+            if isNew { self.shownLimit = Self.pageSize }
+            self.reload()
+            if isNew { self.scrollToTop() }
         }
     }
 
@@ -389,14 +408,37 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
     }
     private func rebuildCards() {
         listStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for e in filtered {
-            let c = card(e)
-            listStack.addArrangedSubview(c)
-            // ЯВНО фиксируем ширину карточки = ширине списка (alignment=.width не растягивал
-            // короткие записи → они выглядели как узкие «чат-пузыри» справа). Теперь все ровные.
-            c.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
-        }
+        // ЯВНО фиксируем ширину карточки = ширине списка (alignment=.width не растягивал
+        // короткие записи → они выглядели как узкие «чат-пузыри» справа). Теперь все ровные.
+        filtered.prefix(shownLimit).forEach(appendCard)
+        if filtered.count > shownLimit { listStack.addArrangedSubview(moreButton()) }
         emptyView.isHidden = !filtered.isEmpty
+    }
+    private func appendCard(_ e: VoiceHistory.Entry) {
+        let c = card(e)
+        listStack.addArrangedSubview(c)
+        c.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
+    }
+
+    /// «Показать ещё» в конце ленты. Поиск идёт по ВСЕЙ истории, порция ограничивает только
+    /// то, что нарисовано, поэтому найденная старая запись всегда доступна этой кнопкой.
+    private func moreButton() -> NSView {
+        let next = min(Self.pageSize, filtered.count - shownLimit)
+        let title = String(format: L10n.t("hist.more"), Self.grouped(next), Self.grouped(filtered.count))
+        let b = NSButton(title: title, target: self, action: #selector(showMore))
+        b.isBordered = false; b.bezelStyle = .inline
+        b.attributedTitle = NSAttributedString(string: title, attributes: [
+            .foregroundColor: DS.coral, .font: NSFont.systemFont(ofSize: 12, weight: .medium)])
+        return b
+    }
+    /// Следующая порция ДОПИСЫВАЕТСЯ к нарисованным, а не пересобирает всю ленту: иначе каждое
+    /// нажатие стоило бы дороже предыдущего.
+    @objc private func showMore() {
+        if let last = listStack.arrangedSubviews.last, !(last is HoverCard) { last.removeFromSuperview() }
+        let from = shownLimit
+        shownLimit += Self.pageSize
+        filtered[min(from, filtered.count)..<min(shownLimit, filtered.count)].forEach(appendCard)
+        if filtered.count > shownLimit { listStack.addArrangedSubview(moreButton()) }
     }
 
     private func card(_ e: VoiceHistory.Entry) -> NSView {
@@ -471,9 +513,20 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
     }
     @objc private func toggleExpand(_ s: NSButton) {
         guard s.tag >= 0, s.tag < all.count else { return }
-        let d = all[s.tag].date
-        if expanded.contains(d) { expanded.remove(d) } else { expanded.insert(d) }
-        rebuildCards()
+        let e = all[s.tag]
+        if expanded.contains(e.date) { expanded.remove(e.date) } else { expanded.insert(e.date) }
+        // Перерисовываем ОДНУ карточку на её месте, а не всю ленту: после нескольких «Показать
+        // ещё» на экране сотни карточек по ~4 мс, и раскрытие стоило бы секунды (ревью 24.09).
+        // Позиция в стеке совпадает с позицией в `filtered`: кнопка «ещё» всегда последняя.
+        guard let i = filtered.firstIndex(where: { $0.date == e.date && $0.text == e.text }),
+              i < listStack.arrangedSubviews.count, listStack.arrangedSubviews[i] is HoverCard
+        else { rebuildCards(); return }
+        let old = listStack.arrangedSubviews[i]
+        listStack.removeArrangedSubview(old)
+        old.removeFromSuperview()
+        let c = card(e)
+        listStack.insertArrangedSubview(c, at: i)
+        c.widthAnchor.constraint(equalTo: listStack.widthAnchor).isActive = true
     }
     private static func grouped(_ n: Int) -> String {
         let f = NumberFormatter(); f.numberStyle = .decimal; f.groupingSeparator = " "
@@ -536,7 +589,16 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
 
     // MARK: actions
 
-    func controlTextDidChange(_ obj: Notification) { applyFilter() }
+    func controlTextDidChange(_ obj: Notification) {
+        searchDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.shownLimit = Self.pageSize   // новый запрос начинается с первой порции
+            self.applyFilter()
+        }
+        searchDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
 
     @objc private func copyEntry(_ s: NSButton) {
         guard s.tag >= 0, s.tag < all.count else { return }
@@ -674,8 +736,9 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
     @objc private func deleteEntry(_ s: NSButton) {
         guard s.tag >= 0, s.tag < all.count else { return }
         let e = all[s.tag]
+        // Ленту пересобирает `historyChanged` по уведомлению от `remove`. Свой `reload()` здесь
+        // собирал бы все нарисованные карточки второй раз подряд, а их теперь может быть сотни.
         VoiceHistory.shared.remove(date: e.date, text: e.text)
-        reload()
     }
     // MARK: импорт аудиофайла (задача 229)
 
@@ -906,15 +969,41 @@ final class VoiceHistoryWindowController: NSWindowController, NSWindowDelegate, 
             .init(date: now.addingTimeInterval(-3600), text: "It's time to test and ship it to the market."),
             .init(date: now.addingTimeInterval(-7200), text: "Короткая заметка на память.")
         ]
+        // Длинная лента (срок хранения 7 и 30 дней, 24.09.2026): KEYBOOP_HISTDUMP_PAD=N дописывает
+        // N выдуманных диктовок, меряет сборку всей ленты против одной порции и снимает НИЗ ленты,
+        // где стоит кнопка «Показать ещё». Настоящую историю не трогает, как и всё выше.
+        let pad = Int(ProcessInfo.processInfo.environment["KEYBOOP_HISTDUMP_PAD"] ?? "") ?? 0
+        for i in 0..<pad {
+            all.append(.init(date: now.addingTimeInterval(-7200 - Double(i + 1) * 900),
+                             text: "Выдуманная диктовка номер \(i + 1) для проверки длинной ленты."))
+        }
         filtered = all; lastCount = all.count
         defer { demoClip.map { VoiceClips.delete($0.id) } }   // демо-файл не переживает снимок
+        if pad > 0 {
+            func timed(_ limit: Int) -> Int {
+                shownLimit = limit
+                let t0 = ProcessInfo.processInfo.systemUptime
+                rebuildCards(); window?.contentView?.layoutSubtreeIfNeeded()
+                return Int((ProcessInfo.processInfo.systemUptime - t0) * 1000)
+            }
+            let full = timed(Int.max)
+            let series = [150, 150, 50, 50, 25, 25, Self.pageSize, Self.pageSize].map { "\($0):\(timed($0))" }
+            let more = listStack.arrangedSubviews.last.map { !($0 is HoverCard) } ?? false
+            kbLog("histdump: лента \(filtered.count) записей · вся за \(full) мс · порции (карточек:мс) \(series.joined(separator: " ")) · кнопка «ещё»=\(more)")
+        }
         // Строка прогресса импорта на снимке: иначе её единственный способ увидеть — ждать файл.
         showProgress(AudioImporter.Progress(fileName: "созвон-по-релизу.m4a", processed: 1503, total: 4920, remaining: 380))
-        DockPresence.writeHistoryIconPNG(to: "/tmp/kb_dock_icon.png")   // значок Dock с подписью
+        // ⚗️ Три кандидата разом, чтобы сравнивать глазами рядом, а не по памяти (14.09.2026).
+        for b in DockPresence.Badge.allCases {
+            DockPresence.writeHistoryIconPNG(to: "/tmp/kb_dock_\(b.rawValue).png", badge: b)
+        }
         rebuildCards()
         window?.contentView?.layoutSubtreeIfNeeded()
         listStack.arrangedSubviews.compactMap { $0 as? HoverCard }.forEach { $0.revealForDump() }
         window?.contentView?.layoutSubtreeIfNeeded()
+        if pad > 0, let doc = scroll.documentView {       // к концу ленты: там кнопка «ещё»
+            doc.scroll(NSPoint(x: 0, y: max(0, doc.bounds.height - scroll.contentView.bounds.height)))
+        }
         dump(to: path)
     }
 }

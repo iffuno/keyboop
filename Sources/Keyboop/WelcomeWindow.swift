@@ -60,7 +60,7 @@ final class WelcomeWindowController: NSWindowController, NSWindowDelegate {
 
         // Заголовок: маленькая стандартная иконка + «Привет. Я Keyboop.».
         // (Крупная анимация теперь — интро-заставка на всё окно, см. introOverlay ниже.)
-        let icon = NSImageView(); icon.image = NSApp.applicationIconImage
+        let icon = NSImageView(); icon.image = DockPresence.bundleIcon
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.widthAnchor.constraint(equalToConstant: 50).isActive = true
         icon.heightAnchor.constraint(equalToConstant: 50).isActive = true

@@ -30,11 +30,20 @@ enum DockPresence {
         NSApp.setActivationPolicy(.regular)
     }
 
+    /// ИКОНКА ИЗ БАНДЛА, А НЕ ПОДМЕНЁННАЯ (14.09.2026).
+    ///
+    /// ⚠️ `NSApp.applicationIconImage` это ЗАПИСЫВАЕМОЕ свойство, и мы сами его подменяем, пока
+    /// открыто окно истории. Всё, что рисует «иконку приложения» через него, подменённую и
+    /// показывает: окно знакомства, плашки, «О программе», анимированный логотип. автор поймал это
+    /// в онбординге — там красовалась иконка с подписью «История», хотя к знакомству она отношения
+    /// не имеет. Кто хочет ИМЕННО значок приложения, берёт его отсюда.
+    static var bundleIcon: NSImage { NSImage(named: NSImage.applicationIconName) ?? NSImage() }
+
     private static let historyIcon: NSImage = makeHistoryIcon()
 
     /// Иконка приложения с подписью-таблеткой снизу. Рисуется в 512 pt: Dock сам масштабирует.
     static func makeHistoryIcon() -> NSImage {
-        let base = NSImage(named: NSImage.applicationIconName) ?? NSApp.applicationIconImage ?? NSImage()
+        let base = bundleIcon   // ⚠️ только из бандла: applicationIconImage к этому моменту уже наш же
         let label = L10n.t("dock.history")
         let size = NSSize(width: 512, height: 512)
         return NSImage(size: size, flipped: false) { rect in
@@ -63,9 +72,44 @@ enum DockPresence {
         }
     }
 
+    /// ⚗️ ВАРИАНТЫ ЗНАЧКА ДЛЯ ВЫБОРА (14.09.2026). Текстовая таблетка внутри иконки читается плохо
+    /// и не по-маковски: в Доке она мелкая, а в ⌘Tab почти неразличима. Рисуем три кандидата, чтобы
+    /// автор посмотрел глазами, а не на описание. Останется один, остальные уйдут.
+    enum Badge: String, CaseIterable { case text, glyph, dot }
+
+    static func makeHistoryIcon(_ badge: Badge) -> NSImage {
+        if badge == .text { return makeHistoryIcon() }
+        let base = bundleIcon
+        let size = NSSize(width: 512, height: 512)
+        return NSImage(size: size, flipped: false) { rect in
+            base.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1)
+            // Кружок в правом нижнем углу самого квадрата иконки (он занимает ~80% холста).
+            let d: CGFloat = badge == .glyph ? 196 : 128
+            let circle = NSRect(x: 462 - d, y: 50, width: d, height: d)
+            NSColor.black.withAlphaComponent(0.35).setFill()
+            NSBezierPath(ovalIn: circle.insetBy(dx: -6, dy: -6)).fill()
+            DS.coral.setFill(); NSBezierPath(ovalIn: circle).fill()
+            guard badge == .glyph else { return true }
+            // Часы со стрелкой назад: узнаваемый системный знак «история», без единой буквы,
+            // поэтому одинаково понятен на любом языке интерфейса.
+            let cfg = NSImage.SymbolConfiguration(pointSize: d * 0.56, weight: .semibold)
+            if let sym = NSImage(systemSymbolName: "clock.arrow.circlepath", accessibilityDescription: nil)?
+                .withSymbolConfiguration(cfg) {
+                let s = sym.size
+                let box = NSRect(x: circle.midX - s.width / 2, y: circle.midY - s.height / 2,
+                                 width: s.width, height: s.height)
+                NSColor.white.set()
+                sym.draw(in: box, from: .zero, operation: .sourceOver, fraction: 1)
+            }
+            return true
+        }
+    }
+
     /// Dev: снимок значка для проверки глазами (правило «посмотреть на пиксели до релиза»).
-    static func writeHistoryIconPNG(to path: String) {
-        let img = makeHistoryIcon()
+    static func writeHistoryIconPNG(to path: String) { writeHistoryIconPNG(to: path, badge: .text) }
+
+    static func writeHistoryIconPNG(to path: String, badge: Badge) {
+        let img = makeHistoryIcon(badge)
         guard let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]) else { return }
         try? png.write(to: URL(fileURLWithPath: path))

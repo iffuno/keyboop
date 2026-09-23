@@ -239,6 +239,39 @@ final class ParakeetEngine {
         }
     }
 
+    /// Выгрузить модель из памяти, НЕ трогая файлы (настройка «Выгружать модель после каждой
+    /// диктовки», 24.09.2026). Следующая диктовка загрузит её заново через `loadIfNeeded`.
+    ///
+    /// Посреди загрузки не выгружаем: ждущие `loadIfNeeded` получили бы `true` и пустой менеджер.
+    /// Посреди распознавания не зовём: это сторожит вызывающий (`VoiceController`, только в простое).
+    /// Сам менеджер отпускаем В ФОНЕ, по той же причине, что в `deleteModel` ниже: освобождение
+    /// CoreML/ANE на главном потоке однажды уже морозило окно.
+    /// `false` — модель как раз грузится и выгрузить её сейчас нельзя: вызывающий дождётся
+    /// `waitForPendingLoad()` и попробует снова. `true` — выгрузили или выгружать было нечего.
+    @discardableResult
+    func unload() -> Bool {
+        loadGate.lock()
+        if loading != nil { loadGate.unlock(); return false }
+        guard ready else { loadGate.unlock(); return true }
+        let old = manager
+        manager = nil
+        loadedModels = nil
+        ready = false
+        decoderLayers = 0
+        loadGate.unlock()
+        DispatchQueue.global(qos: .utility).async {
+            _ = old                // держим до конца блока → AsrManager освобождается здесь, в фоне
+            kbLog("parakeet: модель выгружена после диктовки (настройка)")
+        }
+        return true
+    }
+
+    /// Дождаться уже идущей загрузки, НЕ начиная новую (в отличие от `loadIfNeeded`).
+    func waitForPendingLoad() async {
+        loadGate.lock(); let running = loading; loadGate.unlock()
+        _ = await running?.value
+    }
+
     /// Удалить скачанную модель (освободить место). Сбрасывает и состояние в памяти, чтобы при
     /// следующей диктовке честно сработал onNeedModel (а не отдавал пустой результат с мёртвым manager).
     ///
@@ -279,6 +312,8 @@ final class ParakeetEngine {
     private(set) var ready = false
     static var modelInstalled: Bool { false }
     func loadIfNeeded() async -> Bool { false }
+    @discardableResult func unload() -> Bool { true }
+    func waitForPendingLoad() async {}
     // Сигнатура обязана совпадать с arm64-версией: universal-сборка компилирует ОБЕ ветки,
     // и расхождение уронит именно x86-проход, то есть поддержку Intel.
     func transcribe(samples: [Float], language: String) async -> String? { nil }

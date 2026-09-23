@@ -447,7 +447,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     /// имя и версия идут рядом, а не одно под другим.
     private func makeBrandBlock() {
         guard brandBlock.arrangedSubviews.isEmpty else { return }
-        let icon = NSImageView(image: NSApp.applicationIconImage)
+        let icon = NSImageView(image: DockPresence.bundleIcon)
         icon.imageScaling = .scaleProportionallyUpOrDown
         icon.translatesAutoresizingMaskIntoConstraints = false
         // ⚠️ 36, А НЕ 22. автор дважды: «превращается в кашу, все мелкие детали». Внутри знака рамка
@@ -3525,8 +3525,11 @@ final class DetailVC: NSViewController {
                            subtitle: L10n.t("voice.langSub"), help: L10n.t("voice.langHelp"), key: "voice.lang"),
             ]),
             group(6),
+            // ⚠️ ПОДЗАГОЛОВОК ВПЛОТНУЮ К СВОЕЙ КАРТОЧКЕ, БЕЗ ПРОКЛАДКИ (автор 24.09.2026). Здесь после
+            // каждого из пяти подзаголовков стоял `group(8)`, и зазор до карточки выходил 28 pt
+            // вместо обычных 10: заголовок отрывался от своего блока и читался ничьим. В «Общих»,
+            // «Автозамене» и «Переводе» прокладки под заголовком нет, теперь и здесь так же.
             sectionTitle(L10n.t("voice.grpMic")),
-            group(8),
             // B. Всё про устройство ввода в одном месте: выбор, прогрев и его окно, системный уровень.
             card([
                 controlRow(L10n.t("voice.mic"), micSelectorControl(), key: "voice.mic"),
@@ -3556,7 +3559,6 @@ final class DetailVC: NSViewController {
             ]),
             group(6),
             sectionTitle(L10n.t("voice.grpDictation")),
-            group(8),
             // C. Поведение самой диктовки. Наш звук записи живёт ЗДЕСЬ, а системный уровень входа —
             // в карточке микрофона: два разных смысла разведены по разным карточкам.
             card([
@@ -3609,7 +3611,6 @@ final class DetailVC: NSViewController {
         views.append(contentsOf: [
             group(6),
             sectionTitle(L10n.t("voice.modelsTitle")),
-            group(8),
             modelCard
         ])
         // «Другие модели» — СРАЗУ за двумя рекомендованными, до пояснений: это продолжение списка,
@@ -3637,10 +3638,21 @@ final class DetailVC: NSViewController {
         #if !arch(arm64)
         views.append(contentsOf: [hint(L10n.t("voice.intelNote")), group(6)])
         #endif
+        // Выгрузка после каждой диктовки (просьба пользователей, автор 24.09.2026). Стоит в группе
+        // моделей, потому что это про модель, а не про саму диктовку. Подпись сразу говорит, кому
+        // она НЕ нужна: у большинства памяти хватает, и им галочка только добавит задержку.
+        #if arch(arm64)
+        let unloadSub = L10n.t("voice.unloadAfterSub")
+        #else
+        let unloadSub = L10n.t("voice.unloadAfterSubIntel")
+        #endif
+        views.append(card([
+            switchRow(L10n.t("voice.unloadAfter"), unloadSub, settings.voiceUnloadAfterDictation,
+                      #selector(toggleUnloadAfterDictation), help: L10n.t("voice.unloadAfterHelp"), key: "voice.unloadAfter"),
+        ]))
         views.append(contentsOf: [
             group(6),
             sectionTitle(L10n.t("voice.grpDuck")),
-            group(8),
             card([
                 switchRow(L10n.t("voice.duck"), L10n.t("voice.duckSub"), settings.voiceDuck,
                           #selector(toggleDuck), help: L10n.t("voice.duckHelp"), key: "voice.duck"),
@@ -3649,7 +3661,6 @@ final class DetailVC: NSViewController {
             ]),
             group(6),
             sectionTitle(L10n.t("voice.grpHistory")),
-            group(8),
             card([
                 switchRow(L10n.t("voice.history"), L10n.t("voice.historySub"), settings.voiceHistoryEnabled, #selector(toggleVoiceHistory),
                           key: "voice.history"),
@@ -4747,6 +4758,12 @@ final class DetailVC: NSViewController {
             VoiceHistory.shared.removeClipboardEntries()
         }
     }
+    /// Включили — модель уходит из памяти сразу, не дожидаясь следующей диктовки. Выключили —
+    /// греем её обратно, иначе первая диктовка после этого заплатила бы за загрузку зря.
+    @objc private func toggleUnloadAfterDictation(_ s: NSSwitch) {
+        settings.voiceUnloadAfterDictation = (s.state == .on)
+        VoiceController.shared.applyUnloadSetting()
+    }
     /// ⚠️ ВЫКЛЮЧЕНИЕ УНОСИТ УЖЕ ЗАПИСАННОЕ. Оставить клипы лежать после того, как человек снял
     /// галочку «сохранять запись голоса», значит соврать ему тумблером: он думает, что записей больше
     /// нет, а на диске остаются часы его речи. Сами тексты истории при этом не трогаем.
@@ -4768,19 +4785,51 @@ final class DetailVC: NSViewController {
             HistoryGate.promptDisable { ok in s.state = ok ? .off : .on }
         }
     }
-    // Значения в МИНУТАХ: 30, 60, 120, 240, 480, 0 (без удаления)
-    private let retentionMins = [30, 60, 120, 240, 480, 0]
+    // Значения в МИНУТАХ, список и порядок держит `HistoryPolicy.retentionMenu` (0 = без удаления).
+    // Минуты лежат в `tag` пункта, а не в параллельном массиве: у человека со старым вариантом
+    // (2 или 4 часа) в списке на один пункт больше, и индексы разъехались бы.
     private func historyRetentionControl() -> NSView {
         let pop = NSPopUpButton()
-        pop.addItems(withTitles: [L10n.t("ret.30m"), L10n.t("ret.1h"), L10n.t("ret.2h"), L10n.t("ret.4h"), L10n.t("ret.8h"), L10n.t("ret.never")])
-        let cur = settings.voiceHistoryMinutes
-        pop.selectItem(at: retentionMins.firstIndex(of: cur) ?? 1)
+        fillRetention(pop)
         pop.target = self; pop.action = #selector(retentionChanged(_:))
         return pop
     }
+    private func fillRetention(_ pop: NSPopUpButton) {
+        let cur = settings.voiceHistoryMinutes
+        pop.removeAllItems()
+        for mins in HistoryPolicy.retentionMenu(current: cur) {
+            pop.addItem(withTitle: L10n.retentionTitle(mins))
+            pop.lastItem?.tag = mins
+        }
+        pop.selectItem(withTag: cur)
+    }
+    /// ⚠️ СОКРАЩЕНИЕ СРОКА СПРАШИВАЕТ (ревью 24.09.2026). Новый срок применяется сразу, и всё, что
+    /// старше него, уходит насовсем вместе с записью голоса. Пока история держала 50 диктовок, это
+    /// было терпимо; с 7 и 30 днями и потолком 3000 промах мышью на соседний пункт стирал бы месяц.
+    /// Правило то же, что у выключения захвата буфера: промах пальцем не стоит истории. Первая
+    /// кнопка, то есть Return, оставляет всё как было.
     @objc private func retentionChanged(_ s: NSPopUpButton) {
-        settings.voiceHistoryMinutes = retentionMins[s.indexOfSelectedItem]
-        VoiceHistory.shared.applyRetention()
+        guard let mins = s.selectedItem?.tag else { return }
+        let old = settings.voiceHistoryMinutes
+        let apply = { [weak self] in
+            guard let self else { return }
+            self.settings.voiceHistoryMinutes = mins
+            VoiceHistory.shared.applyRetention()
+            self.fillRetention(s)   // старый пункт «2 часа» исчезает, как только выбран другой
+        }
+        let shorter = mins > 0 && (old == 0 || mins < old)
+        let n = shorter ? VoiceHistory.shared.countOlder(thanMinutes: mins) : 0
+        guard n > 0 else { apply(); return }
+        let a = NSAlert()
+        a.messageText = String(format: L10n.t("voice.retShrink.title"), n)
+        a.informativeText = L10n.t("voice.retShrink.msg")
+        a.addButton(withTitle: L10n.t("voice.retShrink.keep"))
+        let del = a.addButton(withTitle: L10n.t("voice.retShrink.delete"))
+        del.hasDestructiveAction = true
+        let done: (NSApplication.ModalResponse) -> Void = { [weak self] r in
+            if r == .alertSecondButtonReturn { apply() } else { self?.fillRetention(s) }
+        }
+        if let w = view.window { a.beginSheetModal(for: w, completionHandler: done) } else { done(a.runModal()) }
     }
     private let warmSecondsOptions = [15, 30, 60, 120, 300]   // 10 мин убрано — слишком долго держать HAL
     private func warmDurationControl() -> NSView {

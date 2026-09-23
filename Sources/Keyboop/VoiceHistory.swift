@@ -122,6 +122,14 @@ final class VoiceHistory {
         notifyChanged()
     }
 
+    /// Сколько записей удалил бы срок хранения в `mins` минут, если применить его сейчас. Ничего не
+    /// меняет: по этому числу настройки спрашивают человека перед сокращением срока.
+    func countOlder(thanMinutes mins: Int) -> Int {
+        guard mins > 0 else { return 0 }
+        let cutoff = Date().addingTimeInterval(-Double(mins) * 60)
+        return cache.filter { $0.date < cutoff && !$0.isImported }.count
+    }
+
     /// Применить новый срок хранения (зовётся из настроек) — подчистить + обновить окно.
     func applyRetention() {
         if prune() { save(); notifyChanged() }

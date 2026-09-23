@@ -1561,7 +1561,19 @@ final class Engine: EventTapHandler {
         let toCyrillic: Bool
         if text.hasCyrillic { toCyrillic = false }
         else if text.hasLatinLetter { toCyrillic = true }
-        else { muted = false; return false }          // нет букв — нечего переключать
+        else if let bySymbols = Keymap.unambiguousSymbolDirection(text) {
+            // ВЫДЕЛЕНИЕ БЕЗ БУКВ, ОДНИ ЗНАКИ (задача 268, отзыв #267 от 12.09.2026). Раньше здесь
+            // стоял безусловный отказ «нет букв — нечего переключать», и человек, набравший `^`
+            // вместо запятой, выделял его, жал хоткей и не получал ничего. Направление для знаков
+            // выводится не из букв, а из однозначности самого знака, разбор — у
+            // `Keymap.unambiguousSymbolDirection`. Спорные знаки по-прежнему не трогаем.
+            toCyrillic = bySymbols
+        }
+        else {
+            muted = false
+            kbLog("convert-selection: в выделении нет букв, а знаки спорные — не трогаю")
+            return false
+        }
         let converted = Keymap.convert(text, toCyrillic: toCyrillic)
         guard converted != text else { muted = false; return false }
         let usedSynth = !(writeBack?(converted) ?? false)

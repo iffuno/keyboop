@@ -35,7 +35,11 @@ private var kbLogWritesSinceCheck = kbLogCheckEvery
 /// по чужому логу это худший вид потерянного времени. Прод остаётся `Keyboop.log`, `.dev` остаётся
 /// `Keyboop-dev.log`, всё остальное получает свой файл автоматически.
 let kbLogPath: String = {
-    let id = Bundle.main.bundleIdentifier ?? "ru.keyboop.app"
+    // ⚠️ У ГОЛОГО БИНАРЯ СТЕНДА bundle id НЕТ ВОВСЕ (23.09.2026). Раньше тут был фолбэк на боевой
+    // «ru.keyboop.app», и каждый стенд, линкующий код приложения, писал в Keyboop.log — тот самый
+    // файл, хвост которого люди присылают с отзывами. Прогон run-all 22.09 добавил туда 5362 строки
+    // и вызвал ротацию лога. Теперь такие процессы пишут в свой Keyboop-stand.log.
+    let id = Bundle.main.bundleIdentifier ?? "ru.keyboop.app.stand"
     let suffix = id == "ru.keyboop.app" ? "" : "-" + (id.split(separator: ".").last.map(String.init) ?? "x")
     return (NSHomeDirectory() as NSString).appendingPathComponent("Library/Logs/Keyboop\(suffix).log")
 }()

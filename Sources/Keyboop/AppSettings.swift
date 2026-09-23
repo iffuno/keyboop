@@ -647,6 +647,15 @@ final class AppSettings {
     var voiceChars: Int { get { d.integer(forKey: "voiceChars") } set { d.set(newValue, forKey: "voiceChars") } }
     var voiceWords: Int { get { d.integer(forKey: "voiceWords") } set { d.set(newValue, forKey: "voiceWords") } }
 
+    /// Выгружать модель распознавания СРАЗУ после каждой диктовки (просьба пользователей, автор
+    /// 24.09.2026). Для Mac с небольшой памятью: модель не лежит в ней между диктовками, зато каждая
+    /// диктовка платит за загрузку. По умолчанию выключено, и включать это стоит только при нехватке
+    /// памяти: обычный путь выгрузки по давлению памяти и по простою ниже остаётся как был.
+    var voiceUnloadAfterDictation: Bool {
+        get { d.bool(forKey: "voiceUnloadAfterDictation") }
+        set { d.set(newValue, forKey: "voiceUnloadAfterDictation") }
+    }
+
     /// Через сколько МИНУТ простоя выгружать модель Whisper из памяти (0 = держать всегда).
     /// Модель ~1.5 ГБ и раньше висела в памяти вечно — фоновая утилита занимала 1.8 ГБ (замер 20.07).
     ///

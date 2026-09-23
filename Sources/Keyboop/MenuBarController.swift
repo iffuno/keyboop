@@ -574,6 +574,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     private func populate(_ menu: NSMenu) {
+        twinLetters.removeAll()   // скрытые дубли пунктов строятся заново под текущую раскладку
         // Заголовок меню = ВЕРСИЯ, а не слоган (просьба автора 21.07: «раскладка под контролем» —
         // приятно, но бесполезно; версию хочется видеть сразу). Плюс два по-настоящему полезных
         // индикатора: «-dev» (чтобы никогда больше не диагностировать не ту сборку — инцидент 21.07)
@@ -691,6 +692,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                           "arrow.triangle.2.circlepath",                // SF 1
                           "arrow.2.squarepath")
         menu.addItem(auto)
+        addLayoutTwins(of: auto, keyCode: 0)   // a
 
         // ПАУЗА — СРАЗУ ПОД АВТОПЕРЕКЛЮЧЕНИЕМ, вместо прежней строки-подсказки «Переключить слово:
         // ⌥⇧» (автор 07.08). Место выбрано по смыслу: это соседний тумблер того же самого, только на
@@ -746,6 +748,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         vh.image = icon("clock.arrow.trianglehead.counterclockwise.rotate.90",   // SF 6, macOS 15
                         "clock.arrow.circlepath")
         menu.addItem(vh)
+        addLayoutTwins(of: vh, keyCode: 4)     // h
 
         if VoiceHistory.shared.lastVisible() != nil {
             let copyLast = NSMenuItem(title: L10n.t("menu.copyLast"), action: #selector(copyLastDictation), keyEquivalent: "c")
@@ -754,6 +757,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             copyLast.image = icon("document.on.document",   // SF 6, macOS 15 — переименование doc.* → document.*
                                   "doc.on.doc")
             menu.addItem(copyLast)
+            addLayoutTwins(of: copyLast, keyCode: 8)   // c
         }
 
         menu.addItem(.separator())
@@ -782,12 +786,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         upd.target = self
         upd.image = icon("arrow.down.circle")
         menu.addItem(upd)
+        addLayoutTwins(of: upd, keyCode: 32)   // u
 
         let report = NSMenuItem(title: L10n.t("menu.report"), action: #selector(reportProblem), keyEquivalent: "r")
         report.keyEquivalentModifierMask = []
         report.target = self
         report.image = icon("exclamationmark.bubble")
         menu.addItem(report)
+        addLayoutTwins(of: report, keyCode: 15)   // r
 
         menu.addItem(.separator())   // «Выйти» снова один за разделителем, чтобы не нажать случайно
 
@@ -795,6 +801,46 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         quit.target = self
         quit.image = icon("power")
         menu.addItem(quit)
+    }
+
+    /// ⚠️ СКРЫТЫЕ ДУБЛИ ПУНКТОВ ДЛЯ НЕЛАТИНСКОЙ РАСКЛАДКИ (задача 255, отзыв #287, 24.09.2026).
+    /// Буква пункта без модификатора сравнивается с тем, что ПЕЧАТАЕТ клавиша, а подстановку
+    /// латиницы macOS делает только для сочетаний с ⌘. На русской физическая R даёт «к», и
+    /// «Сообщить о проблеме» молчал. Для программы, которая живёт ровно на стыке раскладок,
+    /// это было особенно неловко.
+    ///
+    /// Сразу за пунктом кладём его невидимую копию: то же действие, буква той же физической
+    /// клавиши в ТЕКУЩЕЙ раскладке. `allowsKeyEquivalentWhenHidden` (AppKit, macOS 10.13) оставляет
+    /// скрытому пункту его сочетание. Видимая колонка сочетаний не меняется, свой разбор событий не
+    /// появляется: сопоставляет по-прежнему AppKit. Действия этих пяти пунктов не читают `sender`.
+    ///
+    /// ⚠️ ТОЛЬКО ТЕКУЩАЯ РАСКЛАДКА, А НЕ ВСЕ УСТАНОВЛЕННЫЕ (ревью 24.09). Первая версия брала буквы
+    /// из всех нелатинских раскладок сразу, и у кого включены две похожие (русская и болгарская,
+    /// русская и фонетическая), одна и та же буква доставалась РАЗНЫМ пунктам: «к» открывала
+    /// обновления вместо отзыва, а буквы, которые раньше ничего не делали, молча выключали
+    /// автопереключение. Меню и так пересобирается на каждое открытие (`menuNeedsUpdate`), поэтому
+    /// текущей раскладки достаточно. Берём её из `KeyboardLayoutCache`, а не спрашиваем TIS: у
+    /// фоновой программы «текущий источник» бывает несвежим, а кэш обновляется на каждую смену.
+    /// Одна буква достаётся не больше чем одному пункту (`twinLetters`).
+    ///
+    /// Физическую клавишу берём из ЛАТИНСКОЙ раскладки человека (`DynamicKeymap.latinKeyCodes`):
+    /// у AZERTY «a» стоит на месте U.S.-«q». `ansiKeyCode` — запасной вариант, пока таблица не
+    /// построена. Латинская текущая раскладка дублей не получает: там буква пункта и так работает.
+    private var twinLetters = Set<Character>()
+    private func addLayoutTwins(of item: NSMenuItem, keyCode ansiKeyCode: UInt16) {
+        guard let latin = item.keyEquivalent.first, let target = item.menu else { return }
+        let kc = DynamicKeymap.latinKeyCodes[latin] ?? ansiKeyCode
+        var dead: UInt32 = 0
+        let typed = KeyboardLayoutCache.characters(keyCode: Int64(kc), flags: [], deadState: &dead)
+        guard typed.count == 1, let ch = typed.first, !ch.isASCII, ch.isLetter,
+              !twinLetters.contains(ch) else { return }
+        twinLetters.insert(ch)
+        let twin = NSMenuItem(title: item.title, action: item.action, keyEquivalent: String(ch))
+        twin.keyEquivalentModifierMask = []
+        twin.target = item.target
+        twin.isHidden = true
+        twin.allowsKeyEquivalentWhenHidden = true
+        target.addItem(twin)
     }
 
     /// Подменю «Микрофон» — список устройств ввода, галочка на выбранном.
