@@ -268,14 +268,23 @@ final class CallRecorder {
     }
 
     func start() {
-        guard !isRecording, !stopping else { return }
+        // Каждый отказ пишем в лог (26.09.2026): раньше эти выходы молчали, и «запись не начинается»
+        // нельзя было отличить от «клик до нас не дошёл».
+        guard !isRecording, !stopping else {
+            kbLog("звонок: не начинаю, уже \(isRecording ? "идёт запись" : "дописывается прошлая")"); return
+        }
         guard #available(macOS 14.2, *) else {
+            kbLog("звонок: не начинаю, нужна macOS 14.2")
             VoiceIndicator.shared.showToast(L10n.t("call.unavailable")); return
         }
         guard AppSettings.shared.voiceHistoryEnabled else {
+            kbLog("звонок: не начинаю, история выключена")
             VoiceIndicator.shared.showToast(L10n.t("hist.importNoHistory")); return
         }
-        guard VoiceController.shared.hasUsableModel else { VoiceController.shared.onNeedModel?(); return }
+        guard VoiceController.shared.hasUsableModel else {
+            kbLog("звонок: не начинаю, нет модели распознавания")
+            VoiceController.shared.onNeedModel?(); return
+        }
         if let free = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())[.systemFreeSize] as? Int64,
            free < CallRecordingPolicy.minFreeBytes {
             VoiceIndicator.shared.showToast(L10n.t("call.noSpace")); return

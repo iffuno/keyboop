@@ -394,10 +394,44 @@ enum HotkeyGuard {
         return false
     }
 
+    /// Одна ли это физическая клавиша для хоткея «клавиша + модификаторы». Все коды сравниваются
+    /// строго, кроме грейва: `` ` ``/`~` на ANSI это keyCode 50, а на ISO под Esc стоит § с кодом
+    /// 10, и человек жмёт «где ожидает тильду». Поэтому 10 и 50 считаем одной клавишей (research
+    /// 01.07), и хоткей на `` ` `` срабатывает на любой клавиатуре.
+    ///
+    /// ⚠️ ТАБЛИЦА ОДНА НА ПРИЛОЖЕНИЕ, КАК И `modifierKeys` (26.09.2026, задача 244). Раньше пара
+    /// {10, 50} жила только в `EventTap.keyMatches`, а `sameTrigger` сравнивала keyCode строго.
+    /// Итог: ⌥§ и ⌥` в рантайме одна клавиша, а для проверки конфликтов две разные, и на неё можно
+    /// было без единого предупреждения повесить две наши функции. Та же болезнь, что в отзыве
+    /// #204, только на обычной клавише вместо модификатора. Исключение одно, мгновенное
+    /// переключение, и оно разобрано у `graveIsOneKey`.
+    ///
+    /// Без `Set` и без ленивой глобальной таблицы намеренно: функцию зовёт перехватчик на КАЖДОЕ
+    /// нажатие, и там стоить она должна пару сравнений, а не выделение памяти.
+    @inline(__always)
+    static func sameKey(_ a: Int, _ b: Int) -> Bool {
+        if a == b { return true }
+        return (a == 10 || a == 50) && (b == 10 || b == 50)
+    }
+
+    /// Считать ли для этой пары слотов грейв 10 и 50 одной клавишей.
+    ///
+    /// ⚠️ МГНОВЕННОЕ ПЕРЕКЛЮЧЕНИЕ ИСКЛЮЧЕНО, ПОТОМУ ЧТО ЕГО РАНТАЙМ СРАВНИВАЕТ СТРОГО (26.09.2026,
+    /// задача 244, ревью). В `EventTap` его ветка стоит первой и ловит ровно сохранённый keyCode,
+    /// без `keyMatches`, а переводить её на `keyMatches` нельзя: на ISO сочетание «мгновенное ⌥§ +
+    /// диктовка ⌥`» сегодня работает, каждая функция на своей клавише, и диктовка у такого человека
+    /// умерла бы после обновления. Значит, в паре с мгновенным 10 и 50 это РАЗНЫЕ клавиши, и
+    /// проверка обязана думать так же: иначе она показала бы плашку «одна клавиша на два действия»
+    /// там, где работают оба, и не дала бы назначить рабочее сочетание. Для остальных семи слотов
+    /// 10 ≡ 50, как в `keyMatches`: там пара на 10 и 50 значит, что одна функция мертва целиком.
+    static func graveIsOneKey(_ a: Slot, _ b: Slot) -> Bool { a != .instant && b != .instant }
+
     /// Одна и та же ли это комбинация. Сравнение зависит от режима: у голого модификатора значим
     /// только keyCode (маска у левого и правого ⌥ одинакова), у 🌐 сравнивать нечего вовсе.
+    /// `graveAlias` — считать ли грейв 10 и 50 одной клавишей, см. `graveIsOneKey`.
     static func sameTrigger(_ mode: String, _ keyCode: Int, _ mods: UInt64,
-                            as other: (mode: String, keyCode: Int, mods: UInt64)) -> Bool {
+                            as other: (mode: String, keyCode: Int, mods: UInt64),
+                            graveAlias: Bool = true) -> Bool {
         // ⚠️ ДВОЙНОЙ ТАП РАЗБИРАЕМ ДО СРАВНЕНИЯ РЕЖИМОВ (28.08.2026, отзыв #204). Он единственный
         // жест, который в рантайме НЕ РАЗЛИЧАЕТ СТОРОНЫ: ловится по маске, а keyCode в настройках у
         // него декоративный (пресет «2× ⌥» хранит 58, но срабатывает и на 61). Из-за `mode ==
@@ -419,12 +453,33 @@ enum HotkeyGuard {
             default:          return false
             }
         }
-        guard mode == other.mode else { return false }
-        switch mode {
-        case "globe":  return true
-        case "modkey": return keyCode == other.keyCode
-        default:       return keyCode == other.keyCode && mods == other.mods
+        // ⚠️ 🌐 ХРАНИТСЯ В ДВУХ ВИДАХ, И ЭТО ОДНА КЛАВИША (26.09.2026, отзыв #299). Мгновенное
+        // переключение пишет её отдельным режимом ("globe", 63, 0), а пресет ручного переключения
+        // «🌐 Globe / Fn» пишет ту же клавишу обычным голым модификатором ("modkey", 63, Fn).
+        // Пока сравнение начиналось с `mode == other.mode`, эта пара считалась разными
+        // комбинациями. В диагностике #299 ровно она: `конверсия=modkey/63/8388608 · мгновенное=
+        // globe/63/0`. Предупреждения не было ни при назначении, ни при запуске, а в рантайме ветка
+        // мгновенного переключения забирает 🌐 раньше конверсии, и конверсия на ней мертва всегда.
+        // Сводим "globe" к modkey/63 с обеих сторон, как это уже делает `shadows()`. Двойной тап
+        // разобран выше, поэтому его ответ «двойной ⌥ × 🌐 → нет» эта строка не трогает.
+        let a = globeAsModkey((mode, keyCode, mods))
+        let b = globeAsModkey(other)
+        guard a.mode == b.mode else { return false }
+        switch a.mode {
+        case "modkey": return a.keyCode == b.keyCode
+        // Грейв 10 ≡ 50 здесь по той же таблице, что в `EventTap.keyMatches` (задача 244), кроме
+        // пар с мгновенным переключением (`graveIsOneKey`).
+        default:
+            let key = graveAlias ? sameKey(a.keyCode, b.keyCode) : a.keyCode == b.keyCode
+            return key && a.mods == b.mods
         }
+    }
+
+    /// 🌐 как голый модификатор с кодом 63. Маска у "modkey" в сравнении не участвует, поэтому
+    /// какая она тут, неважно.
+    private static func globeAsModkey(_ t: (mode: String, keyCode: Int, mods: UInt64))
+        -> (mode: String, keyCode: Int, mods: UInt64) {
+        t.mode == "globe" ? ("modkey", 63, CGEventFlags.maskSecondaryFn.rawValue) : t
     }
 
     /// Занята ли комбинация нашей же функцией. `excluding` — слот, который сейчас настраивают:
@@ -443,7 +498,8 @@ enum HotkeyGuard {
     static func ourBusy(mode: String, keyCode: Int, mods: UInt64, excluding: Slot) -> String? {
         for slot in Slot.allCases where slot != excluding {
             guard let t = slot.trigger else { continue }
-            if sameTrigger(mode, keyCode, mods, as: t) { return slot.name }
+            if sameTrigger(mode, keyCode, mods, as: t,
+                           graveAlias: graveIsOneKey(slot, excluding)) { return slot.name }
         }
         return nil
     }
@@ -465,7 +521,8 @@ enum HotkeyGuard {
             guard let ta = a.trigger else { continue }
             for b in slots.dropFirst(i + 1) {
                 guard let tb = b.trigger else { continue }
-                if sameTrigger(ta.mode, ta.keyCode, ta.mods, as: tb) { out.append((a, b)) }
+                if sameTrigger(ta.mode, ta.keyCode, ta.mods, as: tb,
+                               graveAlias: graveIsOneKey(a, b)) { out.append((a, b)) }
             }
         }
         return out

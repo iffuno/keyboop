@@ -352,6 +352,16 @@ enum L10n {
         // Safari 6, Yandex 2. Дальше по одному-двум: 1Password, Viscosity, Slack, Почта, Telegram,
         // терминалы. Поэтому в подсказке названы именно браузеры, а не «какая-то программа вообще».
         // Версия macOS ни при чём: доля ровная 14–29% от 14.8 до 27.0.
+        //
+        // ⚠️ ENPASS НАЗВАН ПО ИМЕНИ, И ЭТО НЕ ОБВИНЕНИЕ (26.09.2026). Enpass 6.12.6 (вышел 14.09.2026)
+        // держит защищённый ввод ВСЁ ВРЕМЯ, пока его хранилище заблокировано, в том числе после
+        // автоблокировки в фоне: у автора ветки на форуме Enpass (тема 32258) флаг висел 9 часов.
+        // Отпускает только разблокировка или выход из Enpass, а единственный наш совет «заблокируйте
+        // и разблокируйте экран» ему не помогает вовсе. С этим и пришёл человек из Telegram:
+        // переключение пропало после обновления до macOS 27, а причиной оказался Enpass 6.12.6.
+        // Это ПРИМЕР в статичном тексте, а не держатель из ioreg: того по-прежнему не называем
+        // (см. абзац «Почему мы не называем виновника»).
+        // Совет про экран остаётся одним из вариантов, последним: браузеру и прочим он помогает.
         "health.secureInputWho": [
             .ru: """
                  Что происходит. Какая-то программа включила защищённый ввод macOS. Пока он включён, \
@@ -359,16 +369,20 @@ enum L10n {
                  Переключение раскладки в это время не работает ни у кого и починить это изнутри нельзя.
 
                  Кто это обычно. Чаще всего браузер, в котором осталось в фокусе поле пароля: по нашим \
-                 отчётам две трети случаев это Chrome, Safari и Яндекс. Реже менеджеры паролей, \
-                 VPN-клиенты, мессенджеры и терминалы с включённым «Secure Keyboard Entry». \
-                 Ещё это всегда включается на заблокированном экране, и вот это нормально.
+                 отчётам две трети случаев это Chrome, Safari и Яндекс. Так же умеют менеджеры \
+                 паролей, например Enpass и 1Password, а Enpass с версии 6.12.6 держит защиту всё \
+                 время, пока его хранилище заблокировано. Реже это VPN-клиенты, мессенджеры и \
+                 терминалы с включённым «Secure Keyboard Entry». Ещё это всегда включается на \
+                 заблокированном экране, и вот это нормально.
 
                  Почему мы не называем виновника. macOS сообщает имя держателя ненадёжно: оно \
                  застревает на первом, кто включил защиту за сеанс. Мы проверяли, и там регулярно \
                  оказывается посторонняя программа. Обвинять невиновного хуже, чем промолчать.
 
                  Что делать. Обычно отпускает само. Если нет: закройте окно или вкладку, где вы \
-                 вводили пароль, либо заблокируйте и разблокируйте экран.
+                 вводили пароль. Если запущен менеджер паролей, разблокируйте его или закройте \
+                 совсем. В терминале выключите «Secure Keyboard Entry» в меню программы. А если не \
+                 помогло ничего из этого, заблокируйте и разблокируйте экран.
 
                  Что работает прямо сейчас. Диктовка: ей клавиатура не нужна, она пишет текст сама.
                  """,
@@ -378,9 +392,11 @@ enum L10n {
                  switching cannot work for anyone during that time, and no app can fix it from inside.
 
                  Who usually does it. Most often a browser with a password field left focused: in our \
-                 reports two thirds of cases are Chrome, Safari and Yandex. Less often password managers, \
-                 VPN clients, messengers, and terminals with Secure Keyboard Entry on. It also always \
-                 turns on while the screen is locked, and that part is normal.
+                 reports two thirds of cases are Chrome, Safari and Yandex. Password managers do it \
+                 too, for example Enpass and 1Password, and Enpass since version 6.12.6 keeps it on \
+                 the whole time its vault is locked. Less often VPN clients, messengers, and terminals \
+                 with Secure Keyboard Entry on. It also always turns on while the screen is locked, \
+                 and that part is normal.
 
                  Why we do not name the culprit. macOS reports the holder unreliably: the name sticks to \
                  whoever turned the protection on first in the session. We measured it, and it regularly \
@@ -388,12 +404,17 @@ enum L10n {
                  saying nothing.
 
                  What to do. It usually clears by itself. If it does not: close the window or tab where \
-                 you typed a password, or lock and unlock the screen.
+                 you typed a password. If a password manager is running, unlock it or quit it. In a \
+                 terminal, turn off Secure Keyboard Entry in the app menu. And if none of that helps, \
+                 lock and unlock the screen.
 
                  What still works. Dictation: it does not need the keyboard, it types the text itself.
                  """],
-        "health.secureInputTip":  [.ru: "Какая-то программа включила защищённый ввод macOS, и клавиши скрыты системно — от нас и от любой другой программы. Переключение раскладки сейчас не работает, диктовка работает. Обычно отпускает само. Если нет, помогает заблокировать и разблокировать экран.",
-                                   .en: "Some app turned on macOS secure keyboard entry, so keystrokes are hidden system-wide, from us and from every other app. Layout switching is off for now, dictation still works. It usually clears by itself. If it doesn't, locking and unlocking the screen helps."],
+        // Подсказка значка. Совет про менеджер паролей стоит здесь тоже (26.09.2026): до «Приватности»
+        // доходят не все, а у Enpass 6.12.6 блокировка экрана, единственный совет прежнего текста,
+        // не помогает. Длинное тире из русского текста убрано заодно.
+        "health.secureInputTip":  [.ru: "Какая-то программа включила защищённый ввод macOS, и клавиши скрыты системно: от нас и от любой другой программы. Переключение раскладки сейчас не работает, диктовка работает. Обычно отпускает само. Если нет, закройте вкладку с полем пароля. Менеджер паролей разблокируйте или закройте: Enpass с версии 6.12.6 держит защиту, пока его хранилище заблокировано. Ещё помогает заблокировать и разблокировать экран.",
+                                   .en: "Some app turned on macOS secure keyboard entry, so keystrokes are hidden system-wide, from us and from every other app. Layout switching is off for now, dictation still works. It usually clears by itself. If it doesn't, close the tab with the password field. Unlock or quit your password manager: Enpass since 6.12.6 keeps it on while its vault is locked. Locking and unlocking the screen also helps."],
         "health.secureInputHolder": [.ru: "Скрытый ввод: %@", .en: "Hidden input: %@"],
         // Подсказки значка (P3.4). Эти две ЦЕЛЫЕ фразы, а не фрагменты общего ряда, потому что
         // висят сами по себе при наведении. Про паузу отдельной строки нет намеренно: её текст

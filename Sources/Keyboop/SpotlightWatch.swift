@@ -42,7 +42,31 @@ enum SpotlightWatch {
 
     private static let queue = DispatchQueue(label: "ru.keyboop.spotlight", qos: .utility)
     private static var lastPoke: CFTimeInterval = 0
-    private static var cachedPID: pid_t = 0
+    /// PID каждого хоста панели; 0, пока процесс не найден. Проверяются ОБА на каждой пробе:
+    /// на 26 Spotlight поднимается по требованию, и запомнить навсегда первый найденный хост нельзя.
+    private static var pids: [String: pid_t] = [:]
+    private static var loggedHosts = Set<String>()
+
+    /// ⚠️ НА macOS 27 ПАНЕЛЬ SPOTLIGHT ЖИВЁТ В ДРУГОМ ПРОЦЕССЕ (задача 261, отзывы #309, #311, #289,
+    /// #282; проверено на Маке автора 26.09.2026). Процесса `com.apple.Spotlight` там нет вовсе
+    /// (`launchctl print gui/501/com.apple.Spotlight` отвечает «Could not find service», LaunchAgent
+    /// выключен под флагом `IntelligenceFlow/Campo`), а поиск рисует `/System/Applications/Siri AI.app`
+    /// с bundle id `com.apple.campo`. Раньше мы искали только старый id, `isOpen` на 27 был навсегда
+    /// false, и молча: в лог пишется только смена состояния. Отсюда оба симптома 0.4.9 на 27:
+    /// первая буква остаётся (не включался Delete-вперёд), а при соседнем перехватчике замена
+    /// уходила в окно под Spotlight (synthPostTap выбирал annotated).
+    ///
+    /// Старый id стоит первым и проверяется как раньше, путь macOS 26 не меняется. Для нового хоста
+    /// добавлен фильтр ширины: у Siri AI бывает маленькое окно (84×77), которое на экране само по
+    /// себе и поиском не является; ложное «открыт» включило бы Delete-вперёд в обычных программах.
+    ///
+    /// И слой: на Маке автора 26.09.2026 панель поиска на 27 это 640×57 на слое 23, то есть плавает
+    /// над обычными окнами, как и старая панель 640×56. Обычное окно самого Siri AI (чат) лежит на
+    /// слое 0, и поиском оно не является. Для старого хоста слой не проверяем: путь 26 не трогаем.
+    private static let hosts: [(id: String, minWidth: CGFloat, floatingOnly: Bool)] = [
+        ("com.apple.Spotlight", 0, false),
+        ("com.apple.campo", 400, true),
+    ]
 
     /// Интервал опроса. 250 мс подобраны так: первая буква в Spotlight конверсию не вызывает (для
     /// неё нужно слово), значит к моменту, когда мы впервые захотим тронуть текст, проба уже прошла.
@@ -62,29 +86,51 @@ enum SpotlightWatch {
     }
 
     private static func probe() {
-        if cachedPID == 0 || NSRunningApplication(processIdentifier: cachedPID) == nil {
-            cachedPID = NSRunningApplication
-                .runningApplications(withBundleIdentifier: "com.apple.Spotlight")
-                .first?.processIdentifier ?? 0
+        for host in hosts {
+            if let p = pids[host.id], p != 0, NSRunningApplication(processIdentifier: p) != nil { continue }
+            let p = NSRunningApplication.runningApplications(withBundleIdentifier: host.id).first?.processIdentifier ?? 0
+            pids[host.id] = p
+            // Одна строка на хост за запуск: по ней в отзыве видно, нашли ли мы панель вообще. На 26
+            // Spotlight поднимается по требованию, поэтому «не найден» до первого ⌘Space это норма,
+            // и её мы не пишем.
+            if p != 0, loggedHosts.insert(host.id).inserted {
+                let id = host.id
+                DispatchQueue.main.async { kbLog("Spotlight: панель живёт в \(id) (pid \(p))") }
+            }
         }
-        guard cachedPID != 0 else { return }
+        var minWidth: [pid_t: CGFloat] = [:]
+        var floatingOnly: [pid_t: Bool] = [:]
+        for host in hosts {
+            if let p = pids[host.id], p != 0 { minWidth[p] = host.minWidth; floatingOnly[p] = host.floatingOnly }
+        }
         var open = false
-        if let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] {
-            for w in list where (w[kCGWindowOwnerPID as String] as? pid_t) == cachedPID {
+        var why = ""
+        if !minWidth.isEmpty,
+           let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] {
+            for w in list {
+                guard let pid = w[kCGWindowOwnerPID as String] as? pid_t, let need = minWidth[pid] else { continue }
                 // Высота отсекает служебные окна нулевого размера, прозрачность — затухающее после
                 // закрытия. Оба порога взяты из замеров, а не на глаз: живая панель это 640×56 при
-                // alpha ровно 1.0, а через 106 мс после Escape прозрачность уже 0.28.
+                // alpha ровно 1.0, а через 106 мс после Escape прозрачность уже 0.28. Ширина нужна
+                // только хосту macOS 27 (см. `hosts`).
                 guard let b = w[kCGWindowBounds as String] as? [String: CGFloat],
                       (b["Height"] ?? 0) > 40,
+                      (b["Width"] ?? 0) >= need,
+                      !(floatingOnly[pid] ?? false) || ((w[kCGWindowLayer as String] as? Int) ?? 0) > 0,
                       (w[kCGWindowAlpha as String] as? Double ?? 0) > 0.5 else { continue }
                 open = true
+                // По какому окну решили: хост, размер, слой. Только геометрия, без содержимого. На 27
+                // у Siri AI могут быть и другие крупные окна, и по этой строке видно, не принято ли
+                // за поиск чужое окно (задача 261).
+                let host = hosts.first { pids[$0.id] == pid }?.id ?? "?"
+                why = " (\(host), \(Int(b["Width"] ?? 0))×\(Int(b["Height"] ?? 0)), слой \(w[kCGWindowLayer as String] ?? "?"))"
                 break
             }
         }
         guard open != isOpen else { return }
         isOpen = open
         DispatchQueue.main.async {
-            kbLog("Spotlight \(open ? "открыт" : "закрыт") — правила программы пересчитаны")
+            kbLog("Spotlight \(open ? "открыт" + why : "закрыт") — правила программы пересчитаны")
             onChange?()
         }
     }

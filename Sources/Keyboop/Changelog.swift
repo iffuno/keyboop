@@ -87,6 +87,53 @@ enum Changelog {
         // автор выбрал стабильную, зная, что вместе с ней стабильные пользователи с 0.4.7 получат и
         // всё из беты 0.4.8, которая обкатывалась 12 дней. Откат, если понадобится, по разделу 6
         // протокола: demote-from-stable.sh.
+        // 0.4.10 — БЕТА (решение автора 26.09.2026). Только починки, новых функций нет: с 26.09 Keyboop
+        // в режиме «только починки», пока автор работает над Aissia (см. CLAUDE.md). Бетой по протоколу:
+        // правки лежат в правке на лету, детекторе, таблице раскладок и отправке синтетики.
+        Release(version: "0.4.10",
+            ru: [
+                "Spotlight на macOS 27 снова работает. В этой версии macOS панель поиска переехала в другой системный процесс, и Keyboop её не узнавал: первая буква слова оставалась непереключённой, а если рядом работает программа вроде Magnet, исправленный текст уходил в окно под Spotlight.",
+                "Голосовой ввод на Whisper больше не теряет «Привет!», «Как дела?» и «How are you?» в начале диктовки, и русская речь в режиме «Авто» больше не выходит изредка английским переводом. Теперь Keyboop сначала определяет язык речи и подсказывает модели только на нём.",
+                "Правка на лету больше не превращает «ю», «б» и «ж» в середине слова в точку, запятую и точку с запятой: «переключение» больше не выходит «перекл.чение».",
+                "Firefox и браузеры на его движке: смена раскладки, регистра и перевод выделенного текста теперь печатают результат поверх выделения. Из-за ошибки в Firefox прежний способ портил текст вокруг выделения. Выделение из нескольких строк в Firefox пока не меняем, чтобы ничего не испортить.",
+                "Русские аббревиатуры заглавными (УФНС, МФТИ, ВГТРК, ФССП) больше не превращаются в латинский мусор. MACBOOK, API и JSON, набранные в русской раскладке, переключаются как раньше.",
+                "Правильно набранные технические сокращения со знаком в конце (txt., yml,, lgtm.) больше не превращаются в кириллицу, а «ече», набранное отдельным словом вместо txt, теперь переключается в txt. Так же работают yml, php, js, ts, md, src, cmd и ещё десяток сокращений разработчика.",
+                "Числа: запятая внутри числа при переводе в английскую раскладку становится точкой («5,5» → «5.5», а не «5?5»), а единицы после числа («5 г», «100 гб») остаются как набраны.",
+                "Раскладка «Русская – ПК»: «ё» на клавиатуре без клавиши «§» переводится в «`», а не в «§», а запятая в конце слова переводится правильно («Lf?» → «Да,»).",
+                "Keyboop предупреждает, если одна клавиша назначена на две его функции: 🌐 одновременно на мгновенную смену языка и на ручное переключение, или две функции на ⌥§ и ⌥`. Раньше одна из них молча не срабатывала.",
+                "Подсказка про скрытый ввод называет менеджеры паролей: например, Enpass с версии 6.12.6 держит защиту, пока его хранилище заблокировано. В диагностике отзыва видны все восемь сочетаний клавиш.",
+            ],
+            en: [
+                "Spotlight works again on macOS 27. In this macOS version the search panel moved to another system process and Keyboop did not recognise it: the first letter of a word stayed unconverted, and with a tool like Magnet running the corrected text went to the window under Spotlight.",
+                "Voice input on Whisper no longer drops «Привет!», «Как дела?» or «How are you?» at the start of a dictation, and Russian speech in Auto no longer occasionally comes out as an English translation. Keyboop now detects the language first and prompts the model in that language only.",
+                "Live correction no longer turns «ю», «б» and «ж» in the middle of a word into a period, comma or semicolon: «переключение» no longer comes out as «перекл.чение».",
+                "Firefox and browsers built on its engine: switching the layout, changing case or translating selected text now types the result over the selection. A bug in Firefox made the previous method damage the text around the selection. Multi-line selections in Firefox are left untouched for now so nothing gets damaged.",
+                "Russian all-caps abbreviations (УФНС, МФТИ, ВГТРК, ФССП) no longer turn into Latin gibberish. MACBOOK, API and JSON typed in the Russian layout still switch as before.",
+                "Correctly typed tech abbreviations with a trailing mark (txt., yml,, lgtm.) no longer turn into Cyrillic, and «ече» typed as a standalone word instead of txt now switches to txt, as do yml, php, js, ts, md, src, cmd and about ten more developer tokens.",
+                "Numbers: a comma inside a number becomes a period when converting to English («5,5» → «5.5», not «5?5»), and units after a number («5 г», «100 гб») stay as typed.",
+                "«Russian – PC» layout: on keyboards without the § key «ё» converts to «`» instead of «§», and a comma at the end of a word converts correctly («Lf?» → «Да,»).",
+                "Keyboop warns when one key is assigned to two of its functions: 🌐 both for instant language switching and manual conversion, or two functions on ⌥§ and ⌥`. Before, one of them silently never fired.",
+                "The hidden input hint names password managers: for example, Enpass since 6.12.6 keeps it on while its vault is locked. Feedback diagnostics list all eight shortcuts.",
+            ],
+            beta: true,
+            announce: """
+                Перемен у меня сейчас много, и не только рабочих, личных тоже. Поэтому приятно, что Keyboop в целом работает сам и есть не просит. Мелкие поломки чиню, как и обещал.
+
+                А скоро покажу, что мы делаем в компании: приложение той же породы, только намного функциональнее и круче. Keyboop, не ревнуй.
+                """,
+            announceItems: [
+                "Spotlight на macOS 27 снова работает: Apple переселила его и не предупредила.",
+                "Whisper больше не съедает «Привет!» в начале и не переводит русскую речь на английский без спроса.",
+                "«Переключение» больше не выходит «перекл.чение»: «ю» внутри слова перестала притворяться точкой.",
+                "Firefox: смена раскладки выделенного больше не портит текст вокруг (но это не точно).",
+                "УФНС и МФТИ остаются аббревиатурами, а «ече» наконец становится txt.",
+                "«5,5» переводится в «5.5», а не в «5?5».",
+            ],
+            announceEnd: """
+                Бета сама не приедет, включите «Ставить бета-версии».
+
+                Спасибо всем, кто поддерживает на keyboop.com/tips и присылает отзывы: половину выпуска нашли вы.
+                """),
         Release(version: "0.4.9",
             ru: [
                 "В Spotlight снова работает переключение раскладки, и автоматическое, и по сочетанию. В прошлой бете оно сломалось: исправленное слово уходило не в строку поиска, а в окно, открытое за ней. Так же вернулись Launchpad и другие панели, которые открываются поверх окон.",

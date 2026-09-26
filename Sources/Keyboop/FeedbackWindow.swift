@@ -415,13 +415,7 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
         // ⚠️ НАСТРОЙКИ ХОТКЕЕВ обязательны: без них весь класс «приложение блокирует пробел»
         // (репорты #13/#22/#30) по репорту принципиально неразрешим — мы не знаем, что человек
         // назначил. Это ЗНАЧЕНИЯ настроек, не пользовательский текст: принцип №2 не затронут.
-        let hk = """
-        хоткеи: конверсия=\(s.hotkeyMode)/\(s.hotkeyKeyCode)/\(s.hotkeyModifiers) · \
-        диктовка=\(s.voiceHotkeyMode)/\(s.voiceHotkeyKeyCode)/\(s.voiceHotkeyModifiers) (hold=\(s.voiceHoldMode)) · \
-        перевод=\(s.translateHotkeyKeyCode)/\(s.translateHotkeyModifiers) · \
-        мгновенное=\(s.instantSwitchEnabled ? s.instantSwitchMode : "выкл")/\(s.instantSwitchKeyCode)/\(s.instantSwitchMods) · \
-        вставка диктовки=\(s.pasteDictationEnabled ? "\(s.pasteDictationKeyCode)/\(s.pasteDictationModifiers)" : "выкл")
-        """
+        let hk = hotkeysDiagnosticsLine()
         // Список ВКЛЮЧЁННЫХ раскладок: прямая улика для «переключает только в одну сторону»
         // (баг с поиском латиницы по языковому тегу). Только названия, ничего пользовательского.
         let layouts = LayoutManager.enabledLayoutNamesForDiagnostics().joined(separator: ", ")
@@ -446,6 +440,56 @@ final class FeedbackWindowController: NSWindowController, NSWindowDelegate, NSTe
             out += "\n(лог пуст или недоступен)"
         }
         return out
+    }
+
+    /// Строка «хоткеи:» диагностики отзыва. Отдельной функцией, чтобы стенд
+    /// (Tools/HotkeyClashSim.swift) проверял её без остального снимка: лога, доступов, микрофона.
+    static func hotkeysDiagnosticsLine() -> String {
+        "хоткеи: " + HotkeyGuard.Slot.allCases.map(hotkeyDiagnostics).joined(separator: " · ")
+    }
+
+    /// Одна позиция строки «хоткеи:» в диагностике отзыва.
+    ///
+    /// ⚠️ ВСЕ ВОСЕМЬ СЛОТОВ, А НЕ ПЯТЬ (26.09.2026, задача 256B). Строка собиралась вручную и знала
+    /// конверсию, диктовку, перевод, мгновенное переключение и вставку диктовки. Сниппеты, вставка
+    /// без форматирования и смена регистра тоже глотают клавиши, но в отзыв не попадали, и на
+    /// письмо «после установки пропало сочетание» нельзя было ответить, не висит ли оно на них.
+    /// Теперь строка идёт по реестру `HotkeyGuard.Slot`, а `switch` без `default` не даст собрать
+    /// приложение с девятым слотом, пока его не впишут сюда.
+    ///
+    /// Ключи ASCII и НЕ из L10n намеренно: `slot.name` зависит от языка интерфейса, а часть отзывов
+    /// приходит с английским. Один и тот же слот должен называться в отчёте одинаково у всех.
+    ///
+    /// Выключенный слот печатает сохранённую комбинацию в скобках, `выкл(mode/kc/mods)`, а не голое
+    /// «выкл». Конфликт чаще всего рождается при повторном включении функции (см.
+    /// `HotkeyGuard.activeClashes`), и увидеть его заранее можно только по тому, что лежит в
+    /// настройках. «Выключен» значит то же, что для перехватчика: у перевода это `translateEnabled`,
+    /// хотя проверка конфликтов держит его комбинацию занятой всегда.
+    private static func hotkeyDiagnostics(_ slot: HotkeyGuard.Slot) -> String {
+        let s = AppSettings.shared
+        let c: (key: String, on: Bool, mode: String, keyCode: Int, mods: UInt64, tail: String)
+        switch slot {
+        case .convert:
+            c = ("convert", true, s.hotkeyMode, s.hotkeyKeyCode, s.hotkeyModifiers, "")
+        case .voice:
+            c = ("voice", s.voiceEnabled, s.voiceHotkeyMode, s.voiceHotkeyKeyCode, s.voiceHotkeyModifiers,
+                 " (hold=\(s.voiceHoldMode))")
+        case .translate:
+            c = ("translate", s.translateEnabled, "key", s.translateHotkeyKeyCode, s.translateHotkeyModifiers, "")
+        case .instant:
+            c = ("instant", s.instantSwitchEnabled, s.instantSwitchMode, s.instantSwitchKeyCode, s.instantSwitchMods, "")
+        case .snippet:
+            c = ("snippet", s.snippetPickEnabled, "key", s.snippetPickKeyCode, s.snippetPickModifiers, "")
+        case .plainPaste:
+            c = ("plainPaste", s.plainPaste, "key", s.plainPasteKeyCode, s.plainPasteModifiers, "")
+        case .caseChange:
+            c = ("caseChange", s.caseChangeEnabled, "key", s.caseChangeKeyCode, s.caseChangeModifiers, "")
+        case .pasteDictation:
+            c = ("pasteDictation", s.pasteDictationEnabled, "key", s.pasteDictationKeyCode,
+                 s.pasteDictationModifiers, "")
+        }
+        let combo = "\(c.mode)/\(c.keyCode)/\(c.mods)"
+        return "\(c.key)=" + (c.on ? combo : "выкл(\(combo))") + c.tail
     }
 
     @objc private func showDiag() {

@@ -41,16 +41,87 @@ enum Keymap {
     /// Primary — DynamicKeymap (точная таблица из реальной раскладки macOS);
     /// статические пары ниже — fallback, если UCKeyTranslate недоступен.
     static func convert(_ text: String, toCyrillic: Bool) -> String {
-        if DynamicKeymap.isReady {
-            return DynamicKeymap.convert(text, toCyrillic: toCyrillic)
-        }
-        let map = toCyrillic ? enToRu : ruToEn
+        convert(text, toCyrillic: toCyrillic, table: liveTable(toCyrillic: toCyrillic))
+    }
+
+    /// Живая таблица нужного направления, либо nil, пока её нет (тогда работает статическая запаска).
+    static func liveTable(toCyrillic: Bool) -> [Character: Character]? {
+        guard DynamicKeymap.isReady else { return nil }
+        return toCyrillic ? DynamicKeymap.enToRu : DynamicKeymap.ruToEn
+    }
+
+    /// Чистое ядро конверсии: таблица приходит снаружи (`nil` = статическая запаска). Стенды гоняют
+    /// его на таблицах, снятых с любой установленной раскладки, в том числе выключенной.
+    ///
+    /// ⚠️ ЦИКЛ ЖИВЁТ ЗДЕСЬ, А НЕ В `DynamicKeymap.convert`, И ЭТО НАРОЧНО (задача 263, 26.09.2026).
+    /// Правило про знак между цифрами ниже должно достаться ВСЕМ путям: ручному хоткею, выделению,
+    /// группе, авто на границе и правке на лету. Все они идут сюда, а живую таблицу мы читаем
+    /// напрямую. Посимвольная замена та же, что в `DynamicKeymap.convert` (`таблица[знак] ?? знак`),
+    /// так что для текста без чисел результат прежний до символа. Отдельного прохода по строке ради
+    /// редкого случая нет: соседей смотрим в том же цикле, как предупреждает `DynamicKeymap`.
+    static func convert(_ text: String, toCyrillic: Bool, table: [Character: Character]?) -> String {
+        let fallback = toCyrillic ? enToRu : ruToEn
         var out = ""
         out.reserveCapacity(text.count)
-        for ch in text {
-            out += map[String(ch)] ?? map[String(Self.straighten(ch))] ?? String(ch)
+        var it = text.makeIterator()
+        var prev: Character? = nil
+        var cur = it.next()
+        var runHasSeparator = false     // в текущем числе слева уже был разделитель между цифрами
+        while let ch = cur {
+            let next = it.next()
+            if ch == "," || ch == ".", let p = prev, isASCIIDigit(p), let n = next, isASCIIDigit(n) {
+                out.append(numberSeparator(ch, toCyrillic: toCyrillic,
+                                           leftHasSeparator: runHasSeparator, rest: it))
+                runHasSeparator = true
+            } else {
+                if let table {
+                    out.append(table[ch] ?? ch)
+                } else {
+                    out += fallback[String(ch)] ?? fallback[String(Self.straighten(ch))] ?? String(ch)
+                }
+                if !isASCIIDigit(ch) { runHasSeparator = false }
+            }
+            prev = ch
+            cur = next
         }
         return out
+    }
+
+    /// ЗАПЯТАЯ И ТОЧКА МЕЖДУ ДВУМЯ ЦИФРАМИ (задача 263, отзыв #305, 26.09.2026).
+    ///
+    /// Отзыв: «5,5» с цифрового блока в русской раскладке, хоткей, получилось «5?5». Причина в том,
+    /// что таблица знает знак только по клавише основного ряда: русская «,» спарена с той клавишей,
+    /// которая её печатает (Shift+/ «?» в «Русской — ПК», Shift+6 «^» в Apple «Русской»). Откуда
+    /// пришла запятая, с цифрового блока или нет, к моменту конверсии уже не известно.
+    ///
+    /// ⚠️ ПОЭТОМУ ЗНАК МЕЖДУ ЦИФРАМИ В ТАБЛИЦУ НЕ ОТПРАВЛЯЕМ ВОВСЕ. Такой знак это разделитель
+    /// числа, а не буква и не клавиша: «5ю5», «5?5» и «25&09&2026» не нужны никому. Решение автора,
+    /// вариант А из разбора:
+    ///   • в английскую: «5,5» → «5.5» (так печатает цифровой блок в английской, и так просили);
+    ///   • в русскую: знак как набран, «5.5» остаётся «5.5» (номера версий вроде «17.2» не портим).
+    ///
+    /// ⚠️ ЗАПЯТАЯ СТАНОВИТСЯ ТОЧКОЙ, ТОЛЬКО КОГДА ОНА ЕДИНСТВЕННЫЙ РАЗДЕЛИТЕЛЬ В ЧИСЛЕ. «1,000,000»,
+    /// «10,5,7» и «1.000,50» это разряды, списки или чужая запись дробей, и угадывать там нельзя:
+    /// оставляем как набрано («не навреди»). Точка между цифрами в английскую не меняется («25.09.2026»).
+    ///
+    /// Зовётся только на найденной «цифра, знак, цифра». `leftHasSeparator` приносит цикл, а правую
+    /// часть числа смотрим по копии итератора (`rest` стоит сразу за цифрой после знака), так что
+    /// строку заново не проходим.
+    private static func numberSeparator(_ ch: Character, toCyrillic: Bool, leftHasSeparator: Bool,
+                                        rest: String.Iterator) -> Character {
+        if toCyrillic || ch == "." || leftHasSeparator { return ch }
+        var look = rest
+        while let c = look.next() {
+            if isASCIIDigit(c) { continue }
+            if c == "," || c == ".", let after = look.next(), isASCIIDigit(after) { return ch }
+            break
+        }
+        return "."
+    }
+
+    private static func isASCIIDigit(_ c: Character) -> Bool {
+        guard let v = c.asciiValue else { return false }
+        return v >= 48 && v <= 57
     }
 
     /// В КАКУЮ СТОРОНУ КРУТИТЬ, КОГДА БУКВ НЕТ ВООБЩЕ (задача 268, 12.09.2026).
@@ -137,18 +208,89 @@ enum Keymap {
     /// как пунктуацию: «ghbdtn.»→«привет.». Только EN→RU (`toCyrillic`); проверка валидности —
     /// `isValidTarget` (словарь RU, передаёт вызывающий, чтобы Keymap не тянул LayoutData).
     static func smartConvert(_ word: String, toCyrillic: Bool, isValidTarget: ((String) -> Bool)? = nil) -> String {
+        smartConvert(word, toCyrillic: toCyrillic, isValidTarget: isValidTarget,
+                     table: liveTable(toCyrillic: toCyrillic))
+    }
+
+    /// Чистое ядро `smartConvert` с таблицей снаружи (`nil` = статическая запаска), для стендов.
+    static func smartConvert(_ word: String, toCyrillic: Bool, isValidTarget: ((String) -> Bool)?,
+                             table: [Character: Character]?) -> String {
         if toCyrillic, let valid = isValidTarget {
-            let full = convert(word, toCyrillic: true)
+            let full = convert(word, toCyrillic: true, table: table)
             if valid(full.lowercased()) { return full }
         }
         var core = Substring(word)
         var trailing = ""
         while let last = core.last, trailingPunctuation.contains(last) {
-            trailing = String(last) + trailing
+            trailing = String(peeledMark(last, toCyrillic: toCyrillic, table: table)) + trailing
             core = core.dropLast()
         }
         guard !core.isEmpty else { return word }
-        return convert(String(core), toCyrillic: toCyrillic) + trailing
+        return convert(String(core), toCyrillic: toCyrillic, table: table) + trailing
+    }
+
+    /// Каким оставить срезанный концевой знак (задача 263, отзыв #306, 26.09.2026).
+    ///
+    /// Набор `trailingPunctuation` исходит из того, что знак одинаков в обеих раскладках и просто
+    /// лежит на разных клавишах. Для «Русской — ПК» это неправда: клавиша, которая в английской даёт
+    /// «?», в ней печатает «,». Человек набрал «Lf?», имея в виду «Да,», а получал «Да?».
+    ///
+    /// ⚠️ ЗНАК МЕНЯЕМ, ТОЛЬКО КОГДА ТАБЛИЦА ЧЕЛОВЕКА ПЕРЕВОДИТ ЕГО В ДРУГОЙ ЗНАК ИЗ ТОГО ЖЕ НАБОРА.
+    /// Если клавиша даёт букву («.»→«ю», «,»→«б», «;»→«ж») или пары нет вовсе, знак остаётся как
+    /// набран, ровно как было: «ghbdtn.» по-прежнему «привет.». У Apple «Русской» в паре с U.S. или
+    /// ABC таких пар нет («?» и «!» там на тех же клавишах), так что её пользователи разницы не увидят.
+    /// Решает сама живая таблица, отдельной настройки нет.
+    ///
+    /// ⚠️ С РЕДКИМИ ЛАТИНСКИМИ РАСКЛАДКАМИ ПАРЫ ЕСТЬ И У APPLE «РУССКОЙ» (перебор всех установленных
+    /// раскладок на ANSI, ISO и JIS, 26.09.2026). Итальянская, польская, бразильская ABNT2, канадская
+    /// CSA и ещё несколько кладут концевой знак на клавишу, которая в русской печатает другой знак.
+    /// Там знак тоже переводится по клавише. Это то же правило, а не новое: человек жал клавиши
+    /// русской раскладки, и концевой знак не исключение.
+    ///
+    /// ⚠️ ТОЛЬКО В СТОРОНУ КИРИЛЛИЦЫ. Об этом и был отзыв. Обратное направление («Руддщ,» →
+    /// «Hello?» у пользователя «ПК») было бы новым поведением, которого никто не просил, поэтому
+    /// там знак остаётся как набран.
+    private static func peeledMark(_ p: Character, toCyrillic: Bool, table: [Character: Character]?) -> Character {
+        guard toCyrillic else { return p }
+        let mapped = convert(String(p), toCyrillic: true, table: table)
+        guard mapped.count == 1, let m = mapped.first, m != p, trailingPunctuation.contains(m) else { return p }
+        return m
+    }
+
+    /// Конверсия для правки НА ЛЕТУ, пока слово не дописано (задача 262, отзыв #312, 26.09.2026).
+    /// nil означает «ждём следующую клавишу».
+    ///
+    /// ⚠️ ЗАЧЕМ ЖДАТЬ. Человек печатает «переключение» в английской раскладке. На седьмой клавише, на
+    /// «ю», которая в английской даёт «.», правка на лету решала конвертить: детектор читает точку как
+    /// букву и видит «переклю». А `smartConvert` проверял по словарю ПОЛНОЕ слово, не находил
+    /// недописанное «переклю» и срезал точку как конец предложения. На экране оставалось «перекл.»,
+    /// раскладка переключалась, и слово дописывалось как «перекл.чение». Так же «ю», «б», «ж» в
+    /// середине любого слова. Правило про концевой знак писалось для конца слова, а здесь слово ещё
+    /// не кончилось.
+    ///
+    /// Поэтому, если `smartConvert` срезал бы концевой знак, который в таблице человека БУКВА,
+    /// мид-словные пути не стреляют. Следующая клавиша делает знак внутренним, и «gthtrk.x» честно
+    /// даёт «переключ». Если следом пробел, решает обычный путь на границе слова, как и сегодня.
+    /// Цена: на таких словах правка на лету приходит на одну клавишу позже.
+    ///
+    /// ⚠️ ГРАНИЦУ СЛОВА ЭТО НЕ ТРОГАЕТ. «малую», набранное в английской, на пробеле по-прежнему даёт
+    /// «малу.»: формы нет в словаре, и что с этим делать, автор решил пока не менять.
+    static func liveConvert(_ word: String, toCyrillic: Bool, isValidTarget: ((String) -> Bool)?) -> String? {
+        liveConvert(word, toCyrillic: toCyrillic, isValidTarget: isValidTarget,
+                    table: liveTable(toCyrillic: toCyrillic))
+    }
+
+    /// Чистое ядро `liveConvert` с таблицей снаружи (`nil` = статическая запаска), для стендов.
+    static func liveConvert(_ word: String, toCyrillic: Bool, isValidTarget: ((String) -> Bool)?,
+                            table: [Character: Character]?) -> String? {
+        let smart = smartConvert(word, toCyrillic: toCyrillic, isValidTarget: isValidTarget, table: table)
+        guard smart != word else { return smart }               // конвертить нечего, всё как было
+        let full = convert(word, toCyrillic: toCyrillic, table: table)
+        guard smart != full else { return smart }
+        // Обе строки один в один по длине и различаются только в срезанных концевых знаках.
+        // Ждём, только если такой знак в таблице человека БУКВА: «&» вместо «.» буквой не станет.
+        for (s, f) in zip(smart, full) where s != f && f.isLetter { return nil }
+        return smart
     }
 
     /// Ядро слова без концевой пунктуации — для анализа детектором.

@@ -86,7 +86,12 @@ final class Engine: EventTapHandler {
     /// Таймер-поллер Secure Input (см. start(): на keyDown переход не поймать — событий нет).
     private var secureInputTimer: Timer?
     /// Когда Secure Input включился (для «держит уже N секунд» в логе снятия).
-    private var secureInputSince: TimeInterval = 0
+    ///
+    /// ⚠️ ЧАСЫ, А НЕ systemUptime (26.09.2026). `systemUptime` во сне не идёт, и в отзыве #298 эпизод,
+    /// который по часам лога длился десять минут, был подписан «держали ~12с»: скорее всего, Mac
+    /// спал с поднятым флагом. Разбор по такому логу врал ровно в том, сколько флаг мешал человеку.
+    /// Меняется только текст в логе, решения от этого числа не зависят.
+    private var secureInputSince = Date()
 
     /// Логируем ПЕРЕХОДЫ Secure Input (не каждое нажатие). На включении — ищем держателя:
     /// pid лежит в ioreg (kCGSSessionSecureInputPID); сам поиск — subprocess, поэтому строго
@@ -102,11 +107,11 @@ final class Engine: EventTapHandler {
         DispatchQueue.main.async { MenuBarController.shared?.refresh() }
         if !on {
             AppHealth.secureInputHolder = nil
-            let held = Int(ProcessInfo.processInfo.systemUptime - secureInputSince)
+            let held = max(0, Int(Date().timeIntervalSince(secureInputSince)))   // часы могли перевести назад
             kbLog("secure input СНЯТ (держали ~\(held)с) — Keyboop снова видит клавиатуру")
             return
         }
-        secureInputSince = ProcessInfo.processInfo.systemUptime
+        secureInputSince = Date()
         kbLog("secure input ВКЛЮЧЁН — macOS прячет клавиатуру от Keyboop (конверсия молчит СИСТЕМНО, это не поле настроек); ищу держателя…")
         DispatchQueue.global(qos: .utility).async {
             let p = Process()
@@ -991,7 +996,12 @@ final class Engine: EventTapHandler {
         // Только в grace-окне нашего же переключения; AX зовём здесь, на main, не в колбэке.
         if layout.withinOwnSelectGrace, !word.hasCyrillic || !word.hasLatinLetter,
            case .convert(let toCyr) = LayoutDetector.liveDecide(word: word) {
-            let converted = Keymap.smartConvert(word, toCyrillic: toCyr, isValidTarget: Self.ruWordValidator)
+            // ⚠️ Концевой знак, который в раскладке человека буква («.» на «ю»), ещё не решён: ждём
+            // следующую клавишу, пустышку не шлём (задача 262, 26.09.2026, см. `Keymap.liveConvert`).
+            guard let converted = Keymap.liveConvert(word, toCyrillic: toCyr, isValidTarget: Self.ruWordValidator) else {
+                kbLog("live: жду следующую букву, концевой знак = буква (pause-tick, len \(word.count))")
+                return
+            }
             if converted != word, AXScreenCheck.caretEndsWith(converted) == true {
                 kbLog("фантом предотвращён (pause-fix): на экране уже итог (AX), len \(converted.count)")
                 buffer.applyConversion(converted: converted)
@@ -1072,7 +1082,11 @@ final class Engine: EventTapHandler {
         }
         // Ветка 2: обычная конверсия — зеркало tryInlineLiveFix, только без pendingChar.
         guard case .convert(let toCyr) = LayoutDetector.liveDecide(word: word) else { return }
-        let converted = Keymap.smartConvert(word, toCyrillic: toCyr, isValidTarget: Self.ruWordValidator)
+        // Задача 262: концевой знак-буква («.» на «ю») ещё не решён, ждём следующую клавишу.
+        guard let converted = Keymap.liveConvert(word, toCyrillic: toCyr, isValidTarget: Self.ruWordValidator) else {
+            kbLog("live: жду следующую букву, концевой знак = буква (pause-fix, len \(word.count))")
+            return
+        }
         guard converted != word else { return }
         guard antiResonance.allow(word: word, produced: converted) else {
             liveFixLast = ""; buffer.clear(); return
@@ -1119,7 +1133,13 @@ final class Engine: EventTapHandler {
         guard candidate != liveFixLast else { return false }
         guard !candidate.hasCyrillic || !candidate.hasLatinLetter else { return false }  // смешанное — не наш случай
         guard case .convert(let toCyr) = LayoutDetector.liveDecide(word: candidate) else { return false }
-        let converted = Keymap.smartConvert(candidate, toCyrillic: toCyr, isValidTarget: Self.ruWordValidator)
+        // ⚠️ ЗАДАЧА 262 (отзыв #312, 26.09.2026): «gthtrk.» это недописанное «переклю…», а не «перекл»
+        // с точкой. Если концевой знак в раскладке человека буква, не стреляем: следующая клавиша
+        // сделает его внутренним. Клавиша при этом уходит в приложение как обычно.
+        guard let converted = Keymap.liveConvert(candidate, toCyrillic: toCyr, isValidTarget: Self.ruWordValidator) else {
+            kbLog("live: жду следующую букву, концевой знак = буква (inline, len \(candidate.count))")
+            return false
+        }
         guard converted != candidate else { return false }
         guard antiResonance.allow(word: candidate, produced: converted) else {
             liveFixLast = ""; buffer.clear(); return false
@@ -1202,7 +1222,11 @@ final class Engine: EventTapHandler {
             return
         }
         guard case .convert(let toCyr) = LayoutDetector.liveDecide(word: word) else { return }
-        let converted = Keymap.smartConvert(word, toCyrillic: toCyr, isValidTarget: Self.ruWordValidator)
+        // Задача 262: концевой знак-буква («.» на «ю») ещё не решён, ждём следующую клавишу.
+        guard let converted = Keymap.liveConvert(word, toCyrillic: toCyr, isValidTarget: Self.ruWordValidator) else {
+            kbLog("live: жду следующую букву, концевой знак = буква (live-fix, len \(word.count))")
+            return
+        }
         guard converted != word else { return }
         // Предохранитель от резонанса: осцилляция этого места → стоп, разрываем цикл (чистим буфер).
         guard antiResonance.allow(word: word, produced: converted) else {
@@ -1287,6 +1311,11 @@ final class Engine: EventTapHandler {
         let sel = SelectionText.read()
         muted = false
         guard let (text, writeBack) = sel else { kbLog("translate: выделение не прочитано"); Sounds.beep(); return }
+        // ⚠️ Многострочное выделение в Gecko не трогаем (задача 265, разбор у `SelectionText.AXWritePath`):
+        // AX-запись у Firefox портит текст вокруг, а печать переводов строк туда не проверена.
+        if SelectionText.lastReadRefusedMultiline {
+            kbLog("translate: отказ, в выделении Gecko перевод строки или встроенный объект — не трогаю"); Sounds.beep(); return
+        }
         let dir = TranslateDirection.of(text)
         kbLog("translate: \(text.count) симв. \(dir.from)→\(dir.to)…")
         Task { @MainActor in
@@ -1308,13 +1337,17 @@ final class Engine: EventTapHandler {
                   t != text else { kbLog("translate: пусто/без изменений"); return }
             self.playTranslateSound()                 // звук — ТОЛЬКО когда реально перевели
             self.muted = true
-            if !(writeBack?(t) ?? false) {
+            let viaAX = writeBack?(t) ?? false
+            if !viaAX {
                 TextReplacer.insert(t) { [weak self] in
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self?.muted = false; self?.drainPendingManual() }
                 }
             } else {   // запись через AX (синтетику не постим) — снимаем muted по таймеру как раньше
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.muted = false; self?.drainPendingManual() }
             }
+            // Путь записи в лог, как у смены регистра (26.09.2026, отзыв #312): без него не отличить
+            // AX-запись от печати и не увидеть двойную печать.
+            kbLog("translate: \(t.count) симв. записано \(viaAX ? "через AX" : "печатью") в \(Engine.frontmostBundleID())")
             self.buffer.clear()
         }
         #endif
@@ -1455,6 +1488,12 @@ final class Engine: EventTapHandler {
         guard let (text, writeBack) = sel, !text.isEmpty else {
             kbLog("регистр: выделение не прочитано"); Sounds.beep(); return
         }
+        // ⚠️ Единственное исключение из «многострочность разрешена» (задача 265, 26.09.2026): Gecko.
+        // AX-запись у Firefox портит текст вокруг выделения, поэтому там пишем печатью, а печать
+        // переводов строк в Firefox не проверена. Разбор — у `SelectionText.AXWritePath`.
+        if SelectionText.lastReadRefusedMultiline {
+            kbLog("регистр: отказ, в выделении Gecko перевод строки или встроенный объект — не трогаю"); Sounds.beep(); return
+        }
         guard text.count <= Self.caseChangeMaxChars else {
             kbLog("регистр: отклонено, \(text.count) симв. — это больше похоже на случайное ⌘A")
             Sounds.beep(); return
@@ -1524,6 +1563,16 @@ final class Engine: EventTapHandler {
         // выделение заведомо настоящее. Раньше мы отказывались и там — и человек не мог починить
         // выделенный абзац, набранный не в той раскладке, хотя это как раз частый случай.
         let isClipboard = (writeBack == nil)
+        // ⚠️ МНОГОСТРОЧНОЕ В GECKO — ОТКАЗ, как в буферном пути (задача 265, 26.09.2026). Выделение
+        // настоящее (прочитано через AX), но записать его нечем: AX-запись у Firefox портит текст
+        // вокруг, а печать переводов строк туда не проверена. Разбор — у `SelectionText.AXWritePath`.
+        // selectionRefused: человек указал на текст, делать вместо него что-то другое нельзя.
+        if SelectionText.lastReadRefusedMultiline {
+            muted = false
+            selectionRefused = true
+            kbLog("convert-selection: отклонено (\(text.count) симв., в Gecko перевод строки или встроенный объект) — ничего не делаю")
+            return false
+        }
         // ВЫДЕЛЕН ОБЪЕКТ НА ХОЛСТЕ (Figma). Отдельная ветка ДО предохранителя, потому что по форме
         // текста этот случай от «⌘C без выделения скопировал строку кода» неотличим: и там, и там
         // одна строка с переводом в конце. Отличает только доказательство в буфере — данные объекта
@@ -1605,7 +1654,9 @@ final class Engine: EventTapHandler {
         settings.rescuedCount += max(1, text.split(separator: " ").count)
         buffer.clear()
         playSound()                                   // звук конвертации — подтверждение действия
-        kbLog("convert-selection: \(text.count) симв. → \(toCyrillic ? "RU" : "EN")")
+        // Путь записи в лог (26.09.2026, отзыв #312), как у смены регистра: иначе не отличить
+        // AX-запись от печати поверх выделения и не увидеть двойную печать.
+        kbLog("convert-selection: \(text.count) симв. → \(toCyrillic ? "RU" : "EN") (\(usedSynth ? "печатью" : "через AX"))")
         if !usedSynth {   // запись через AX — снимаем muted по таймеру
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.muted = false; self?.drainPendingManual() }
         }

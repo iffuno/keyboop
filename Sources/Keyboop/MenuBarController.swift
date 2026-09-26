@@ -484,9 +484,21 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc private func statusItemClicked() {
         // ⌃-клик система штатно считает правым, и человек с трекпадом часто именно им и пользуется.
         let e = NSApp.currentEvent
-        let right = e?.type == .rightMouseUp || e?.modifierFlags.contains(.control) == true
+        // ⚠️ МОДИФИКАТОРЫ БЕРЁМ ЕЩЁ И ИЗ СОСТОЯНИЯ КЛАВИАТУРЫ, А НЕ ТОЛЬКО ИЗ СОБЫТИЯ КЛИКА
+        // (26.09.2026, macOS 27). На Маке автора после перехода на 27 клик по значку стал приходить с
+        // флагами 0, хотя Option был зажат: четыре ⌥-клика подряд в логе как «клик левый, флаги 0»,
+        // и скрытая запись звонка (задача 230) перестала запускаться. Последняя удачная запись была
+        // 23.09, ещё на 26. Состояние клавиатуры на уровне HID не зависит ни от того, как система
+        // доставила клик, ни от чужих перехватчиков клавиш, поэтому проверяем по нему тоже.
+        let hid = CGEventSource.flagsState(.hidSystemState)
+        let control = e?.modifierFlags.contains(.control) == true || hid.contains(.maskControl)
+        let right = e?.type == .rightMouseUp || control
+        let option = e?.modifierFlags.contains(.option) == true || hid.contains(.maskAlternate)
+        // Одна строка на клик по значку: клики редкие, а без этой строки «⌥-клик не работает» не
+        // отличить от «клик пришёл без ⌥».
+        kbLog("значок: клик \(right ? "правый" : "левый")\(option ? " с ⌥" : ""), событие \(e.map { String($0.type.rawValue) } ?? "нет"), флаги события \(e?.modifierFlags.rawValue ?? 0), клавиатура \(hid.rawValue)")
         // ⌥-клик — скрытая запись звонка (задача 230): ни в меню, ни в настройках её нет.
-        if !right, e?.modifierFlags.contains(.option) == true { onToggleCallRecording?(); return }
+        if !right, option { onToggleCallRecording?(); return }
         if right { runQuickAction() } else { showMenu() }
     }
 

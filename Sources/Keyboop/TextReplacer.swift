@@ -241,7 +241,10 @@ enum TextReplacer {
             // короткая, а решение «наше ли окно» иначе не принять — AppKit только на главном.
             return DispatchQueue.main.sync { replaceInOwnField(deleteCount: deleteCount, with: text) }
         }
-        guard NSApp?.isActive == true, let responder = NSApp?.keyWindow?.firstResponder else { return false }
+        // Spotlight поверх собственного окна Keyboop: печатают в поиск, а «активны» по-прежнему мы.
+        // Без этой проверки замена ушла бы в наше поле под панелью (ревью задачи 261, 26.09.2026).
+        guard !SpotlightWatch.isOpen, NSApp?.isActive == true,
+              let responder = NSApp?.keyWindow?.firstResponder else { return false }
         guard let tv = responder as? NSTextView, tv.isEditable else { return false }
         let sel = tv.selectedRange()
         let n = max(0, deleteCount)
