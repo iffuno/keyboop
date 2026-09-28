@@ -180,7 +180,9 @@ enum TextReplacer {
     /// Spotlight, где «переднее приложение» врёт. Во всех остальных случаях отправляем как раньше,
     /// с самой ранней ступени.
     private static var synthPostTap: CGEventTapLocation {
-        (RivalTapWatch.present && !SpotlightWatch.isOpen) ? .cgAnnotatedSessionEventTap : .cghidEventTap
+        // Накладные панели вроде Raycast передним приложением тоже не становятся (задача 21).
+        (RivalTapWatch.present && !SpotlightWatch.isOpen && !OverlayFocusWatch.focusIsElsewhere)
+            ? .cgAnnotatedSessionEventTap : .cghidEventTap
     }
 
     /// Активен «секретный ввод» (поле пароля, системный диалог аутентификации). Синтетику в этот
