@@ -40,6 +40,29 @@ let kbPauseFixMarker: Int64 = {
 /// Замена текста БЕЗ буфера обмена: синтетические Backspace + печать Unicode напрямую
 /// через `keyboardSetUnicodeString` (минуя раскладку). Краеугольный принцип Keyboop.
 enum TextReplacer {
+    /// Remote desktop clients do not reliably preserve the Unicode payload of synthetic
+    /// keyboard events. For them replacement text must be sent as physical key presses.
+    private static let remoteDesktopBundleIDs: Set<String> = [
+        "com.apple.screensharing",
+        "com.realvnc.vncviewer",
+        "com.teamviewer.teamviewer",
+        "com.philandro.anydesk",
+        "com.carriez.rustdesk",
+        "com.microsoft.rdc.macos",
+        "com.microsoft.rdc.mac",
+    ]
+
+    static func isRemoteDesktopBundleID(_ bundleID: String) -> Bool {
+        remoteDesktopBundleIDs.contains(bundleID.lowercased())
+    }
+
+    static var frontAppNeedsPhysicalTyping: Bool {
+        guard let bid = NSWorkspace.shared.frontmostApplication?.bundleIdentifier else {
+            return false
+        }
+        return isRemoteDesktopBundleID(bid)
+    }
+
 
     /// Пауза перед первым Backspace. ЕДИНАЯ для всех приложений: попытка удлинить её для
     /// Chromium/Electron (25.07) сделала хуже — она растягивает окно, в которое успевает вклиниться
@@ -545,6 +568,10 @@ enum TextReplacer {
 
     /// Печать строки как Unicode. Лимит ~20 UTF-16 единиц на событие → бьём по 12.
     private static func typeUnicode(_ string: String, source: CGEventSource?) {
+        if frontAppNeedsPhysicalTyping, typePhysical(string, source: source) {
+            return
+        }
+
         let units = Array(string.utf16)
         guard !units.isEmpty else { return }
         var i = 0
@@ -556,6 +583,25 @@ enum TextReplacer {
             i += chunkSize
             usleep(800)
         }
+    }
+
+    /// Remote desktop clients often discard keyboardSetUnicodeString and forward only
+    /// the carrier virtualKey. Replay real physical keys instead.
+    /// Return false if even one character cannot be represented, so the caller can fall
+    /// back to the normal Unicode path without silently dropping text.
+    private static func typePhysical(_ string: String, source: CGEventSource?) -> Bool {
+        let keys = string.map { DynamicKeymap.physicalKey(for: $0) }
+        guard keys.allSatisfy({ $0 != nil }) else { return false }
+
+        for key in keys.compactMap({ $0 }) {
+            postKey(
+                CGKeyCode(key.keyCode),
+                source: source,
+                mods: key.shift ? .maskShift : []
+            )
+            usleep(800)
+        }
+        return true
     }
 
     private static func postUnicodeChunk(_ chunk: [UniChar], keyDown: Bool, source: CGEventSource?) {

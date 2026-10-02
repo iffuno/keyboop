@@ -596,7 +596,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         // Имя версии подставляет Changelog.versionWithName — тот же помощник, что у низа списка
         // настроек и у «О программе», чтобы формат не разъехался. В релизе шапка читается как
         // «Keyboop 0.3.2 · Pika», в dev как «Keyboop 0.3.2-dev · Pika».
-        var headerTitle = "Keyboop " + Changelog.versionWithName(ver + (isDev ? "-dev" : ""))
+        var headerTitle = "Keyboop " + Changelog.versionWithName(ver + "-UA" + (isDev ? "-dev" : ""))
         // В dev-сборке показываем ВРЕМЯ СБОРКИ прямо в шапке меню (просьба автора 24.07): за вечер
         // мы оба дважды путались, какую именно сборку тестируем. Дата не нужна — за день их много,
         // различает время. В релизе не показываем: пользователю штамп ни о чём не говорит.

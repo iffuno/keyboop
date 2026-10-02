@@ -3,6 +3,25 @@ import Carbon
 
 /// Чтение и переключение системной раскладки через Text Input Source (TIS).
 final class LayoutManager {
+    private static let cyrillicLanguageCodes: Set<String> = [
+        "ru", "uk", "be", "bg", "mk",
+        "kk", "ky", "tg", "mn", "myv"
+    ]
+
+    private static func isCyrillicLanguage(_ language: String) -> Bool {
+        let normalized = language.replacingOccurrences(of: "-", with: "_")
+        let parts = normalized.split(separator: "_").map(String.init)
+
+        if parts.contains(where: { $0.caseInsensitiveCompare("Cyrl") == .orderedSame }) {
+            return true
+        }
+
+        guard let primary = parts.first?.lowercased() else {
+            return false
+        }
+
+        return cyrillicLanguageCodes.contains(primary)
+    }
 
     /// НАШЕ МНЕНИЕ о текущей раскладке. Известный баг macOS (kawa PR #21, подтверждён нашим логом
     /// 24.07: «→ EN» ×6 подряд): при быстрых переключениях БЕЗ нажатий клавиш между ними
@@ -43,9 +62,10 @@ final class LayoutManager {
     /// догоняла ⌃Space/🌐 и врала — при том что весь смысл фичи это правдивая лампочка. Настройки
     /// HIToolbox отстают на ~11 мс, но ОТСТАЮТ, а не замирают.
     static func systemIsCyrillic() -> Bool {
-        if let code = languageFromSystemPrefs() { return code.lowercased().hasPrefix("ru") }
+        if let code = languageFromSystemPrefs() { return isCyrillicLanguage(code) }
         guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return false }
-        return languages(of: src).first?.hasPrefix("ru") ?? false
+        guard let language = languages(of: src).first else { return false }
+        return isCyrillicLanguage(language)
     }
 
     /// ПИСЬМЕННОСТЬ ТЕКУЩЕЙ РАСКЛАДКИ (задачи 105/106).
@@ -75,7 +95,7 @@ final class LayoutManager {
     /// второе оставляет как было у единиц.
     func currentScript() -> Script {
         if let code = Self.languageFromSystemPrefs() {
-            if code == "RU" { return .cyrillic }
+            if Self.isCyrillicLanguage(code) { return .cyrillic }
             if code == "EN" { return .latin }
             if let cached = Self.scriptByCode[code] { return cached }
             let want = code.lowercased()
@@ -89,7 +109,8 @@ final class LayoutManager {
         return Self.script(of: src)
     }
     private static func script(of src: TISInputSource) -> Script {
-        if languages(of: src).first?.hasPrefix("ru") ?? false { return .cyrillic }
+        if let language = languages(of: src).first,
+           isCyrillicLanguage(language) { return .cyrillic }
         // Латиницей считаем то же, что и `selectLayout`: ASCII-способность, а не язык «en».
         // Кириллические, армянские, греческие, ивритские и грузинские раскладки её не имеют.
         return isUsableLatinLayout(src) ? .latin : .other
@@ -364,7 +385,10 @@ final class LayoutManager {
         if let remembered, Self.script(of: remembered) == (cyrillic ? .cyrillic : .latin) {
             src = remembered
         } else if cyrillic {
-            src = sources.first { (Self.languages(of: $0).first ?? "").hasPrefix("ru") }
+            src = sources.first {
+                guard let language = Self.languages(of: $0).first else { return false }
+                return Self.isCyrillicLanguage(language)
+            }
         } else {
             src = sources.first { (Self.languages(of: $0).first ?? "").hasPrefix("en") }
                 ?? sources.first { Self.isUsableLatinLayout($0) }
@@ -462,7 +486,7 @@ final class LayoutManager {
             // ждали. Спорить с хозяином нельзя: он выбрал позже нас, его выбор и главнее.
             guard self.opinionCyr == cyrillic else { return }
             guard let code = Self.languageFromSystemPrefs() else { return }   // не знаем — молчим
-            let real = (code == "RU")
+            let real = Self.isCyrillicLanguage(code)
             guard real != cyrillic else { return }                            // всё применилось
             self.selectMissCount += 1
             if self.selectMissCount == 1 || self.selectMissCount % 10 == 0 {

@@ -10,8 +10,15 @@ import Foundation
 /// и покрывает все символы (буквы, цифровой Shift-ряд, кавычки, скобки) для любого
 /// варианта и любой языковой пары. Используется как primary; `Keymap` — fallback.
 enum DynamicKeymap {
+    struct PhysicalKey {
+        let keyCode: UInt16
+        let shift: Bool
+    }
+
     private(set) static var enToRu: [Character: Character] = [:]
     private(set) static var ruToEn: [Character: Character] = [:]
+    private(set) static var latinPhysicalKeys: [Character: PhysicalKey] = [:]
+    private(set) static var cyrillicPhysicalKeys: [Character: PhysicalKey] = [:]
     /// Физическая клавиша каждой строчной латинской буквы в ЛАТИНСКОЙ раскладке человека (той же,
     /// что в паре выше): у AZERTY «a» стоит не там, где у U.S. Нужна скрытым дублям пунктов меню
     /// (задача 255, `MenuBarController.addLayoutTwins`). Пусто, пока таблица не построена.
@@ -74,6 +81,8 @@ enum DynamicKeymap {
 
         let t = buildTables(latin: L, cyrillic: C, keyboardType: keyboardType)
         latinKeyCodes = t.latinKeyCodes
+        latinPhysicalKeys = t.latinPhysicalKeys
+        cyrillicPhysicalKeys = t.cyrillicPhysicalKeys
         guard !t.enToRu.isEmpty else { return }
         enToRu = t.enToRu
         ruToEn = t.ruToEn
@@ -84,7 +93,9 @@ enum DynamicKeymap {
     /// раскладками, которые у человека могут быть и выключены (задача 260, 26.09.2026).
     static func buildTables(latin L: Data, cyrillic C: Data, keyboardType: UInt32)
         -> (enToRu: [Character: Character], ruToEn: [Character: Character],
-            latinKeyCodes: [Character: UInt16]) {
+            latinKeyCodes: [Character: UInt16],
+            latinPhysicalKeys: [Character: PhysicalKey],
+            cyrillicPhysicalKeys: [Character: PhysicalKey]) {
         var keys: [Character: UInt16] = [:]
         for kc in UInt16(0)...UInt16(50) {
             let ls = translate(L, kc, false, keyboardType)
@@ -119,12 +130,22 @@ enum DynamicKeymap {
         var e2r: [Character: Character] = [:]
         var r2e: [Character: Character] = [:]
         var yoKey: UInt16? = nil      // клавиша, с которой «ё» получила пару
+        var latPhysical: [Character: PhysicalKey] = [:]
+        var cyrPhysical: [Character: PhysicalKey] = [:]
         // Печатные клавиши ANSI: буквы, цифровой ряд, знаки — keyCodes 0…50.
         for kc in UInt16(0)...UInt16(50) {
             if skipSection, kc == isoSectionKeyCode { continue }
             for shift in [false, true] {
                 let ls = translate(L, kc, shift, keyboardType)
                 let cs = translate(C, kc, shift, keyboardType)
+
+                if ls.count == 1, let l = ls.first, latPhysical[l] == nil {
+                    latPhysical[l] = PhysicalKey(keyCode: kc, shift: shift)
+                }
+                if cs.count == 1, let c = cs.first, cyrPhysical[c] == nil {
+                    cyrPhysical[c] = PhysicalKey(keyCode: kc, shift: shift)
+                }
+
                 guard ls.count == 1, cs.count == 1,
                       let l = ls.first, let c = cs.first, l != c else { continue }
                 if e2r[l] == nil { e2r[l] = c }
@@ -134,6 +155,7 @@ enum DynamicKeymap {
                 }
             }
         }
+
 
         // ⚠️ «Ё» ПОСЛЕ ПРОПУСКА ОСТАЛАСЬ БЕЗ ПАРЫ, ДАЁМ ЕЙ ШИФТ ТОЙ ЖЕ КЛАВИШИ (задача 260). В
         // «Русской – ПК» на ANSI Shift плюс клавиша «ё» печатает ЛАТИНСКУЮ «Ë» (U+00CB), а не
@@ -149,8 +171,9 @@ enum DynamicKeymap {
             if ls.count == 1, let l = ls.first, l != "Ё" { r2e["Ё"] = l }
         }
 
+
         addTypographicAliases(&e2r)
-        return (e2r, r2e, keys)
+        return (e2r, r2e, keys, latPhysical, cyrPhysical)
     }
 
     /// keyCode 10 (`kVK_ISO_Section`): клавиша, которая физически есть только на ISO-клавиатуре.
@@ -207,6 +230,13 @@ enum DynamicKeymap {
         out.reserveCapacity(text.count)
         for ch in text { out.append(map[ch] ?? ch) }
         return out
+    }
+
+    /// Фізична клавіша символу в реальній Latin/Cyrillic розкладці користувача.
+    /// Використовується для remote-safe вводу, де Unicode CGEvent губить payload.
+    static func physicalKey(for character: Character) -> PhysicalKey? {
+        if let key = latinPhysicalKeys[character] { return key }
+        return cyrillicPhysicalKeys[character]
     }
 
     // MARK: - UCKeyTranslate

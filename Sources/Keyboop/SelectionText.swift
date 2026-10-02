@@ -40,6 +40,13 @@ enum SelectionText {
             }
             return (text, makeWriteBack(path, element: element, original: text))
         }
+        // Remote desktop clients may forward our synthetic Cmd+C as a plain physical
+        // "c". AX is safe to try, but clipboard fallback is not.
+        if TextReplacer.frontAppNeedsPhysicalTyping {
+            kbLog("selection: remote client — Cmd+C fallback skipped, \(Engine.frontmostBundleID())")
+            return nil
+        }
+
         if let text = readViaClipboard() {
             kbLog("selection: через буфер (Cmd+C), \(text.count) симв., \(Engine.frontmostBundleID())")
             // Figma съедает первое событие после нашего ⌘C — отдаём ей жертву, чтобы она съела
