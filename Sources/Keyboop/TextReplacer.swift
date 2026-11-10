@@ -180,7 +180,22 @@ enum TextReplacer {
     /// Spotlight, где «переднее приложение» врёт. Во всех остальных случаях отправляем как раньше,
     /// с самой ранней ступени.
     private static var synthPostTap: CGEventTapLocation {
-        (RivalTapWatch.present && !SpotlightWatch.isOpen) ? .cgAnnotatedSessionEventTap : .cghidEventTap
+        (RivalTapWatch.present && !SpotlightWatch.isOpen && !focusIsOverlayPanel) ? .cgAnnotatedSessionEventTap : .cghidEventTap
+    }
+
+    /// Non-activating panels (Raycast, Todoist Quick Add) take keyboard focus without becoming the
+    /// frontmost app. Events posted on annotated go to the frontmost app, i.e. the window behind the
+    /// panel, so for them we post on hid, the same way as for Spotlight.
+    private static var focusIsOverlayPanel: Bool {
+        let sys = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(sys, 0.05)
+        var app: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(sys, kAXFocusedApplicationAttribute as CFString, &app) == .success,
+              let app, CFGetTypeID(app) == AXUIElementGetTypeID() else { return false }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(app as! AXUIElement, &pid) == .success, pid > 0,
+              let front = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return false }
+        return pid != front
     }
 
     /// Активен «секретный ввод» (поле пароля, системный диалог аутентификации). Синтетику в этот
