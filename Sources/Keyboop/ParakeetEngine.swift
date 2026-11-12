@@ -162,6 +162,7 @@ final class ParakeetEngine {
             let models = try await AsrModels.downloadAndLoad(version: .v3, progressHandler: { p in
                 progress(p.fractionCompleted)
             })
+            loadedModels = models
             let mgr = Self.makeManager()
             try await mgr.loadModels(models)
             decoderLayers = await mgr.decoderLayerCount
@@ -226,6 +227,7 @@ final class ParakeetEngine {
             }
             DownloadUtils.enforceOffline = true
             let models = try await AsrModels.load(from: dir, version: .v3)
+            loadedModels = models
             let mgr = Self.makeManager()
             try await mgr.loadModels(models)
             decoderLayers = await mgr.decoderLayerCount
