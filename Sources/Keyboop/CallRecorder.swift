@@ -226,6 +226,8 @@ final class CallRecorder {
     /// не закрылся, файл остался без заголовка, сессия осталась «recording».
     private let control = DispatchQueue(label: "ru.keyboop.call.control", qos: .userInitiated)
     private var capture: AnyObject?
+    /// Статистика системного захвата, снятая при остановке: к финалу `capture` уже nil.
+    private var captureStats: (streams: Int, heard: Set<Int>)?
     private var resampler: MonoResampler?
     private var chunker = AudioChunker()
     private var planner = SegmentPlanner()
@@ -379,6 +381,9 @@ final class CallRecorder {
         kbLog("звонок: остановка (\(reason)), записано \(ImportProgressFormat.clock(Double(recordedFrames) / Double(AudioImportPolicy.sampleRate)))")
         control.async { [self] in
             if #available(macOS 14.2, *) { (capture as? SystemAudioCapture)?.stop() }
+            if #available(macOS 14.2, *), let sys = capture as? SystemAudioCapture {
+                captureStats = (sys.streamCount, sys.heardStreams)
+            }
             capture = nil
             processing.async { [self] in
                 closeSegment()
@@ -517,11 +522,11 @@ final class CallRecorder {
                 // «в записи не нашлось речи» и написал «разрешения все выданы» — то, которого не
                 // хватало, у него просто никто не спросил.
                 var tapSilent = false, micHeard = false, streams = 0, heardList = "—"
-                if #available(macOS 14.2, *), let cap = capture as? SystemAudioCapture {
-                    streams = cap.streamCount
-                    tapSilent = cap.streamCount > 1 && !cap.heardStreams.contains(1)
-                    micHeard = cap.heardStreams.contains(0)
-                    heardList = cap.heardStreams.sorted().map(String.init).joined(separator: ",")
+                if let st = captureStats {
+                    streams = st.streams
+                    tapSilent = st.streams > 1 && !st.heard.contains(1)
+                    micHeard = st.heard.contains(0)
+                    heardList = st.heard.sorted().map(String.init).joined(separator: ",")
                 }
                 kbLog("звонок: речи не нашлось (\(segmentsCount) сегментов, \(ImportProgressFormat.clock(seconds)), потоков \(streams), звучали \(heardList))")
                 if tapSilent, micHeard {
