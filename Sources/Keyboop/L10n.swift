@@ -869,9 +869,7 @@ enum L10n {
         "switch.primary": [.ru: "Основной язык", .en: "Main language"],
         "switch.personal": [.ru: "Личный файл слов", .en: "Personal word file"],
         "switch.personalNone": [.ru: "Не выбран", .en: "Not set"],
-        "switch.personalSample": [.ru: "Пример файла", .en: "Example file"],
-        "switch.personalSampleButton": [.ru: "Скачать…", .en: "Download…"],
-        "switch.personalSampleHelp": [.ru: "Сохранить пример личного файла слов: формат строк и несколько примеров. Его можно отредактировать и выбрать выше.", .en: "Save an example personal word file: the line format and a few samples. Edit it and pick it above."],
+        "switch.personalSampleLink": [.ru: "Скачать пример файла", .en: "Download example file"],
         "switch.personalHelp": [.ru: "Файл со своими словами: keep — не переключать, swap — всегда переключать. Хранится у тебя на машине. Вступает в силу после перезапуска приложения.", .en: "Your own words: keep — never switch, swap — always switch. Stays on your machine. Takes effect after the app restarts."],
         "switch.primaryHelp": [.ru: "Какой язык выигрывает, когда набранное слово и его перевод оба настоящие слова. Русский — если пишешь в основном по-русски. Смешанный — как раньше, для программистов и двуязычного набора.", .en: "Which language wins when the typed word and its translation are both real words. Russian if you mostly type Russian. Mixed keeps the previous behaviour, for programmers and bilingual typing."],
 
