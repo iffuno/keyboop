@@ -190,6 +190,40 @@ func runKeys(path: String) -> Int32 {
     return failed == 0 ? 0 : 1
 }
 
+// Режим --mixed FILE (замер): смешанные токены (кир+лат без пробела). Печатает решение mixedRescue, как в
+// приложении, и решение триграммного кандидата. Кандидат в приложение не вносится.
+func trigramMixedCandidate(_ raw: String) -> String {
+    let core = String(raw.filter { $0.isLetter })
+    guard core.count >= 4 else { return "keep" }
+    let toRu = Keymap.convert(core, toCyrillic: true).lowercased()
+    let toEn = Keymap.convert(core, toCyrillic: false).lowercased()
+    let data = LayoutData.shared
+    let ruScore = toRu.hasLatinLetter ? -99.0 : data.plausibility(toRu, cyrillic: true)
+    let enScore = toEn.hasCyrillic ? -99.0 : data.plausibility(toEn, cyrillic: false)
+    if ruScore > -9 && ruScore > enScore { return "convert→ru = \(Keymap.convert(raw, toCyrillic: true))" }
+    if enScore > -9 && enScore > ruScore { return "convert→en = \(Keymap.convert(raw, toCyrillic: false))" }
+    return "keep"
+}
+
+func runMixed(path: String) -> Int32 {
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+        print("не читается: \(path)")
+        return 2
+    }
+    var nowCount = 0
+    var candCount = 0
+    for line in text.split(separator: "\n") {
+        let token = String(line)
+        let now = describe(LayoutDetector.mixedRescue(word: token), token)
+        let cand = trigramMixedCandidate(token)
+        if now != "keep" { nowCount += 1 }
+        if cand != "keep" { candCount += 1 }
+        print("\(token)\tсейчас: \(now)\tкандидат: \(cand)")
+    }
+    print("сейчас переключит \(nowCount), кандидат переключит \(candCount)")
+    return 0
+}
+
 // Настройки и исключения dev-приложения читаем регистрацией домена по умолчанию: это только чтение,
 // домен ru.keyboop.app.dev не меняется. --clean — без них (чистый детектор, основной язык «mixed»).
 // AppSettings и ExceptionStore читают UserDefaults.standard, поэтому видят те же значения, что и приложение.
@@ -200,6 +234,7 @@ var pairMode = false
 var clean = false
 var casesFile: String? = nil
 var keysFile: String? = nil
+var mixedFile: String? = nil
 var positional: [String] = []
 var i = 0
 while i < args.count {
@@ -217,6 +252,11 @@ while i < args.count {
     if a == "--clean" {
         clean = true
         i += 1
+        continue
+    }
+    if a == "--mixed", i + 1 < args.count {
+        mixedFile = args[i + 1]
+        i += 2
         continue
     }
     if a == "--keys", i + 1 < args.count {
@@ -248,6 +288,9 @@ if let casesFile {
 }
 if let keysFile {
     exit(runKeys(path: keysFile))
+}
+if let mixedFile {
+    exit(runMixed(path: mixedFile))
 }
 
 var inputs: [String] = positional
