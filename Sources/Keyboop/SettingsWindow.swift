@@ -1738,6 +1738,8 @@ final class DetailVC: NSViewController {
                            help: L10n.t("switch.primaryHelp"), key: "switch.primary"),
                 controlRow(L10n.t("switch.personal"), personalWordsButton(),
                            help: L10n.t("switch.personalHelp"), key: "switch.personal"),
+                controlRow(L10n.t("switch.personalSample"), personalSampleButton(),
+                           help: L10n.t("switch.personalSampleHelp"), key: "switch.personalSample"),
                 controlRow(L10n.t("switch.manual"), HotkeyControl(),
                            subtitle: manualCapsFailure() ?? L10n.t("switch.manualSub"),
                            help: L10n.t("switch.manualHelp"),
@@ -4662,6 +4664,26 @@ final class DetailVC: NSViewController {
         button.controlSize = .small
         button.setContentHuggingPriority(.required, for: .horizontal)
         return button
+    }
+
+    /// Кнопка «Скачать…»: сохраняет пример личного файла слов в место, которое выберет пользователь.
+    private func personalSampleButton() -> NSButton {
+        let button = NSButton(title: L10n.t("switch.personalSampleButton"), target: self, action: #selector(savePersonalSample(_:)))
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        return button
+    }
+
+    @objc private func savePersonalSample(_ sender: NSButton) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "personal-words-example.txt"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try ExceptionStore.personalWordsExample.write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            NSSound.beep()
+        }
     }
 
     @objc private func pickPersonalWords(_ sender: NSButton) {

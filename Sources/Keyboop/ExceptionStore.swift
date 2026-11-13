@@ -95,6 +95,16 @@ final class ExceptionStore {
         loadPersonalWords()
     }
 
+    /// Пример личного файла слов для кнопки «Скачать…» в настройках. Формат и два примера строк.
+    static let personalWordsExample: String = [
+        "# Личный файл слов Keyboop. Строки с # игнорируются.",
+        "# слово<TAB>keep — не переключать; слово<TAB>swap — всегда переключать (swap — переведённое слово).",
+        "key\tkeep",
+        "cat\tkeep",
+        "еру\tswap",
+        "",
+    ].joined(separator: "\n")
+
     /// Личный файл слов `~/Library/Application Support/Keyboop/personal-words.txt` (вне репозитория).
     /// Строка `слово<TAB>keep` — не переключать (как игнор), `слово<TAB>swap` — всегда переключать; для `swap`
     /// пишется переведённое слово (как в AmbiguousPairs). Пустые строки и строки без табуляции пропускаются.
