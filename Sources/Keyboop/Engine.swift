@@ -577,7 +577,11 @@ final class Engine: EventTapHandler {
             wordEdited = false                        // новое слово начинается свежим — live-fix снова активен
             let boundaryHandledAt = ProcessInfo.processInfo.systemUptime
             lastRealKeyAt = boundaryHandledAt         // второй пробел тоже закрывает Fence A
-            let ws = keyCode == 48 ? "\t" : (keyCode == 36 ? "\n" : " ")
+            // ⌃Space / ⌘Space — не пробел: символа в поле нет, а раскладку переключает макОС уже после слова.
+            // Закрываем слово с пустым хвостом; сниппет здесь не разворачиваем, сверку раскладки для
+            // этого нажатия пропускаем (см. асинхронный блок ниже), иначе слово пропадёт.
+            let shortcutSpace = keyCode == 49 && cmdOrCtrl
+            let ws = shortcutSpace ? "" : (keyCode == 48 ? "\t" : (keyCode == 36 ? "\n" : " "))
             // СНИППЕТ: проверяем ТЕКУЩЕЕ слово ДО boundary (currentWord = триггер, как на экране).
             // Совпало → ГЛОТАЕМ клавишу-границу и раскрываем сами. Не пускаем пробел в приложение →
             // не приходится потом удалять только что нажатый пробел → нет гонки «Backspace прилетел
@@ -586,9 +590,9 @@ final class Engine: EventTapHandler {
             // а длину триггера берём по экрану (буфер == экран).
             // Разворот сниппета — только по выбранным в настройках клавишам (пробел/Enter/Tab).
             // Все галочки сняты → автозамена выключена (snippetsDisabled), сниппеты не трогаем.
-            let snipKeyOK = (keyCode == 49 && settings.snippetExpandSpace)
+            let snipKeyOK = !shortcutSpace && ((keyCode == 49 && settings.snippetExpandSpace)
                          || (keyCode == 36 && settings.snippetExpandEnter)
-                         || (keyCode == 48 && settings.snippetExpandTab)
+                         || (keyCode == 48 && settings.snippetExpandTab))
             // ⚠️ ИСКЛЮЧЕНИЯ РАСПРОСТРАНЯЮТСЯ И НА СНИППЕТЫ (31.07). До этого дня раскрытие смотрело
             // только на свои три галки, и сниппет разворачивался ВЕЗДЕ — в том числе в терминале и
             // в Final Cut, то есть ровно там, где мы сознательно не трогаем вообще ничего.
@@ -652,7 +656,8 @@ final class Engine: EventTapHandler {
                 // пропускаем, со следующего декод уже верный. Ловит случай 24.07: уведомление о
                 // ручной смене раскладки прочитало стейл → мнение и кэш самосогласованно врали
                 // целую строку («cyjdf drk.xbk…» при русском буфере).
-                if self.layout.reconcileWithReality() {
+                // Сверку вызываем всегда: она же обновляет мнение о раскладке. Пропускаем слово только не для ⌃/⌘+Space.
+                if self.layout.reconcileWithReality(), !shortcutSpace {
                     kbLog("раскладка: мнение разошлось с системой — принял реальность; слово пропущено (декод был чужой раскладкой)")
                     self.liveFixLast = ""
                     self.buffer.clear()
