@@ -1736,6 +1736,8 @@ final class DetailVC: NSViewController {
                           help: L10n.t("switch.devHelp"), key: "switch.dev"),
                 controlRow(L10n.t("switch.primary"), primaryLanguagePopup(),
                            help: L10n.t("switch.primaryHelp"), key: "switch.primary"),
+                controlRow(L10n.t("switch.personal"), personalWordsButton(),
+                           help: L10n.t("switch.personalHelp"), key: "switch.personal"),
                 controlRow(L10n.t("switch.manual"), HotkeyControl(),
                            subtitle: manualCapsFailure() ?? L10n.t("switch.manualSub"),
                            help: L10n.t("switch.manualHelp"),
@@ -4650,6 +4652,26 @@ final class DetailVC: NSViewController {
         pop.action = #selector(primaryLanguageChanged(_:))
         pop.setContentHuggingPriority(.required, for: .horizontal)
         return pop
+    }
+
+    /// Кнопка выбора личного файла слов. Файл читается при запуске приложения (см. ExceptionStore.loadPersonalWords).
+    private func personalWordsButton() -> NSButton {
+        let title = settings.personalWordsPath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? L10n.t("switch.personalNone")
+        let button = NSButton(title: title, target: self, action: #selector(pickPersonalWords(_:)))
+        button.bezelStyle = .rounded
+        button.controlSize = .small
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        return button
+    }
+
+    @objc private func pickPersonalWords(_ sender: NSButton) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        settings.personalWordsPath = url.path
+        sender.title = url.lastPathComponent
     }
 
     @objc private func primaryLanguageChanged(_ s: NSPopUpButton) {

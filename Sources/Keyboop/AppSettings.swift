@@ -205,6 +205,8 @@ final class AppSettings {
     /// Основной язык набора: "mixed" (как раньше), "ru" или "en". Решает, какой язык выигрывает, когда
     /// набранное слово и его перевод оба настоящие слова (LayoutDetector.decide). Смешанный — по умолчанию.
     var primaryLanguage: String { get { d.string(forKey: "primaryLanguage") ?? "mixed" } set { d.set(newValue, forKey: "primaryLanguage") } }
+    /// Путь к личному файлу слов, выбранному в настройках (nil — файл по умолчанию). Применяется при запуске.
+    var personalWordsPath: String? { get { d.string(forKey: "personalWordsPath") } set { d.set(newValue, forKey: "personalWordsPath") } }
 
     /// Режим хоткея: "combo" (модификаторы ⌥⇧), "modkey" (одна клавиша-модификатор — напр. правый ⌥),
     /// "key" (обычная клавиша + модификаторы), "doubletap" (2× модификатор).

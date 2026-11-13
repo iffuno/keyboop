@@ -103,6 +103,8 @@ final class ExceptionStore {
         let path: String
         if let override = ProcessInfo.processInfo.environment["KEYBOOP_PERSONAL_WORDS"], !override.isEmpty {
             path = override
+        } else if let chosen = AppSettings.shared.personalWordsPath, !chosen.isEmpty {
+            path = chosen
         } else {
             guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
             path = support.appendingPathComponent("Keyboop/personal-words.txt").path
