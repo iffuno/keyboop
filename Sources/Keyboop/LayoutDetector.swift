@@ -363,6 +363,32 @@ enum LayoutDetector {
         return .keep
     }
 
+    /// ПАРА «КОРОТКОЕ + СЛЕДУЮЩЕЕ» (словарный гейт, замер bench_dictpair.py и bench_dictpair1.py):
+    /// первое слово 1-3 буквы, второе от 2 букв. Конвертируем, только если обе сконвертированные формы —
+    /// слова целевого словаря, набранное слово (2+ букв) не валидно в своём языке и ни один токен не
+    /// исключение. Однобуквенное первое слово собственную валидность не проверяет. Иначе — keep.
+    static func decidePair(prev: String, cur: String) -> SwapDecision {
+        let prevLower = prev.lowercased(), curLower = cur.lowercased()
+        guard (1...3).contains(prevLower.count), curLower.count >= 2,
+              prevLower.allSatisfy(Self.isLayoutLetter), curLower.allSatisfy(Self.isLayoutLetter) else { return .keep }
+        let cyr = prevLower.hasCyrillic
+        guard cyr == curLower.hasCyrillic, cyr != prevLower.hasLatinLetter else { return .keep }
+        let data = LayoutData.shared
+        let ownDict = cyr ? data.wordsRu : data.wordsEn
+        let targetDict = cyr ? data.wordsEn : data.wordsRu
+        // Набранное слово не должно быть словом своего языка. Однобуквенное первое слово не проверяем:
+        // f d b r j c e z — английские слова в словаре, и гейт всегда отсекал бы их («z вижу»).
+        if curLower.count >= 2, ownDict.contains(curLower) { return .keep }
+        if prevLower.count >= 2, ownDict.contains(prevLower) { return .keep }
+        if isExceptionOrPrefix(prevLower, cyrillic: cyr) || isExceptionOrPrefix(curLower, cyrillic: cyr) { return .keep }
+        // Обе сконвертированные формы — слова целевого словаря.
+        let toCyr = !cyr
+        let a = Keymap.convert(prevLower, toCyrillic: toCyr).lowercased()
+        let b = Keymap.convert(curLower, toCyrillic: toCyr).lowercased()
+        if targetDict.contains(a) && targetDict.contains(b) { return .convert(toCyrillic: toCyr) }
+        return .keep
+    }
+
     /// Узкий мост для русской фразы, внутри которой стоит латинская аббревиатура:
     /// `… касается iOS, nj` / `… нашего EPG, nj`. Непосредственный сосед тут латинский и обычный
     /// enKeepShort-гейт оставляет `nj`, хотя до него продолжается русская фраза.

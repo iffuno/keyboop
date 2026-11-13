@@ -1676,6 +1676,29 @@ final class Engine: EventTapHandler {
     /// КЛЮЧЕВОЕ (ключевая идея H): конвертируем ПОСЛОВНО только те слова, что LayoutDetector
     /// помечает как .convert — валидные слова в группе НЕ трогаем («hello ghbdtn» → «hello привет»).
     /// Печатаем Unicode напрямую (Backspace + set), буфер обмена НЕ трогаем (принцип №1).
+    /// Пара «короткое + следующее», решённая фразой (LayoutDetector.decidePair): меняем оба слова разом.
+    private func convertPairAuto(_ pr: (prev: String, prevTail: String, cur: String, curTail: String, deleteCount: Int),
+                                 toCyrillic: Bool) {
+        let a = Keymap.smartConvert(pr.prev, toCyrillic: toCyrillic, isValidTarget: Self.ruWordValidator)
+        let b = Keymap.smartConvert(pr.cur, toCyrillic: toCyrillic, isValidTarget: Self.ruWordValidator)
+        let out = a + pr.prevTail + b + pr.curTail
+        guard out.count == pr.deleteCount else {
+            kbLog("pair-auto: длина out ≠ deleteCount — отказ")
+            return
+        }
+        muted = true
+        kbLog("pair-auto: 2 слова, \(pr.deleteCount) симв.")   // без контента
+        TextReplacer.replace(deleteCount: pr.deleteCount, with: out) { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
+        }
+        settings.rescuedCount += 2
+        buffer.clear()
+        layout.selectLayout(cyrillic: toCyrillic)
+        onLayoutMaybeChanged?()
+        playSound()
+    }
+
     private func convertGroup() -> Bool {
         guard let g = buffer.groupForConversion() else { return false }
         var out = ""
@@ -1770,7 +1793,10 @@ final class Engine: EventTapHandler {
         // мог начать следующее — раньше конверсия перечитывала буфер, попадала в огрызок «x» и
         // молча no-op'ала, а завершённое слово сиротело («иногда не переключается» у быстрых рук).
         guard let item = buffer.wordForConversion(completedOnly: !manual) else {
-            if !manual { silentLog("emptybuf", "авто молчит: на границе слова буфер пуст") }
+            if !manual {
+                silentLog("emptybuf", "авто молчит: на границе слова буфер пуст")
+                kbLog("граница слова: буфер пуст — \(buffer.boundaryStateSummary())")
+            }
             // Нечего конвертировать (буфер пуст), но нажат хоткей — крутим тот же цикл раскладок,
             // что у 🌐. Слово или допустимое выделение по-прежнему идут обычным RU↔EN-путём выше.
             // ⚠️ Выделение было, но мы от него отказались (многострочное / вероятная авто-копия).
@@ -1802,6 +1828,25 @@ final class Engine: EventTapHandler {
             return
         }
         let word = item.word
+        if !manual, word.count == 1 {
+            kbLog("граница слова: одиночная буква — \(buffer.boundaryStateSummary())")
+        }
+
+        // Пара «короткое + следующее»: авто-режим, не мягкий, фраза решается целиком. Иначе — обычный путь ниже.
+        if !manual, !soft, Warm.isReady, let pr = buffer.completedPair() {
+            switch LayoutDetector.decidePair(prev: pr.prev, cur: pr.cur) {
+            case .convert(let pairToCyr) where !UndoLearner.shared.isSessionProtected(pr.cur):
+                convertPairAuto(pr, toCyrillic: pairToCyr)
+                return
+            case .convert:
+                break
+            case .keep:
+                // Диагностика пары: короткое слово (2-3) и решение фразы. Только длины, без текста.
+                if (2...3).contains(pr.prev.count) {
+                    kbLog("pair: keep (prev \(pr.prev.count), cur \(pr.cur.count) симв.)")
+                }
+            }
+        }
 
         var autoProp: (text: String, toCyrillic: Bool, rescue: Bool)?
         let toCyrillic: Bool
