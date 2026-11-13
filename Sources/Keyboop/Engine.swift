@@ -573,6 +573,9 @@ final class Engine: EventTapHandler {
                 UndoLearner.shared.observe(current: buffer.currentWord)   // U2: следим за стиранием нашего вывода
             }
         case 49, 48, 36: // Space, Tab, Return — граница слова
+            // ⌃/⌘ + Space/Tab/Return — это шорткат (⌃Space переключает раскладку, ⌘Return отправляет),
+            // символа в поле нет. Не считаем это границей слова: буфер чистим, как для default-шортката.
+            if cmdOrCtrl { liveFixLast = ""; wordEdited = false; buffer.clear(); return false }
             liveFixLast = ""                          // слово завершено — якорь self-heal сброшен
             wordEdited = false                        // новое слово начинается свежим — live-fix снова активен
             let boundaryHandledAt = ProcessInfo.processInfo.systemUptime
