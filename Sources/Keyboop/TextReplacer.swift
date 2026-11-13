@@ -46,6 +46,18 @@ enum TextReplacer {
     /// реальное нажатие пользователя. См. разбор в Engine рядом с F6.
     static var settleMicros: UInt32 = 9_000
 
+    /// Перехватчик для теста набора (`scripts/decide.sh --keys`). Когда задан, замена не уходит в систему,
+    /// а отдаётся сюда. В приложении всегда nil, поведение не меняется. Низкоуровневые постинги
+    /// (`postKey`, `postRawKey`, `postUnicodeChunk`) при заданном перехватчике падают: так тест не пропустит
+    /// замену, которую кто-то отправил мимо него.
+    static var testSink: ((TestEdit) -> Void)?
+    enum TestEdit {
+        case replace(deleteCount: Int, text: String, thenReturn: Bool)
+        case insert(text: String, thenReturn: Bool)
+        case inline(deleteCount: Int, text: String)
+        case canvas(text: String)
+    }
+
     // ⚠️ ЗДЕСЬ БЫЛА «ДЕШЁВАЯ СТРАХОВКА ОТ ГОНКИ» — УБРАНА 28.07, НЕ ВОЗВРАЩАТЬ БЕЗ РАЗБОРА.
     //
     // Идея была такая: если реальная клавиша вклинилась в settle-паузу, а backspace'ы ещё не улетели,
@@ -203,6 +215,11 @@ enum TextReplacer {
     /// или чужая синтетика могли бы лечь между ними, и отправилось бы полсообщения.
     static func insert(_ text: String, thenReturn: Bool = false, returnMods: CGEventFlags = [],
                        completion: (() -> Void)? = nil) {
+        if let sink = testSink {
+            sink(.insert(text: text, thenReturn: thenReturn))
+            if let completion { DispatchQueue.main.async(execute: completion) }
+            return
+        }
         synthQueue.async {
             guard SecureInputPolicy.canWrite("insert \(text.count) симв.") else {
                 kbLog("synth: писать нельзя — insert(\(text.count) симв.) пропущен")
@@ -271,6 +288,11 @@ enum TextReplacer {
         // Была промежуточная правка (тем же утром): движок в своих окнах выключался целиком. Она
         // симптом убрала, но вместе с ним и пользу — автор сразу заметил, что в «Написать
         // разработчику» перестало работать авто-переключение. Это возврат пользы без синтетики.
+        if let sink = testSink {
+            sink(.replace(deleteCount: deleteCount, text: text, thenReturn: thenReturn))
+            if let completion { DispatchQueue.main.async(execute: completion) }
+            return
+        }
         if replaceInOwnField(deleteCount: deleteCount, with: text) {
             if let completion { DispatchQueue.main.async(execute: completion) }
             return
@@ -356,6 +378,10 @@ enum TextReplacer {
     /// вызывающий проверяет заранее (Engine держит поллер secure input).
     @discardableResult
     static func replaceInline(deleteCount n: Int, with text: String, post: (CGEvent) -> Void) -> Bool {
+        if let sink = testSink {
+            sink(.inline(deleteCount: n, text: text))
+            return true
+        }
         guard n >= 0, let src = inlineSource else { return false }
         var batch: [CGEvent] = []
         batch.reserveCapacity(n * 2 + 6)
@@ -400,6 +426,7 @@ enum TextReplacer {
     /// `mods` — модификаторы для отправки (авто-Enter: разные приложения шлют по разным сочетаниям).
     /// Пустые по умолчанию: это же postKey используют Backspace'ы, которым модификаторы противопоказаны.
     private static func postKey(_ key: CGKeyCode, source: CGEventSource?, mods: CGEventFlags = []) {
+        precondition(testSink == nil, "тест: клавиша ушла мимо перехватчика")
         if let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true) {
             down.flags = mods
             down.setIntegerValueField(.eventSourceUserData, value: kbSyntheticMarker)   // «это наше»
@@ -500,6 +527,7 @@ enum TextReplacer {
     /// Событие клавиши БЕЗ Unicode-строки: приложение переведёт код само. Для жертвы это и нужно —
     /// у F17…F20 нет символа ни в одной раскладке, поэтому вставить им нечего.
     private static func postRawKey(_ key: CGKeyCode, keyDown: Bool, source: CGEventSource?) {
+        precondition(testSink == nil, "тест: клавиша ушла мимо перехватчика")
         guard let e = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: keyDown) else { return }
         e.flags = []
         e.setIntegerValueField(.eventSourceUserData, value: kbSyntheticMarker)
@@ -525,6 +553,11 @@ enum TextReplacer {
     /// Всё задание идёт одним куском на synth-очереди: между Enter, печатью и Escape не может
     /// вклиниться ни реальное нажатие, ни чужая синтетика — тот же принцип, что у `thenReturn`.
     static func replaceCanvasObjectText(_ text: String, completion: (() -> Void)? = nil) {
+        if let sink = testSink {
+            sink(.canvas(text: text))
+            if let completion { DispatchQueue.main.async(execute: completion) }
+            return
+        }
         synthQueue.async {
             guard SecureInputPolicy.canWrite("замена текста объекта, \(text.count) симв.") else {
                 kbLog("synth: писать нельзя — замена текста объекта пропущена")
@@ -559,6 +592,7 @@ enum TextReplacer {
     }
 
     private static func postUnicodeChunk(_ chunk: [UniChar], keyDown: Bool, source: CGEventSource?) {
+        precondition(testSink == nil, "тест: символ ушёл мимо перехватчика")
         guard let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: keyDown) else { return }
         event.flags = []
         event.setIntegerValueField(.eventSourceUserData, value: kbSyntheticMarker)   // «это наше»

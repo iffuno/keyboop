@@ -2528,7 +2528,11 @@ final class Engine: EventTapHandler {
     ///
     /// ⚠️ Заводя сюда следующую панель (Alfred, Raycast, палитры команд), проверять её тем же
     /// способом: одни меняют фронтальную программу, другие нет, и на глаз это не отличить.
+    /// Тестовая подмена активного приложения (`scripts/decide.sh --keys`): без неё тест берёт фронт
+    /// терминала и попадает в режим этого приложения. В приложении всегда nil.
+    static var testBundleOverride: String?
     static func frontmostBundleID() -> String {
+        if let override = testBundleOverride { return override }
         if SpotlightWatch.isOpen { return "com.apple.Spotlight" }
         return NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
     }

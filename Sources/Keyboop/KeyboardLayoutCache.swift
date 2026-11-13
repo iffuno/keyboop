@@ -31,6 +31,7 @@ enum KeyboardLayoutCache {
     /// true = блоб реально сменился (декод предыдущих клавиш шёл другой раскладкой).
     @discardableResult
     static func refreshOnMain() -> Bool {
+        if LayoutManager.testCyrillic != nil { return false }
         guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return false }
         return refresh(fromSelected: src)
     }

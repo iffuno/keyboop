@@ -4,6 +4,7 @@
 // Использование (см. scripts/decide.sh):
 //   decide.sh [--profile ru|en|mixed] [--pair] [--clean] [строка ...]
 //   decide.sh --cases scripts/cases.txt   (набор кейсов с ожидаемым результатом, код выхода 1 при расхождении)
+//   decide.sh --keys scripts/keys-cases.txt   (нажатия через настоящий Engine, замены перехватываются, код выхода 1)
 //   echo "ghbdtn" | decide.sh --profile ru
 //   printf 'Email\njr\n' | decide.sh --profile ru
 //   decide.sh --pair --profile ru "z" "вижу"
@@ -12,6 +13,7 @@
 // или два аргумента подряд. Вывод: вход, решение (keep / convert→ru / convert→en) и результат замены.
 
 import Foundation
+import CoreGraphics
 
 // Глобал из точки входа приложения (Sources/Keyboop/main.swift), на который ссылается AppDelegate.
 // CLI до AppDelegate не доходит, поэтому фиксируем значение.
@@ -77,6 +79,117 @@ func runCases(path: String) -> Int32 {
     return failed == 0 ? 0 : 1
 }
 
+// Режим --keys: набор нажатий через настоящий Engine. Замены, которые он отдаёт в TextReplacer, забирает
+// перехватчик testSink, а экран моделируется здесь: клавиша дописывается, затем применяются замены, которые
+// её вызвали. Строка файла: «набор<TAB>ожидаемый экран». Набор — ASCII-клавиши US-раскладки.
+let usKeyCodes: [Character: Int64] = [
+    "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11,
+    "q": 12, "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21,
+    "6": 22, "5": 23, "=": 24, "9": 25, "7": 26, "-": 27, "8": 28, "0": 29, "]": 30, "o": 31,
+    "u": 32, "[": 33, "i": 34, "p": 35, "l": 37, "j": 38, "'": 39, "k": 40, ";": 41, "\\": 42,
+    ",": 43, "/": 44, "n": 45, "m": 46, ".": 47, " ": 49,
+]
+
+func pumpRunLoop(_ seconds: Double) {
+    RunLoop.main.run(until: Date().addingTimeInterval(seconds))
+}
+
+func applyEdit(_ edit: TextReplacer.TestEdit, to screen: inout [Character], log: inout [String]) {
+    switch edit {
+    case .replace(deleteCount: let n, text: let text, thenReturn: let ret):
+        screen.removeLast(min(n, screen.count))
+        screen.append(contentsOf: text)
+        if ret { screen.append("\n") }
+        log.append("замена -\(n) +«\(text)»")
+    case .inline(deleteCount: let n, text: let text):
+        screen.removeLast(min(n, screen.count))
+        screen.append(contentsOf: text)
+        log.append("встроенная замена -\(n) +«\(text)»")
+    case .insert(text: let text, thenReturn: let ret):
+        screen.append(contentsOf: text)
+        if ret { screen.append("\n") }
+        log.append("вставка «\(text)»")
+    case .canvas(text: let text):
+        log.append("замена объекта на холсте «\(text)» (на экран не моделируется)")
+    }
+}
+
+func runKeys(path: String) -> Int32 {
+    guard let text = try? String(contentsOfFile: path, encoding: .utf8) else {
+        print("не читается: \(path)")
+        return 2
+    }
+    if TextReplacer.secureInputActive {
+        print("включён Secure Input (поле пароля): Engine молчит, тест не покажет замены")
+        return 2
+    }
+    var pending: [TextReplacer.TestEdit] = []
+    TextReplacer.testSink = { pending.append($0) }
+    // Нейтральное приложение: иначе тест попадает в режим фронтового приложения (например, IDE).
+    Engine.testBundleOverride = "ru.keyboop.test"
+    // Система «английская» для всех чтений и переключений: раскладка машины не меняется.
+    LayoutManager.testCyrillic = false
+    Warm.prime()
+    let warmDeadline = Date().addingTimeInterval(10)
+    while !Warm.isReady && Date() < warmDeadline { pumpRunLoop(0.02) }
+    guard Warm.isReady else {
+        print("языковые данные не прогрелись за 10 с")
+        return 2
+    }
+    var passed = 0
+    var failed = 0
+    for (number, raw) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+        let line = raw.trimmingCharacters(in: .whitespaces)
+        if line.isEmpty || line.hasPrefix("#") { continue }
+        if line.hasPrefix("@profile") {
+            let value = line.dropFirst("@profile".count).trimmingCharacters(in: .whitespaces)
+            UserDefaults.standard.register(defaults: ["primaryLanguage": value])
+            continue
+        }
+        let cols = raw.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+        guard cols.count == 2 else {
+            print("строка \(number + 1): нет табуляции между набором и ожидаемым")
+            failed += 1
+            continue
+        }
+        let typed = cols[0]
+        // В ожидаемом пробел пишется «␣»: конечные пробелы в файле теряются при правке.
+        let expected = cols[1].replacingOccurrences(of: "␣", with: " ")
+        guard typed.allSatisfy({ $0.isASCII && (usKeyCodes[Character($0.lowercased())] != nil) }) else {
+            print("строка \(number + 1): в наборе есть символ вне US-раскладки: «\(typed)»")
+            failed += 1
+            continue
+        }
+        let engine = Engine()
+        engine.refreshFrontmostAppCache()
+        var screen: [Character] = []
+        var log: [String] = []
+        for ch in typed {
+            let code = usKeyCodes[Character(ch.lowercased())] ?? 0
+            let flags: CGEventFlags = ch.isUppercase ? .maskShift : []
+            // true — движок забрал клавишу (замена через inline-путь): в поле она не попадает.
+            let consumed = engine.handleKeyDown(keyCode: code, characters: String(ch), flags: flags,
+                                                post: { _ in fatalError("тест: событие мимо перехватчика") })
+            if !consumed { screen.append(ch) }
+            pumpRunLoop(0.03)
+            for edit in pending { applyEdit(edit, to: &screen, log: &log) }
+            pending = []
+        }
+        pumpRunLoop(0.2)
+        for edit in pending { applyEdit(edit, to: &screen, log: &log) }
+        pending = []
+        let got = String(screen)
+        if got == expected {
+            passed += 1
+        } else {
+            failed += 1
+            print("НЕ ПРОШЛО «\(typed)»: ожидал «\(expected)», экран «\(got)» (\(log.joined(separator: "; ")))")
+        }
+    }
+    print("набор нажатий: прошло \(passed), не прошло \(failed)")
+    return failed == 0 ? 0 : 1
+}
+
 // Настройки и исключения dev-приложения читаем регистрацией домена по умолчанию: это только чтение,
 // домен ru.keyboop.app.dev не меняется. --clean — без них (чистый детектор, основной язык «mixed»).
 // AppSettings и ExceptionStore читают UserDefaults.standard, поэтому видят те же значения, что и приложение.
@@ -86,6 +199,7 @@ var profile: String? = nil
 var pairMode = false
 var clean = false
 var casesFile: String? = nil
+var keysFile: String? = nil
 var positional: [String] = []
 var i = 0
 while i < args.count {
@@ -105,6 +219,11 @@ while i < args.count {
         i += 1
         continue
     }
+    if a == "--keys", i + 1 < args.count {
+        keysFile = args[i + 1]
+        i += 2
+        continue
+    }
     if a == "--cases", i + 1 < args.count {
         casesFile = args[i + 1]
         i += 2
@@ -114,7 +233,7 @@ while i < args.count {
     i += 1
 }
 // Набор кейсов всегда без настроек dev-приложения: результат не должен зависеть от личных исключений.
-if casesFile != nil { clean = true }
+if casesFile != nil || keysFile != nil { clean = true }
 // Своя запись primaryLanguage от прежних запусков не должна перекрывать регистрацию.
 UserDefaults.standard.removeObject(forKey: "primaryLanguage")
 if !clean, let app = UserDefaults.standard.persistentDomain(forName: appDomain) {
@@ -126,6 +245,9 @@ if let profile {
 
 if let casesFile {
     exit(runCases(path: casesFile))
+}
+if let keysFile {
+    exit(runKeys(path: keysFile))
 }
 
 var inputs: [String] = positional
