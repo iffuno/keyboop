@@ -272,6 +272,9 @@ enum LayoutDetector {
     // (низкая плотность триграмм), а другой — заметно лучше. Строже обычного decide.
     static let liveImpossible = -13.0
     static let liveMargin = 6.0
+    /// Основной язык из настроек: "mixed" (по умолчанию, прежнее поведение), "ru" или "en".
+    /// Меняет только решение при коллизии, когда оба варианта — настоящие слова.
+    static var primaryLanguage: String { AppSettings.shared.primaryLanguage }
 
     /// Решение для режима «чинить на лету» (мид-слово). Срабатывает только когда сочетание
     /// букв в текущем языке практически невозможно, а в другом — нормально. Без словаря-«авось».
@@ -617,6 +620,21 @@ enum LayoutDetector {
         // Голое «xlsx» уходило в «чдыч» после любого соседа, даже после «the» (задача 264).
         if sourceLatin, ExtraWords.techLatinTokens.contains(w) { return .keep }
 
+        // ПРОФИЛЬ ОСНОВНОГО ЯЗЫКА: коллизия (набранное и перевод оба настоящие слова) решается в пользу
+        // основного языка. Стоит ДО строгого гейта: гейт держит любое слово, валидное в своём языке, и
+        // без этого профиль не срабатывал бы ни на одном таком слове («jr» → «ок» в профиле «русский»).
+        // Короткие слова второго языка защищены списками enKeepShort / ruShort. Одиночные буквы — ниже.
+        if w.count >= 2 {
+            if sourceLatin, primaryLanguage == "ru", LayoutData.shared.wordsEn.contains(w),
+               LayoutData.shared.wordsRu.contains(swapped), !ExtraWords.enKeepShort.contains(w) {
+                return .convert(toCyrillic: true)
+            }
+            if sourceCyrillic, primaryLanguage == "en", LayoutData.shared.wordsRu.contains(w),
+               LayoutData.shared.wordsEn.contains(swapped), !ExtraWords.ruShort.contains(w) {
+                return .convert(toCyrillic: false)
+            }
+        }
+
         // ★ STRICT-GATE (принцип автора, 2026-06-14): СЛОВО, ВАЛИДНОЕ В ЯЗЫКЕ, НА КОТОРОМ НАБРАНО, —
         //   НИКОГДА не переключаем, даже если его раскладочная пара тоже валидное слово. Переключаем
         //   ТОЛЬКО кашу (не-слово). Прецедент: «her»(EN)→«рук»(RU) — недопустимо. Гейт по СЛОВАРЮ
@@ -746,6 +764,11 @@ enum LayoutDetector {
                    !ExtraWords.enKeepShort.contains(w) {
                     return .convert(toCyrillic: true)   // «привет yt» → «привет не»
                 }
+                // Профиль «русский»: при коллизии (набранное и перевод оба настоящие слова) выигрывает русский,
+                // кроме английских коротких слов из enKeepShort. Смешанный профиль — прежнее поведение.
+                if primaryLanguage == "ru", data.wordsRu.contains(swapped), !ExtraWords.enKeepShort.contains(w) {
+                    return .convert(toCyrillic: true)
+                }
                 return .keep
             }
             if data.wordsRu.contains(swapped) {
@@ -758,6 +781,12 @@ enum LayoutDetector {
                                                   prev: prev, earlier: earlier) { return .keep }
                 return .convert(toCyrillic: true)
             }
+            // Профиль «русский»: фолбэк для словоформ, которых нет в words_ru.json («диктовки», «клавиши»).
+            // Перевод не в словаре, набранное не валидно по-английски (это место достигается только тогда).
+            // Порог -9 замерен на комментариях проекта: 71% пропущенных русских слов, 1,7% ложных на EN OOV.
+            if primaryLanguage == "ru", data.plausibility(swapped, cyrillic: true) > -9 {
+                return .convert(toCyrillic: true)
+            }
         } else {
             // forceEnAmb: частый англ. сленг/сокращения (idk/tbh/ngl…), которых нет в EN-словаре, а
             // кир-форма — гиббериш. Набраны на RU-раскладке → форсим в латиницу (симметрия forceRuAmb).
@@ -767,6 +796,10 @@ enum LayoutDetector {
             if data.wordsRu.contains(w) {
                 if context == .latin, data.wordsEn.contains(swapped) {
                     return .convert(toCyrillic: false)  // «hello шт» → «hello in» (фраза EN в RU-раскладке)
+                }
+                // Профиль «английский»: при коллизии выигрывает английский, кроме русских коротких слов из ruShort.
+                if primaryLanguage == "en", data.wordsEn.contains(swapped), !ExtraWords.ruShort.contains(w) {
+                    return .convert(toCyrillic: false)
                 }
                 return .keep
             }

@@ -865,6 +865,9 @@ enum L10n {
         "lang.auto":      [.ru: "По умолчанию", .en: "Default"],
         "lang.ru":        [.ru: "Русский", .en: "Russian"],
         "lang.en":        [.ru: "English", .en: "English"],
+        "lang.mixed":     [.ru: "Смешанный", .en: "Mixed"],
+        "switch.primary": [.ru: "Основной язык", .en: "Main language"],
+        "switch.primaryHelp": [.ru: "Какой язык выигрывает, когда набранное слово и его перевод оба настоящие слова. Русский — если пишешь в основном по-русски. Смешанный — как раньше, для программистов и двуязычного набора.", .en: "Which language wins when the typed word and its translation are both real words. Russian if you mostly type Russian. Mixed keeps the previous behaviour, for programmers and bilingual typing."],
 
         "sec.voice":      [.ru: "Голосовой набор", .en: "Voice input"],
         "voice.title":    [.ru: "Голосовой набор", .en: "Voice input"],

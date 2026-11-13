@@ -200,6 +200,9 @@ final class AppSettings {
 
     /// Режим разработчика: НЕ авто-переключать в IDE/терминалах (ручной хоткей работает).
     var developerMode: Bool { get { d.bool(forKey: "developerMode") } set { d.set(newValue, forKey: "developerMode") } }
+    /// Основной язык набора: "mixed" (как раньше), "ru" или "en". Решает, какой язык выигрывает, когда
+    /// набранное слово и его перевод оба настоящие слова (LayoutDetector.decide). Смешанный — по умолчанию.
+    var primaryLanguage: String { get { d.string(forKey: "primaryLanguage") ?? "mixed" } set { d.set(newValue, forKey: "primaryLanguage") } }
 
     /// Режим хоткея: "combo" (модификаторы ⌥⇧), "modkey" (одна клавиша-модификатор — напр. правый ⌥),
     /// "key" (обычная клавиша + модификаторы), "doubletap" (2× модификатор).

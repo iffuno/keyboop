@@ -1734,6 +1734,8 @@ final class DetailVC: NSViewController {
                           enabled: settings.autoEnabled, help: L10n.t("switch.liveHelp"), key: "switch.live"),
                 switchRow(L10n.t("switch.dev"), L10n.t("switch.devSub"), settings.developerMode, #selector(toggleDev),
                           help: L10n.t("switch.devHelp"), key: "switch.dev"),
+                controlRow(L10n.t("switch.primary"), primaryLanguagePopup(),
+                           help: L10n.t("switch.primaryHelp"), key: "switch.primary"),
                 controlRow(L10n.t("switch.manual"), HotkeyControl(),
                            subtitle: manualCapsFailure() ?? L10n.t("switch.manualSub"),
                            help: L10n.t("switch.manualHelp"),
@@ -4636,6 +4638,24 @@ final class DetailVC: NSViewController {
     @objc private func toggleSound(_ s: NSSwitch) { settings.soundEnabled = (s.state == .on) }
     @objc private func toggleLogin(_ s: NSSwitch) { settings.launchAtLogin = (s.state == .on); s.state = settings.launchAtLogin ? .on : .off }
     @objc private func toggleTSpace(_ s: NSButton) { settings.triggerSpace = (s.state == .on) }
+
+    /// Выбор основного языка: русский / английский / смешанный (см. AppSettings.primaryLanguage).
+    private func primaryLanguagePopup() -> NSPopUpButton {
+        let pop = NSPopUpButton()
+        pop.controlSize = .small
+        pop.addItems(withTitles: [L10n.t("lang.ru"), L10n.t("lang.en"), L10n.t("lang.mixed")])
+        let codes = ["ru", "en", "mixed"]
+        pop.selectItem(at: codes.firstIndex(of: settings.primaryLanguage) ?? 2)
+        pop.target = self
+        pop.action = #selector(primaryLanguageChanged(_:))
+        pop.setContentHuggingPriority(.required, for: .horizontal)
+        return pop
+    }
+
+    @objc private func primaryLanguageChanged(_ s: NSPopUpButton) {
+        let codes = ["ru", "en", "mixed"]
+        settings.primaryLanguage = codes[max(0, min(codes.count - 1, s.indexOfSelectedItem))]
+    }
     @objc private func toggleTEnter(_ s: NSButton) { settings.triggerEnter = (s.state == .on) }
     @objc private func toggleTTab(_ s: NSButton) { settings.triggerTab = (s.state == .on) }
     @objc private func toggleArrows(_ s: NSSwitch) { settings.arrowsCancel = (s.state == .on) }
