@@ -8,7 +8,7 @@ jr 	ок␣
 ghbdtn 	привет␣
 her 	рук␣
 herb 	руки␣
-cat 	сфе␣
+cat 	cat␣
 the 	the␣
 is 	is␣
 Email 	Email␣

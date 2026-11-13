@@ -8,7 +8,7 @@ ghbdtn	convert→ru = привет
 Email	keep
 jr	convert→ru = ок
 her	convert→ru = рук
-cat	convert→ru = сфе
+cat	keep
 herb	convert→ru = руки
 lbrnjdrb	convert→ru = диктовки
 yt	convert→ru = не
