@@ -577,7 +577,11 @@ final class Engine: EventTapHandler {
             wordEdited = false                        // новое слово начинается свежим — live-fix снова активен
             let boundaryHandledAt = ProcessInfo.processInfo.systemUptime
             lastRealKeyAt = boundaryHandledAt         // второй пробел тоже закрывает Fence A
-            let ws = keyCode == 48 ? "\t" : (keyCode == 36 ? "\n" : " ")
+            // ⌃Space / ⌘Space — не пробел: символа в поле нет, а раскладку переключает макОС уже после слова.
+            // Закрываем слово с пустым хвостом; сниппет здесь не разворачиваем, сверку раскладки для
+            // этого нажатия пропускаем (см. асинхронный блок ниже), иначе слово пропадёт.
+            let shortcutSpace = keyCode == 49 && cmdOrCtrl
+            let ws = shortcutSpace ? "" : (keyCode == 48 ? "\t" : (keyCode == 36 ? "\n" : " "))
             // СНИППЕТ: проверяем ТЕКУЩЕЕ слово ДО boundary (currentWord = триггер, как на экране).
             // Совпало → ГЛОТАЕМ клавишу-границу и раскрываем сами. Не пускаем пробел в приложение →
             // не приходится потом удалять только что нажатый пробел → нет гонки «Backspace прилетел
@@ -586,9 +590,9 @@ final class Engine: EventTapHandler {
             // а длину триггера берём по экрану (буфер == экран).
             // Разворот сниппета — только по выбранным в настройках клавишам (пробел/Enter/Tab).
             // Все галочки сняты → автозамена выключена (snippetsDisabled), сниппеты не трогаем.
-            let snipKeyOK = (keyCode == 49 && settings.snippetExpandSpace)
+            let snipKeyOK = !shortcutSpace && ((keyCode == 49 && settings.snippetExpandSpace)
                          || (keyCode == 36 && settings.snippetExpandEnter)
-                         || (keyCode == 48 && settings.snippetExpandTab)
+                         || (keyCode == 48 && settings.snippetExpandTab))
             // ⚠️ ИСКЛЮЧЕНИЯ РАСПРОСТРАНЯЮТСЯ И НА СНИППЕТЫ (31.07). До этого дня раскрытие смотрело
             // только на свои три галки, и сниппет разворачивался ВЕЗДЕ — в том числе в терминале и
             // в Final Cut, то есть ровно там, где мы сознательно не трогаем вообще ничего.
@@ -652,7 +656,8 @@ final class Engine: EventTapHandler {
                 // пропускаем, со следующего декод уже верный. Ловит случай 24.07: уведомление о
                 // ручной смене раскладки прочитало стейл → мнение и кэш самосогласованно врали
                 // целую строку («cyjdf drk.xbk…» при русском буфере).
-                if self.layout.reconcileWithReality() {
+                // Сверку вызываем всегда: она же обновляет мнение о раскладке. Пропускаем слово только не для ⌃/⌘+Space.
+                if self.layout.reconcileWithReality(), !shortcutSpace {
                     kbLog("раскладка: мнение разошлось с системой — принял реальность; слово пропущено (декод был чужой раскладкой)")
                     self.liveFixLast = ""
                     self.buffer.clear()
@@ -1673,6 +1678,29 @@ final class Engine: EventTapHandler {
     /// КЛЮЧЕВОЕ (ключевая идея H): конвертируем ПОСЛОВНО только те слова, что LayoutDetector
     /// помечает как .convert — валидные слова в группе НЕ трогаем («hello ghbdtn» → «hello привет»).
     /// Печатаем Unicode напрямую (Backspace + set), буфер обмена НЕ трогаем (принцип №1).
+    /// Пара «короткое + следующее», решённая фразой (LayoutDetector.decidePair): меняем оба слова разом.
+    private func convertPairAuto(_ pr: (prev: String, prevTail: String, cur: String, curTail: String, deleteCount: Int),
+                                 toCyrillic: Bool) {
+        let a = Keymap.smartConvert(pr.prev, toCyrillic: toCyrillic, isValidTarget: Self.ruWordValidator)
+        let b = Keymap.smartConvert(pr.cur, toCyrillic: toCyrillic, isValidTarget: Self.ruWordValidator)
+        let out = a + pr.prevTail + b + pr.curTail
+        guard out.count == pr.deleteCount else {
+            kbLog("pair-auto: длина out ≠ deleteCount — отказ")
+            return
+        }
+        muted = true
+        kbLog("pair-auto: 2 слова, \(pr.deleteCount) симв.")   // без контента
+        TextReplacer.replace(deleteCount: pr.deleteCount, with: out) { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
+        }
+        settings.rescuedCount += 2
+        buffer.clear()
+        layout.selectLayout(cyrillic: toCyrillic)
+        onLayoutMaybeChanged?()
+        playSound()
+    }
+
     private func convertGroup() -> Bool {
         guard let g = buffer.groupForConversion() else { return false }
         var out = ""
@@ -1767,7 +1795,10 @@ final class Engine: EventTapHandler {
         // мог начать следующее — раньше конверсия перечитывала буфер, попадала в огрызок «x» и
         // молча no-op'ала, а завершённое слово сиротело («иногда не переключается» у быстрых рук).
         guard let item = buffer.wordForConversion(completedOnly: !manual) else {
-            if !manual { silentLog("emptybuf", "авто молчит: на границе слова буфер пуст") }
+            if !manual {
+                silentLog("emptybuf", "авто молчит: на границе слова буфер пуст")
+                kbLog("граница слова: буфер пуст — \(buffer.boundaryStateSummary())")
+            }
             // Нечего конвертировать (буфер пуст), но нажат хоткей — крутим тот же цикл раскладок,
             // что у 🌐. Слово или допустимое выделение по-прежнему идут обычным RU↔EN-путём выше.
             // ⚠️ Выделение было, но мы от него отказались (многострочное / вероятная авто-копия).
@@ -1799,6 +1830,25 @@ final class Engine: EventTapHandler {
             return
         }
         let word = item.word
+        if !manual, word.count == 1 {
+            kbLog("граница слова: одиночная буква — \(buffer.boundaryStateSummary())")
+        }
+
+        // Пара «короткое + следующее»: авто-режим, не мягкий, фраза решается целиком. Иначе — обычный путь ниже.
+        if !manual, !soft, Warm.isReady, let pr = buffer.completedPair() {
+            switch LayoutDetector.decidePair(prev: pr.prev, cur: pr.cur) {
+            case .convert(let pairToCyr) where !UndoLearner.shared.isSessionProtected(pr.cur):
+                convertPairAuto(pr, toCyrillic: pairToCyr)
+                return
+            case .convert:
+                break
+            case .keep:
+                // Диагностика пары: короткое слово (2-3) и решение фразы. Только длины, без текста.
+                if (2...3).contains(pr.prev.count) {
+                    kbLog("pair: keep (prev \(pr.prev.count), cur \(pr.cur.count) симв.)")
+                }
+            }
+        }
 
         var autoProp: (text: String, toCyrillic: Bool, rescue: Bool)?
         let toCyrillic: Bool
@@ -2478,7 +2528,11 @@ final class Engine: EventTapHandler {
     ///
     /// ⚠️ Заводя сюда следующую панель (Alfred, Raycast, палитры команд), проверять её тем же
     /// способом: одни меняют фронтальную программу, другие нет, и на глаз это не отличить.
+    /// Тестовая подмена активного приложения (`scripts/decide.sh --keys`): без неё тест берёт фронт
+    /// терминала и попадает в режим этого приложения. В приложении всегда nil.
+    static var testBundleOverride: String?
     static func frontmostBundleID() -> String {
+        if let override = testBundleOverride { return override }
         if SpotlightWatch.isOpen { return "com.apple.Spotlight" }
         return NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
     }

@@ -42,7 +42,17 @@ final class LayoutManager {
     /// фоновом агенте оно НЕ следует за внешними переключениями. Лампочка на этом чтении не
     /// догоняла ⌃Space/🌐 и врала — при том что весь смысл фичи это правдивая лампочка. Настройки
     /// HIToolbox отстают на ~11 мс, но ОТСТАЮТ, а не замирают.
+    /// Тестовая подмена раскладки (`scripts/decide.sh --keys`): nil в приложении. Когда задана, чтения
+    /// раскладки идут из неё, а переключение TIS не выполняется: раскладка машины не меняется.
+    static var testCyrillic: Bool? = nil
+
+    /// Переключение источника. В тесте не выполняется и возвращает «не принято».
+    private static func selectSource(_ source: TISInputSource) -> Bool {
+        testCyrillic == nil && TISSelectInputSource(source) == noErr
+    }
+
     static func systemIsCyrillic() -> Bool {
+        if let t = testCyrillic { return t }
         if let code = languageFromSystemPrefs() { return code.lowercased().hasPrefix("ru") }
         guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return false }
         return languages(of: src).first?.hasPrefix("ru") ?? false
@@ -74,6 +84,7 @@ final class LayoutManager {
     /// ошибке хуже, чем не заметить экзотическую раскладку: первое ломает главную функцию у всех,
     /// второе оставляет как было у единиц.
     func currentScript() -> Script {
+        if let t = Self.testCyrillic { return t ? .cyrillic : .latin }
         if let code = Self.languageFromSystemPrefs() {
             if code == "RU" { return .cyrillic }
             if code == "EN" { return .latin }
@@ -200,6 +211,7 @@ final class LayoutManager {
     /// Что система САМА считает выбранной раскладкой. `Synchronize` обязателен: без него значение
     /// в нашем процессе кэшируется (тот же урок, что с AppleFnUsageType в GlobeKey).
     private static func languageFromSystemPrefs() -> String? {
+        if testCyrillic != nil { return nil }
         CFPreferencesAppSynchronize("com.apple.HIToolbox" as CFString)
         guard let raw = CFPreferencesCopyAppValue("AppleSelectedInputSources" as CFString,
                                                  "com.apple.HIToolbox" as CFString) as? [[String: Any]]
@@ -229,6 +241,7 @@ final class LayoutManager {
     }
 
     func currentCode() -> String {
+        if let t = Self.testCyrillic { return t ? "RU" : "EN" }
         guard let src = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else { return "??" }
         let lang = Self.languages(of: src).first ?? "en"
         return String(lang.prefix(2)).uppercased()
@@ -322,6 +335,7 @@ final class LayoutManager {
     /// Живой ВЫБРАННЫЙ источник: запись из HIToolbox (не страдает стейл-кэшем TIS в фоновом
     /// агенте), сам объект — из списка включённых источников.
     private static func liveSelectedSource() -> TISInputSource? {
+        if testCyrillic != nil { return nil }
         CFPreferencesAppSynchronize("com.apple.HIToolbox" as CFString)
         guard let raw = CFPreferencesCopyAppValue("AppleSelectedInputSources" as CFString,
                                                  "com.apple.HIToolbox" as CFString) as? [[String: Any]]
@@ -343,7 +357,7 @@ final class LayoutManager {
     /// «Русская → Русская ПК» это единственный честный путь: обе стороны кириллические, и никакой
     /// сверкой письменности стейл тут не ловится.
     func noteCurrentAsUserChoice() {
-        guard let src = Self.liveSelectedSource() ?? TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+        guard let src = Self.liveSelectedSource() ?? (Self.testCyrillic == nil ? TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() : nil),
               let id = Self.stringProp(src, kTISPropertyInputSourceID) else { return }
         setExactOpinion(id)
         switch Self.script(of: src) {
@@ -413,7 +427,7 @@ final class LayoutManager {
         // Мораль на будущее: оптимизация, которая ЧИТАЕТ состояние, чтобы не делать работу, стоит
         // ровно столько, сколько стоит свежесть этого чтения. Здесь свежести нет, а цена ошибки —
         // главная функция приложения. Экономия вызова того не стоила.
-        let ok = TISSelectInputSource(src) == noErr
+        let ok = Self.selectSource(src)
         if !ok {
             kbLog("layout: TISSelectInputSource отказал (\(Self.stringProp(src, kTISPropertyInputSourceID) ?? "?"))")
         }
@@ -468,7 +482,7 @@ final class LayoutManager {
             if self.selectMissCount == 1 || self.selectMissCount % 10 == 0 {
                 kbLog("layout: переключение не применилось (просили \(cyrillic ? "RU" : "латиницу"), система показывает \(code)), поправка №\(self.selectMissCount)")
             }
-            guard TISSelectInputSource(src) == noErr else {
+            guard Self.selectSource(src) else {
                 // Вторая попытка даже не принята. Дальше врать себе хуже, чем признать: выравниваем
                 // мнение и кэш по тому, что реально выбрано, иначе декодер продолжит считать буквы
                 // не тем алфавитом.
@@ -522,7 +536,7 @@ final class LayoutManager {
               })
         else { return false }
 
-        guard TISSelectInputSource(source) == noErr else {
+        guard Self.selectSource(source) else {
             kbLog("layout: TISSelectInputSource (цикл) отказал")
             return false
         }
@@ -631,7 +645,7 @@ final class LayoutManager {
             if self.cycleMissCount == 1 || self.cycleMissCount % 10 == 0 {
                 kbLog("layout: циклическое переключение не применилось, поправка №\(self.cycleMissCount)")
             }
-            guard TISSelectInputSource(source) == noErr else {
+            guard Self.selectSource(source) else {
                 self.acceptCycleReality(live)
                 kbLog("layout: поправка цикла отклонена системой, принимаю реальность")
                 return
