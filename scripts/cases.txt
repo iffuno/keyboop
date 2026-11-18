@@ -1,0 +1,44 @@
+# Набор кейсов детектора: вход<TAB>ожидаемое. Запуск: scripts/decide.sh --cases scripts/cases.txt
+# Ожидаемое пишется так же, как печатает harness: keep / convert→ru = текст / convert→en = текст.
+# @profile задаёт основной язык для следующих строк. Набор идёт без настроек dev-приложения.
+# Вход с пробелом — пара «предыдущее текущее».
+
+@profile ru
+ghbdtn	convert→ru = привет
+Email	keep
+jr	convert→ru = ок
+her	convert→ru = рук
+cat	keep
+herb	convert→ru = руки
+lbrnjdrb	convert→ru = диктовки
+yt	convert→ru = не
+nj	convert→ru = то
+the	keep
+is	keep
+ok	keep
+Уьфшд	convert→en = Email
+руддщ	convert→en = hello
+z hfvf	convert→ru = я рама
+rf ghbdtn	keep
+
+@profile mixed
+ghbdtn	convert→ru = привет
+Email	keep
+jr	keep
+her	keep
+herb	keep
+lbrnjdrb	convert→ru = диктовки
+yt	convert→ru = не
+nj	convert→ru = то
+the	keep
+is	keep
+шт	keep
+ok	keep
+Уьфшд	convert→en = Email
+руддщ	convert→en = hello
+
+@profile en
+шт	convert→en = in
+ок	keep
+ghbdtn	convert→ru = привет
+руддщ	convert→en = hello

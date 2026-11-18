@@ -220,6 +220,22 @@ final class KeystrokeBuffer {
         return nil
     }
 
+    /// Состояние буфера для диагностики на границе слова: только длины, без текста.
+    func boundaryStateSummary() -> String {
+        "текущее \(currentWord.count) симв., завершённое \(lastWord.count), хвост \(lastTail.count)"
+    }
+
+    /// Пара «предыдущее завершённое + только что завершённое» для решения фразой. nil, если пары нет:
+    /// начато следующее слово, хвосты не пробелы, или в истории есть не-буквенные графемы.
+    func completedPair() -> (prev: String, prevTail: String, cur: String, curTail: String, deleteCount: Int)? {
+        guard currentWord.isEmpty, sessionWords.count >= 2 else { return nil }
+        let p = sessionWords[sessionWords.count - 2]
+        let c = sessionWords[sessionWords.count - 1]
+        guard p.tail == " ", c.tail == " " else { return nil }
+        guard p.word.unicodeScalars.count == p.word.count, c.word.unicodeScalars.count == c.word.count else { return nil }
+        return (p.word, p.tail, c.word, c.tail, p.word.count + p.tail.count + c.word.count + c.tail.count)
+    }
+
     /// Пара к completedOnly-конверсии: обновить именно ЗАВЕРШЁННОЕ слово, не трогая начатое следующее.
     func applyCompletedConversion(converted: String) {
         guard !lastWord.isEmpty else { return }

@@ -865,6 +865,13 @@ enum L10n {
         "lang.auto":      [.ru: "По умолчанию", .en: "Default"],
         "lang.ru":        [.ru: "Русский", .en: "Russian"],
         "lang.en":        [.ru: "English", .en: "English"],
+        "lang.mixed":     [.ru: "Смешанный", .en: "Mixed"],
+        "switch.primary": [.ru: "Основной язык", .en: "Main language"],
+        "switch.personal": [.ru: "Личный файл слов", .en: "Personal word file"],
+        "switch.personalNone": [.ru: "Не выбран", .en: "Not set"],
+        "switch.personalSampleLink": [.ru: "Скачать пример файла", .en: "Download example file"],
+        "switch.personalHelp": [.ru: "Файл со своими словами: keep — не переключать, swap — всегда переключать. Хранится у тебя на машине. Вступает в силу после перезапуска приложения.", .en: "Your own words: keep — never switch, swap — always switch. Stays on your machine. Takes effect after the app restarts."],
+        "switch.primaryHelp": [.ru: "Какой язык выигрывает, когда набранное слово и его перевод оба настоящие слова. Русский — если пишешь в основном по-русски. Смешанный — как раньше, для программистов и двуязычного набора.", .en: "Which language wins when the typed word and its translation are both real words. Russian if you mostly type Russian. Mixed keeps the previous behaviour, for programmers and bilingual typing."],
 
         "sec.voice":      [.ru: "Голосовой набор", .en: "Voice input"],
         "voice.title":    [.ru: "Голосовой набор", .en: "Voice input"],

@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var slapSettingsObserver: NSObjectProtocol?
     private var retryTimer: Timer?
     private var engineRunning = false
+    private var everStarted = false
     /// Уже написали в лог, что ждём Accessibility (иначе строка повторялась бы дважды в секунду).
     private var loggedWaitingForAX = false
     /// Системный запрос «Мониторинга ввода» показываем один раз за запуск: он всплывает поверх всего,
@@ -767,7 +768,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func checkEngineAlive() {
         // Ещё не стартовали ни разу — это забота retryTimer, не наша.
-        guard engineRunning else { return }
+        guard engineRunning || everStarted else { return }
         // Живой пробник (состояние тапа, НЕ TCC — см. AppHealth.blockingProblem про то, почему
         // спрашивать AXIsProcessTrusted первым нельзя).
         // Мы сами сняли перехват предохранителем — это не поломка, воскрешать нечего.
@@ -863,6 +864,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // вернёт не-nil РОВНО когда Accessibility реально выдан СЕЙЧАС — это живой детектор без TCC-кэша.
         if engine.start() {
             engineRunning = true
+            everStarted = true
             welcomePending = false
             retryTicks = 0
             // ⚠️ ПОДНЯВШИЙСЯ TAP НЕ ЗНАЧИТ, ЧТО МЫ ЧТО-ТО СЛЫШИМ (12.08.2026, поймано на авторе).

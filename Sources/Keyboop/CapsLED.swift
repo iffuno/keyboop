@@ -341,6 +341,8 @@ enum CapsLED {
 
     private static func writeAll(_ list: [IOHIDDevice], _ on: Bool)
         -> (ok: Bool, blocked: Bool, dead: [IOHIDDevice]) {
+        // В тесте раскладки индикатор Caps Lock на клавиатуре не трогаем.
+        if LayoutManager.testCyrillic != nil { return (ok: true, blocked: false, dead: []) }
         var any = false, blocked = false
         var dead: [IOHIDDevice] = []
         for d in list {

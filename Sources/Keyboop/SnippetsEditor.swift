@@ -142,6 +142,21 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
         for i in rows.indices { addRow(i) }
         // Высота меняется вместе с числом строк: добавили сниппет — список подрос, удалили — сжался.
         scrollH?.constant = heightForRows(rows.count)
+        markDuplicateTriggers()
+    }
+
+    /// Красим триггер строки-дубликата: побеждает первая строка, а вторая не сохраняется, и человек
+    /// должен видеть конфликт, а не терять ввод молча.
+    private func markDuplicateTriggers() {
+        var seen = Set<String>()
+        for (i, rowView) in rowsStack.arrangedSubviews.enumerated() where i < rows.count {
+            guard let h = rowView as? NSStackView,
+                  let f = h.arrangedSubviews.compactMap({ $0 as? NSTextField })
+                      .first(where: { $0.identifier?.rawValue == "trig" }) else { continue }
+            let c = SnippetStore.canonical(rows[i].0.trimmingCharacters(in: .whitespaces))
+            let dup = !c.isEmpty && !seen.insert(c).inserted
+            f.textColor = dup ? NSColor.systemRed : nil
+        }
     }
 
     private func addRow(_ index: Int) {
@@ -398,6 +413,7 @@ final class SnippetsEditor: NSView, NSTextFieldDelegate {
     func controlTextDidChange(_ obj: Notification) {
         guard let f = obj.object as? NSTextField, let row = syncField(f) else { return }
         save()                                        // сохраняем на КАЖДОЕ изменение, не только по Enter
+        markDuplicateTriggers()
         // Начали писать в последней (пустой) строке → строка стала настоящей: показываем её корзину
         // и ручку, добавляем новую пустую снизу.
         //

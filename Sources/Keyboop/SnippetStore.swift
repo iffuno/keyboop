@@ -48,19 +48,16 @@ final class SnippetStore {
     /// Пары для табличного редактора — В ПОРЯДКЕ ДОБАВЛЕНИЯ (без сортировки).
     func pairs() -> [(String, String)] { orderedPairs }
 
-    /// Сохранить В ТОМ ПОРЯДКЕ, как передал редактор. Пустые триггеры отбрасываем; дубликаты
-    /// триггера (раскладко-независимо) схлопываем — позиция первого, значение последнего.
+    /// Сохранить В ТОМ ПОРЯДКЕ, как передал редактор. Пустые триггеры отбрасываем; дубликат
+    /// триггера (раскладко-независимо) пропускаем — побеждает первая строка, её значение не меняется.
     func setAll(_ pairs: [(String, String)]) {
         var out: [(String, String)] = []
         for (t, e) in pairs {
             let trig = t.trimmingCharacters(in: .whitespaces)
             if trig.isEmpty { continue }
             let c = Self.canonical(trig)
-            if let idx = out.firstIndex(where: { Self.canonical($0.0) == c }) {
-                out[idx].1 = e                       // тот же триггер → обновляем значение, позицию сохраняем
-            } else {
-                out.append((trig, e))
-            }
+            if out.contains(where: { Self.canonical($0.0) == c }) { continue }   // дубль: первая строка побеждает
+            out.append((trig, e))
         }
         orderedPairs = out
         persist()

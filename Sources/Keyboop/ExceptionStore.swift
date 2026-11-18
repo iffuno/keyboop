@@ -21,6 +21,9 @@ final class ExceptionStore {
     /// Слова, ВЫУЧЕННЫЕ на отмене (отдельно от ручных `ignored` — прозрачность, отдельный UI,
     /// полностью обратимо). В detect-каскаде дают .keep так же, как ignored. См. UndoLearner.
     private(set) var learned: Set<String>
+    /// Слова из личного файла (см. `loadPersonalWords`). В UserDefaults не пишутся: файл — источник правды.
+    private var personalIgnored: Set<String> = []
+    private var personalForceSwap: Set<String> = []
     /// Режим авто-переключения на приложение: bundleID → "off" (совсем не трогать) | "soft" (мягко).
     private(set) var appModes: [String: String]
 
@@ -89,6 +92,46 @@ final class ExceptionStore {
             d.set(true, forKey: "didUnseedExcSpotlight")
             d.set(appModes, forKey: appModesKey)
         }
+        loadPersonalWords()
+    }
+
+    /// Пример личного файла слов для кнопки «Скачать…» в настройках. Формат и два примера строк.
+    static let personalWordsExample: String = [
+        "# Личный файл слов Keyboop. Строки с # игнорируются.",
+        "# слово<TAB>keep — не переключать; слово<TAB>swap — всегда переключать (swap — переведённое слово).",
+        "key\tkeep",
+        "cat\tkeep",
+        "еру\tswap",
+        "",
+    ].joined(separator: "\n")
+
+    /// Личный файл слов `~/Library/Application Support/Keyboop/personal-words.txt` (вне репозитория).
+    /// Строка `слово<TAB>keep` — не переключать (как игнор), `слово<TAB>swap` — всегда переключать; для `swap`
+    /// пишется переведённое слово (как в AmbiguousPairs). Пустые строки и строки без табуляции пропускаются.
+    /// Читается при запуске и только в память. Путь для теста можно задать переменной KEYBOOP_PERSONAL_WORDS.
+    private func loadPersonalWords() {
+        let path: String
+        if let override = ProcessInfo.processInfo.environment["KEYBOOP_PERSONAL_WORDS"], !override.isEmpty {
+            path = override
+        } else if let chosen = AppSettings.shared.personalWordsPath, !chosen.isEmpty {
+            path = chosen
+        } else {
+            guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+            path = support.appendingPathComponent("Keyboop/personal-words.txt").path
+        }
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        for line in text.split(whereSeparator: { $0.isNewline }) {
+            let cols = line.split(separator: "\t", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
+            guard cols.count == 2, !cols[0].isEmpty else { continue }
+            let word = cols[0].lowercased()
+            switch cols[1].lowercased() {
+            case "keep": personalIgnored.insert(word)
+            case "swap": personalForceSwap.insert(word)
+            default: continue
+            }
+        }
+        ignored.formUnion(personalIgnored)
+        forceSwap.formUnion(personalForceSwap)
     }
 
     /// Удалить одно слово из исключений (крестик на чипе).
@@ -209,8 +252,8 @@ final class ExceptionStore {
     var learnedSorted: [String] { learned.sorted() }
 
     private func save() {
-        d.set(Array(ignored), forKey: ignoredKey)
-        d.set(Array(forceSwap), forKey: forceKey)
+        d.set(Array(ignored.subtracting(personalIgnored)), forKey: ignoredKey)
+        d.set(Array(forceSwap.subtracting(personalForceSwap)), forKey: forceKey)
         d.set(Array(learned), forKey: learnedKey)
         d.set(appModes, forKey: appModesKey)
         d.set(appLayouts, forKey: appLayoutsKey)
