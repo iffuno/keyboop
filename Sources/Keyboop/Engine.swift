@@ -2360,33 +2360,31 @@ final class Engine: EventTapHandler {
         String(String.UnicodeScalarView(s.unicodeScalars.filter { $0 == "\n" || $0 == "\t" || $0.value >= 0x20 }))
     }
 
-    private var switchCue: NSSound?   // удерживаем синтез-звук, иначе оборвётся на середине
     /// Звук переключения: "keyboop" = наш синтез-«поп», "" = тишина, иначе системный звук по имени.
     /// ⚠️ По умолчанию стоит СИСТЕМНЫЙ Pop (`AppSettings` регистрирует `soundName: "Pop"`), и это
     /// намеренно: наш звук появился в 0.2.68 и был положен первым в списке, но умолчание менять не
     /// стали, чтобы у тех, кто уже привык, ничего не поменялось. Комментарий тут утверждал обратное
     /// и разошёлся с кодом (поймано аудитом умолчаний 05.08.2026).
+    /// ⚠️ МИМО ГЛАВНОГО ПОТОКА (19.11.2026): на главном живёт тап, и звук стоимостью 50–500 мс
+    /// замораживал весь ввод системы сразу после каждой конверсии. Разбор — в `Sounds.playOffMain`.
     private func playSound() {
         guard settings.soundEnabled, !settings.soundName.isEmpty else { return }
         if settings.soundName == "keyboop" {
-            switchCue?.stop()
-            switchCue = Sounds.play(NSSound(data: CueSynth.switchData), volume: settings.soundVolume, as: "switch")
+            Sounds.playOffMain(data: CueSynth.switchData, volume: settings.soundVolume, as: "switch")
         } else {
-            Sounds.play(NSSound(named: settings.soundName), volume: settings.soundVolume, as: "switch")
+            Sounds.playOffMain(named: settings.soundName, volume: settings.soundVolume, as: "switch")
         }
     }
 
-    private var translateCue: NSSound?   // удерживаем синтез-звук, иначе оборвётся
     /// Звук перевода: "keyboop" = наш синтез-трезвучие, "" = тишина, иначе системный звук по имени.
     private func playTranslateSound() {
         guard settings.translateSoundEnabled else { return }
         let name = settings.translateSoundName
         guard !name.isEmpty else { return }
         if name == "keyboop" {
-            translateCue?.stop()
-            translateCue = Sounds.play(NSSound(data: CueSynth.translateData), volume: settings.translateSoundVolume, as: "translate")
+            Sounds.playOffMain(data: CueSynth.translateData, volume: settings.translateSoundVolume, as: "translate")
         } else {
-            Sounds.play(NSSound(named: name), volume: settings.translateSoundVolume, as: "translate")
+            Sounds.playOffMain(named: name, volume: settings.translateSoundVolume, as: "translate")
         }
     }
 
