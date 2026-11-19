@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 
 /// ЕДИНСТВЕННАЯ дверь, через которую Keyboop издаёт звуки.
 ///
@@ -51,5 +52,78 @@ enum Sounds {
         held[key] = s
         s.play()
         return s
+    }
+
+    // MARK: - Звук на горячем пути: мимо главного потока
+    //
+    // ⚠️ ЗАЧЕМ (19.11.2026, жалоба автора «конверсия скачкообразная, тормозит на фоне остального»).
+    // В логе хвоста конверсии звук стоил 12–514 мс (обычно 50–230) — на главном потоке. А на главном
+    // живёт наш АКТИВНЫЙ тап: пока `NSSound.play()` будит аудиоустройство, WindowServer ждёт колбэк,
+    // и не проходит ни одна клавиша в системе. Человек печатал следующее слово, буквы зависали и
+    // вываливались пачкой; значок раскладки перерисовывался тоже только после звука.
+    //
+    // Замер вне приложения (тот же Pop): NSSound — первый play 185 мс, дальше stop+play по 10–30 мс;
+    // AVAudioPlayer заранее подготовленный — те же 9–34 мс. То есть сменой API это не лечится, лечится
+    // только уходом с главного. С отдельной очереди вызывающему это стоит 0.01–0.2 мс.
+    //
+    // AVAudioPlayer, а не NSSound: про NSSound AppKit не обещает работы вне главного потока.
+    // Плеер создаём заново на каждое срабатывание (как и NSSound раньше) — так он идёт в ТЕКУЩЕЕ
+    // устройство вывода, если человек сменил наушники. Кэшируем только байты файла.
+
+    private static let cueQueue = DispatchQueue(label: "ru.keyboop.sound", qos: .userInitiated)
+    /// Только на cueQueue.
+    private static var cueHeld: [String: AVAudioPlayer] = [:]
+    /// Только на cueQueue. Байты звука по имени — диск читаем один раз.
+    private static var cueBytes: [String: Data] = [:]
+
+    /// Системный звук по имени («Pop») — мимо главного потока.
+    static func playOffMain(named name: String, volume: Double, as key: String) {
+        guard !allMuted else { return }
+        let v = max(0, min(1, volume))
+        guard v > 0 else { return }
+        cueQueue.async {
+            if cueBytes[name] == nil, let url = soundURL(named: name) {
+                cueBytes[name] = try? Data(contentsOf: url)
+            }
+            guard let data = cueBytes[name] else {
+                // Файл не нашли там, где ищет NSSound — играем по-старому, лишь бы не молчать.
+                DispatchQueue.main.async { play(NSSound(named: name), volume: v, as: key) }
+                return
+            }
+            startCue(data, volume: v, key: key)
+        }
+    }
+
+    /// Свой синтезированный звук (байты в памяти) — мимо главного потока.
+    static func playOffMain(data: Data, volume: Double, as key: String) {
+        guard !allMuted else { return }
+        let v = max(0, min(1, volume))
+        guard v > 0 else { return }
+        cueQueue.async { startCue(data, volume: v, key: key) }
+    }
+
+    private static func startCue(_ data: Data, volume: Double, key: String) {
+        cueHeld[key]?.stop()   // быстрый повтор — переиграть с начала, а не наслаивать
+        guard let p = try? AVAudioPlayer(data: data) else { cueHeld[key] = nil; return }
+        p.volume = Float(volume)
+        p.play()
+        cueHeld[key] = p       // держим ссылку, иначе звук оборвётся
+    }
+
+    /// Те же папки, что просматривает `NSSound(named:)`.
+    private static func soundURL(named name: String) -> URL? {
+        let exts = ["aiff", "aif", "wav", "caf", "mp3", "m4a"]
+        for ext in exts {
+            if let u = Bundle.main.url(forResource: name, withExtension: ext) { return u }
+        }
+        let dirs = [NSHomeDirectory() + "/Library/Sounds", "/Library/Sounds",
+                    "/Network/Library/Sounds", "/System/Library/Sounds"]
+        for dir in dirs {
+            for ext in exts {
+                let path = "\(dir)/\(name).\(ext)"
+                if FileManager.default.fileExists(atPath: path) { return URL(fileURLWithPath: path) }
+            }
+        }
+        return nil
     }
 }

@@ -104,7 +104,12 @@ enum TextReplacer {
     /// которого зависит безопасность delete-вперёд. Есть выделение — оно и есть подсказка, гасим.
     /// Нет выделения — справа живой текст, не трогаем. AX молчит (Electron, веб) — ведём себя как
     /// раньше, то есть чиним только в Spotlight, где это проверено временем.
-    private static func killSpotlightSuggestion(source src: CGEventSource?) {
+    /// Возвращает, сколько миллисекунд стоил AX-вопрос о выделении: это межпроцессный вызов с
+    /// таймаутом 2×50 мс, и он стоит между пробелом и первым видимым Backspace (замер 19.11.2026,
+    /// жалоба «конверсия скачкообразная»: 10 символов шли 56–98 мс при расчётных ~37).
+    @discardableResult
+    private static func killSpotlightSuggestion(source src: CGEventSource?) -> Int {
+        let tAX = ProcessInfo.processInfo.systemUptime
         // ⚠️ В SPOTLIGHT ГАСИМ БЕЗУСЛОВНО, КАК И ДО 14.08 (регресс, пойман автором 16.08).
         // Вчера я добавил сюда ранний выход «выделения нет, значит гасить нечего» и этим сломал
         // ровно тот случай, ради которого функция и написана: в Spotlight `AXScreenCheck` про
@@ -117,9 +122,11 @@ enum TextReplacer {
         // её внутри. Поэтому: в Spotlight гасим всегда (там каретка в конце по построению, лишний
         // delete-вперёд безвреден), в остальных приложениях только когда выделение доказано.
         let selected = AXScreenCheck.hasSelection()
-        guard SpotlightWatch.isOpen || selected == true else { return }
+        let axMs = Int((ProcessInfo.processInfo.systemUptime - tAX) * 1000)
+        guard SpotlightWatch.isOpen || selected == true else { return axMs }
         postKey(forwardDeleteKey, source: src)
         usleep(1800)
+        return axMs
     }
     private static let returnKey: CGKeyCode = 36
 
@@ -293,11 +300,12 @@ enum TextReplacer {
             // и без неё пропадал бы первый Backspace — тот самый «gривет» из комментария ниже.
             let n = max(0, deleteCount)
             let settle = firstKeySettleMicros ?? settleMicros
+            var axMs = 0
             if n > 0 {
                 // Пауза перед ПЕРВЫМ Backspace — иначе он иногда теряется, прилетая слишком рано
                 // после клавиши-триггера, и первый символ остаётся в старой раскладке («gривет»).
                 usleep(settle)
-                killSpotlightSuggestion(source: src)
+                axMs = killSpotlightSuggestion(source: src)
                 for _ in 0..<n {
                     postKey(backspaceKey, source: src)
                     usleep(1800)
@@ -311,7 +319,7 @@ enum TextReplacer {
             let tEnd = ProcessInfo.processInfo.systemUptime
             // Пауза в логе — чтобы по репорту «остался первый символ» сразу было видно, сработала ли
             // удлинённая пауза для Electron, а не гадать по названию приложения.
-            kbLog("synth: replace −\(n)+\(text.count) · очередь \(Int((tStart - tEnq) * 1000))мс · синтез \(Int((tEnd - tStart) * 1000))мс · пауза \(settle / 1000)мс")
+            kbLog("synth: replace −\(n)+\(text.count) · очередь \(Int((tStart - tEnq) * 1000))мс · синтез \(Int((tEnd - tStart) * 1000))мс · пауза \(settle / 1000)мс · AX \(axMs)мс")
             if let completion { DispatchQueue.main.async(execute: completion) }
         }
     }
