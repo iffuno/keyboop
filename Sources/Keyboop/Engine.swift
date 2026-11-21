@@ -44,6 +44,38 @@ final class Engine: EventTapHandler {
         NSSpellChecker.isAutomaticPeriodSubstitutionEnabled
     }
 
+    // Paradev (ранее Superset) отправляет строку терминалу при keyDown Return.
+    // Для него тап выпускает замену перед исходным Return и следующей физической клавишей.
+    private var usesOrderedWordEdits: Bool { frontAppBID == "com.superset.desktop" }
+
+    private func scheduleTerminalWordEdit(deleteCount: Int, text: String, afterDelivery: (() -> Void)? = nil) {
+        eventTap.scheduleWordEdit(deleteCount: deleteCount, text: text, target: frontAppBID) { [weak self] delivered in
+            guard let self else { return }
+            if delivered {
+                afterDelivery?()
+            } else {
+                self.buffer.clear()
+                self.liveFixLast = ""
+                self.pendingManual = false
+            }
+            self.muted = false
+            if self.pendingManual {
+                DispatchQueue.main.async { [weak self] in self?.drainPendingManual() }
+            }
+        }
+    }
+
+    private func replaceTypedText(deleteCount: Int, with text: String, thenReturn: Bool = false) {
+        if usesOrderedWordEdits {
+            scheduleTerminalWordEdit(deleteCount: deleteCount, text: text)
+            return
+        }
+        TextReplacer.replace(deleteCount: deleteCount, with: text, thenReturn: thenReturn) { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
+        }
+    }
+
     /// Единая точка завершения полёта синтетики (все completion'ы конверсий).
     private func endSyntheticFlight() {
         if inFlightRealKeys > 0 {
@@ -111,6 +143,8 @@ final class Engine: EventTapHandler {
             kbLog("secure input СНЯТ (держали ~\(held)с) — Keyboop снова видит клавиатуру")
             return
         }
+        eventTap.cancelPendingWordEdits()
+        invalidatePendingBoundary()
         secureInputSince = Date()
         kbLog("secure input ВКЛЮЧЁН — macOS прячет клавиатуру от Keyboop (конверсия молчит СИСТЕМНО, это не поле настроек); ищу держателя…")
         DispatchQueue.global(qos: .utility).async {
@@ -239,6 +273,13 @@ final class Engine: EventTapHandler {
     /// Полный clear (pendingContextClear) «сиротил» набираемое окончание → «ть»→«nm» (баг 29.06).
     private var pendingSoftReset = false
 
+    // Задача границы слова действует, пока сохраняются слово и контекст ввода.
+    private var boundaryGeneration = BoundaryGeneration()
+
+    static func isReturnKey(_ keyCode: Int64) -> Bool { BoundaryGeneration.isReturnKey(keyCode) }
+
+    func invalidatePendingBoundary() { boundaryGeneration.invalidate() }
+
     /// Колбэк для UI — обновить индикатор после переключения.
     var onLayoutMaybeChanged: (() -> Void)?
 
@@ -258,6 +299,8 @@ final class Engine: EventTapHandler {
                 // мягкий сброс перед следующим нажатием — забываем завершённый контекст, но НЕ
                 // currentWord. Spotlight (Cmd+Space) и так чистит буфер как cmd-шорткат в handleKeyDown;
                 // клик мышью идёт отдельным путём (handleContextReset → полный clear, каретка сдвинута).
+                self?.eventTap.cancelPendingWordEdits()
+                self?.invalidatePendingBoundary()
                 self?.pendingSoftReset = true
                 self?.refreshFrontmostAppCache()   // inline-путь читает кеш (в колбэке NSWorkspace нельзя)
             }
@@ -282,6 +325,8 @@ final class Engine: EventTapHandler {
             // Открытие и закрытие Spotlight системой не объявляется, поэтому наблюдатель сообщает
             // об этом сам — и дальше всё идёт тем же путём, что и обычная смена программы.
             SpotlightWatch.onChange = { [weak self] in
+                self?.eventTap.cancelPendingWordEdits()
+                self?.invalidatePendingBoundary()
                 self?.pendingSoftReset = true
                 self?.refreshFrontmostAppCache()
             }
@@ -458,6 +503,7 @@ final class Engine: EventTapHandler {
     }
 
     func handleContextReset(at eventTime: TimeInterval) {
+        invalidatePendingBoundary()
         contextResetAt = eventTime
         // Клик/навигация двигает курсор — групповая история недействительна даже под muted (G10):
         // нашу синтетику мы шлём только с клавиатуры, mouse-down — всегда намерение пользователя.
@@ -522,6 +568,19 @@ final class Engine: EventTapHandler {
     func handleKeyDown(keyCode: Int64, characters: String, flags: CGEventFlags,
                        eventTime: TimeInterval = ProcessInfo.processInfo.systemUptime,
                        post: ((CGEvent) -> Void)? = nil) -> Bool {
+        let isReturn = boundaryGeneration.invalidateOnReturn(keyCode)
+        defer {
+            if isReturn {
+                buffer.clear()
+                lastTextFix = nil
+                pendingManual = false
+                liveFixLast = ""
+                wordEdited = false
+                caretJumpedSinceClear = false
+                backspaceSinceJump = false
+                caretProbeGen &+= 1
+            }
+        }
         // ВАЖНО: больше НЕ гейтим реальный ввод по muted — наша синтетика отсеивается тегом в EventTap
         // (kbSyntheticMarker), а реальные нажатия должны копиться в буфер ВСЕГДА, даже пока летит наша
         // конверсия (иначе буфер рассинхронивался с экраном при быстром наборе — корень №2 аудита).
@@ -572,12 +631,19 @@ final class Engine: EventTapHandler {
                 if caretJumpedSinceClear { backspaceSinceJump = true }   // правка после клика, см. задачу 187
                 UndoLearner.shared.observe(current: buffer.currentWord)   // U2: следим за стиранием нашего вывода
             }
-        case 49, 48, 36: // Space, Tab, Return — граница слова
+        case 49, 48, 36, 76: // Space, Tab, Return и Enter на цифровом блоке
             liveFixLast = ""                          // слово завершено — якорь self-heal сброшен
             wordEdited = false                        // новое слово начинается свежим — live-fix снова активен
             let boundaryHandledAt = ProcessInfo.processInfo.systemUptime
             lastRealKeyAt = boundaryHandledAt         // второй пробел тоже закрывает Fence A
-            let ws = keyCode == 48 ? "\t" : (keyCode == 36 ? "\n" : " ")
+            let ws = keyCode == 48 ? "\t" : (isReturn ? "\n" : " ")
+            // Модифицированный Return и Enter на цифровом блоке сохраняют действие приложения.
+            let returnModifiers: CGEventFlags = [.maskShift, .maskCommand, .maskAlternate, .maskControl, .maskSecondaryFn]
+            if isReturn, keyCode == 76 || !flags.intersection(returnModifiers).isEmpty {
+                if muted { inFlightRealKeys += 1 }
+                return false
+            }
+            if !isReturn, !buffer.currentWord.isEmpty { invalidatePendingBoundary() }
             // СНИППЕТ: проверяем ТЕКУЩЕЕ слово ДО boundary (currentWord = триггер, как на экране).
             // Совпало → ГЛОТАЕМ клавишу-границу и раскрываем сами. Не пускаем пробел в приложение →
             // не приходится потом удалять только что нажатый пробел → нет гонки «Backspace прилетел
@@ -611,16 +677,21 @@ final class Engine: EventTapHandler {
             // Enter: чинить надо ДО того, как клавиша уйдёт в приложение — чаты отправляют по Enter
             // мгновенно, и boundary-конверсия (async ниже) опаздывала в пустое поле (репорт 11.07,
             // см. convertBeforeReturn). Пробел/Tab не отправляют — им async-путь ниже подходит.
-            if keyCode == 36, convertBeforeReturn(flags: flags) {
-                return true   // Enter проглочен — уйдёт синтетикой строго после замены
+            if isReturn {
+                if convertBeforeReturn(flags: flags) {
+                    // В Paradev пакет уходит из этого колбэка перед исходным Return.
+                    // На асинхронном пути Return отправит сам TextReplacer после замены.
+                    return !usesOrderedWordEdits
+                }
+                if muted { inFlightRealKeys += 1 }
+                return false
             }
             buffer.boundary(ws, at: eventTime)
-            // Space/Tab/Enter — тоже реальный текстовый ввод. Раньше Fence B видел только буквы,
+            // Space/Tab — тоже реальный текстовый ввод. Раньше Fence B видел только буквы,
             // поэтому второй пробел внутри синтетической замены оставлял модель буфера ложной.
             if muted { inFlightRealKeys += 1 }
             // Авто-раскладка срабатывает только по разрешённым клавишам-триггерам.
             var autoTrigger = (keyCode == 49 && settings.triggerSpace)
-                           || (keyCode == 36 && settings.triggerEnter)
                            || (keyCode == 48 && settings.triggerTab)
             // ⚠️ ЧИТАЕМ КЭШИ, А НЕ NSWorkspace (01.08). Мы внутри колбэка тапа, а `frontmostIsDevApp`
             // и `frontmostAppMode` оба дёргают `NSWorkspace.shared.frontmostApplication` — это
@@ -640,9 +711,10 @@ final class Engine: EventTapHandler {
                 autoTrigger = false
                 silentLog("appoff", "авто молчит: приложение в исключениях (режим «выкл»)")
             }
+            let generation = boundaryGeneration.current
             let tBoundary = ProcessInfo.processInfo.systemUptime
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { [weak self] in
-                guard let self = self else { return }
+                guard let self, self.boundaryGeneration.isCurrent(generation), !IsSecureEventInputEnabled() else { return }
                 // Замер: планировали +30мс; всё сверх — очередь main-потока (репорт «стало дольше»).
                 let lag = Int((ProcessInfo.processInfo.systemUptime - tBoundary) * 1000)
                 if lag > 45 { kbLog("boundary: конверсия стартовала +\(lag)мс от границы (main-поток был занят)") }
@@ -665,7 +737,8 @@ final class Engine: EventTapHandler {
                 // корректна, а Fence B подстрахует от вклинивания).
                 if ProcessInfo.processInfo.systemUptime - self.lastRealKeyAt < 0.025 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
-                        guard let self else { return }
+                        guard let self, self.boundaryGeneration.isCurrent(generation),
+                              self.settings.autoEnabled, !Pause.active, !IsSecureEventInputEnabled() else { return }
                         self.convertFromBuffer(manual: false, soft: appMode == "soft")
                     }
                     return
@@ -696,15 +769,20 @@ final class Engine: EventTapHandler {
             buffer.clear()
             UndoLearner.shared.resetContext()
         default:
-            if cmdOrCtrl { liveFixLast = ""; wordEdited = false; buffer.clear(); return false } // это шорткат, не текст
+            if cmdOrCtrl {
+                invalidatePendingBoundary()
+                liveFixLast = ""
+                wordEdited = false
+                buffer.clear()
+                return false
+            }
             if let scalar = characters.unicodeScalars.first, isPrintable(scalar) {
                 lastRealKeyAt = ProcessInfo.processInfo.systemUptime
                 // INLINE-ПОЧИНКА (25.07): пробуем заменить слово ПРЯМО ЗДЕСЬ, внутри колбэка тапа —
                 // пока мы не вернули управление, ни одна клавиша пользователя не пройдёт, поэтому
                 // вклиниться в нашу замену физически нечему (разбор: memory keyboop-inline-replace-in-callback).
                 // Символ ЭТОЙ клавиши на экране ещё НЕ отрисован — он входит в замену, а клавишу глотаем.
-                if let post, tryInlineLiveFix(pendingChar: characters, pendingKeyCode: keyCode,
-                                              flags: flags, post: post) { return true }
+                if let post, tryInlineLiveFix(pendingChar: characters, flags: flags, post: post) { return true }
                 if muted { inFlightRealKeys += 1 }   // клавиша легла внутрь зоны замены (Fence B)
                 buffer.append(characters)
                 UndoLearner.shared.observe(current: buffer.currentWord)   // U2: перенабор оригинала = откат
@@ -870,18 +948,6 @@ final class Engine: EventTapHandler {
     ///
     /// ЖЁСТКО: тут нельзя AX / TIS / NSSound / NSWorkspace / локи / usleep — только чистая логика.
     /// Всё «тяжёлое» уходит в асинхронный хвост на main.
-    /// F3: keyCode проглоченной inline-клавишей — её keyUp тоже надо проглотить (непарный keyup ломает
-    /// Chromium/Qt/игры). Одноразовая метка со сроком годности.
-    private(set) var inlineSwallowedKeyCode: Int64 = -1
-    private var inlineSwallowedAt: TimeInterval = 0
-    /// Забрать метку, если это тот самый keyUp и он пришёл вовремя (иначе метка просто истечёт).
-    func consumeInlineSwallowedKeyUp(_ keyCode: Int64) -> Bool {
-        guard inlineSwallowedKeyCode == keyCode,
-              ProcessInfo.processInfo.systemUptime - inlineSwallowedAt < 2.0 else { return false }
-        inlineSwallowedKeyCode = -1
-        return true
-    }
-
     /// F5: срабатывание системного таймаута тапа выключает атомарный inline-путь.
     /// Лучше потерять фичу, чем поймать «ввод не проходит нигде» (инцидент 21.07).
     ///
@@ -897,10 +963,6 @@ final class Engine: EventTapHandler {
     private let inlineCooldown: TimeInterval = 180      // 3 минуты
     private let inlineTimeoutCeiling = 3                // столько подряд — и до конца сессии
     var inlineHealthy: Bool { !inlineDisabled }
-
-    /// Забыть метку проглоченного keyDown. Зовётся при смерти тапа: пока он был мёртв, keyUp прошёл
-    /// мимо нас, и метка съела бы отпускание следующей ЧЕСТНОЙ клавиши.
-    func forgetInlineSwallowedKey() { inlineSwallowedKeyCode = -1 }
 
     func disableInlineAfterTapTimeout() {
         // ⚠️ СЧИТАЕМ ДО ГАРДА, И ЭТО ПРИНЦИПИАЛЬНО (исправлено 31.07, в день написания). Утром
@@ -1068,7 +1130,7 @@ final class Engine: EventTapHandler {
             guard antiResonance.allow(word: word, produced: prefix + convTail) else {
                 liveFixLast = ""; buffer.clear(); return
             }
-            guard TextReplacer.replaceInline(deleteCount: tail.count, with: convTail, post: post) else { return }
+            guard TextReplacer.replaceInline(deleteCount: tail.count, with: convTail, oneCharacterPerKey: usesOrderedWordEdits, post: post) else { return }
             buffer.applyConversion(converted: prefix + convTail)
             liveFixLast = prefix + convTail
             DispatchQueue.main.async { [weak self] in
@@ -1092,7 +1154,7 @@ final class Engine: EventTapHandler {
             liveFixLast = ""; buffer.clear(); return
         }
         if UndoLearner.shared.shouldSuppress(current: word) || UndoLearner.shared.isSessionProtected(word) { return }
-        guard TextReplacer.replaceInline(deleteCount: word.count, with: converted, post: post) else { return }
+        guard TextReplacer.replaceInline(deleteCount: word.count, with: converted, oneCharacterPerKey: usesOrderedWordEdits, post: post) else { return }
         buffer.applyConversion(converted: converted)
         liveFixLast = converted
         // Хвост — всё, что нельзя в колбэке (селект раскладки, звук, счётчики).
@@ -1108,7 +1170,7 @@ final class Engine: EventTapHandler {
         }
     }
 
-    private func tryInlineLiveFix(pendingChar: String, pendingKeyCode: Int64, flags: CGEventFlags, post: (CGEvent) -> Void) -> Bool {
+    private func tryInlineLiveFix(pendingChar: String, flags: CGEventFlags, post: (CGEvent) -> Void) -> Bool {
         guard settings.inlineLiveFix, inlineHealthy, settings.liveFixEnabled, settings.autoEnabled, !Pause.active else { return false }
         guard Warm.isReady, !muted, !wordEdited else { return false }   // F7: асинхронная синтетика в полёте → молчим
         guard !frontAppIsDev || !settings.developerMode else { return false }
@@ -1147,9 +1209,7 @@ final class Engine: EventTapHandler {
         if UndoLearner.shared.shouldSuppress(current: candidate)
             || UndoLearner.shared.isSessionProtected(candidate) { return false }
         // Печатаем: удалить то, что НА ЭКРАНЕ (onScreen), впечатать converted (он включает символ клавиши).
-        guard TextReplacer.replaceInline(deleteCount: onScreen.count, with: converted, post: post) else { return false }
-        inlineSwallowedKeyCode = pendingKeyCode   // F3: его keyUp тоже проглотим (иначе непарный keyup)
-        inlineSwallowedAt = ProcessInfo.processInfo.systemUptime
+        guard TextReplacer.replaceInline(deleteCount: onScreen.count, with: converted, oneCharacterPerKey: usesOrderedWordEdits, post: post) else { return false }
         // Модель — синхронно (следующая клавиша обязана видеть верный буфер).
         buffer.append(pendingChar)
         buffer.applyConversion(converted: converted)
@@ -1210,10 +1270,7 @@ final class Engine: EventTapHandler {
             }
             muted = true
             layout.selectLayout(cyrillic: true)
-            TextReplacer.replace(deleteCount: tail.count, with: convTail) { [weak self] in
-                guard let self else { return }
-                DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
-            }
+            replaceTypedText(deleteCount: tail.count, with: convTail)
             buffer.applyConversion(converted: prefix + convTail)
             liveFixLast = prefix + convTail
             onLayoutMaybeChanged?()
@@ -1246,10 +1303,7 @@ final class Engine: EventTapHandler {
         layout.selectLayout(cyrillic: toCyr)            // раскладка — раньше ретайпа
         // Снятие muted — в completion (после async-постинга синтетики на serial-очереди), а не по
         // фикс-таймеру: иначе размьютит до того, как backspace+ретайп отыграют → re-entrancy.
-        TextReplacer.replace(deleteCount: word.count, with: converted) { [weak self] in
-            guard let self else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
-        }
+        replaceTypedText(deleteCount: word.count, with: converted)
         buffer.applyConversion(converted: converted)
         UndoLearner.shared.noteConversion(original: word, converted: converted)   // кандидат на откат
         settings.rescuedCount += 1                       // мид-слово тоже считаем
@@ -1261,10 +1315,21 @@ final class Engine: EventTapHandler {
     }
 
     func handleSwitchHotkey() {
+        // Набранное слово известно уже на отпускании хоткея. При быстром Enter даже один
+        // лишний проход главной очереди переносил эту конверсию в следующее приглашение.
+        if usesOrderedWordEdits, eventTap.inKeyboardCallback {
+            applyPendingContextClear()
+            if buffer.wordForConversion() != nil {
+                convertFromBuffer(manual: true)
+                return
+            }
+        }
+
+        // Чтение выделения может ждать AX или Cmd+C. Вынесем его из активного тапа и отменим
+        // запрос, если за это время изменилось поле или уже ушёл Return.
+        let generation = boundaryGeneration.current
         DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            // Клик мышью взвёл очистку, но нажатий с тех пор не было (хоткей на модификаторах их не
-            // порождает). Выполняем ЗДЕСЬ, иначе фолбэк на буфер возьмёт слово из прошлого места.
+            guard let self, self.boundaryGeneration.isCurrent(generation) else { return }
             self.applyPendingContextClear()
             self.convertFromBuffer(manual: true)
         }
@@ -1601,7 +1666,7 @@ final class Engine: EventTapHandler {
             kbLog("convert-selection: объект холста, \(body.count) симв. → \(toCyr ? "RU" : "EN")")
             return true
         }
-        if (isClipboard && (text.contains("\n") || text.contains("\r") || text.count > 80)) {
+        if (isClipboard && (text.contains("\n") || text.contains("\r") || text.count > Self.shortSelectionLimit)) {
             muted = false
             selectionRefused = true   // выделение БЫЛО — значит трогать что-то ещё нельзя (см. ниже)
             kbLog("convert-selection: отклонено (\(text.count) симв., многострочн=\(text.contains("\n")), clipboard=\(isClipboard)) — вероятно авто-копия строки, падаю на слово")
@@ -1642,7 +1707,10 @@ final class Engine: EventTapHandler {
             self.layout.selectLayout(cyrillic: toCyrillic)
             self.onLayoutMaybeChanged?()
         }
-        if usedSynth {
+        if usedSynth, usesOrderedWordEdits, converted.count <= Self.shortSelectionLimit,
+           !converted.contains(where: { $0.isNewline }) {
+            scheduleTerminalWordEdit(deleteCount: 0, text: converted, afterDelivery: switchLayoutAfterwards)
+        } else if usedSynth {
             TextReplacer.insert(converted) { [weak self] in   // печатаем поверх выделения (Unicode)
                 switchLayoutAfterwards()
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self?.muted = false; self?.drainPendingManual() }
@@ -1662,6 +1730,10 @@ final class Engine: EventTapHandler {
         }
         return true
     }
+
+    // Длинная буферная копия может быть целой строкой редактора. Для короткого выделения
+    // можно также использовать посимвольную доставку в активном колбэке терминала.
+    private static let shortSelectionLimit = 80
 
     /// Потолок для замены текста объекта на холсте. Больше обычных 80 символов буферного пути:
     /// там кап защищает от случайно скопированной строки, а здесь мы ЗНАЕМ, что человек выделил
@@ -1712,10 +1784,7 @@ final class Engine: EventTapHandler {
         // Синтетика — async на serial-очереди (не морозим main с активным tap'ом). Снятие muted — в
         // completion: оно сработает РОВНО после постинга, поэтому length-scaling задержки больше не нужен
         // (раньше масштабировали под время синхронного постинга на main, G4) — хватает дренаж-константы.
-        TextReplacer.replace(deleteCount: g.deleteCount, with: out) { [weak self] in
-            guard let self else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
-        }
+        replaceTypedText(deleteCount: g.deleteCount, with: out)
         settings.rescuedCount += convertedN            // вся группа разом — по числу починенных слов
         buffer.clear()                                 // состояние слов изменилось — начинаем сессию заново
         layout.selectLayout(cyrillic: lastToCyrillic)  // раскладку — по последнему сконвертированному
@@ -1888,10 +1957,7 @@ final class Engine: EventTapHandler {
         kbLog("\(autoProp?.rescue == true ? "mixed-rescue" : "convert-word")\(manual ? "(хоткей)" : "(авто)"): \(item.deleteCount) симв. \(Self.scriptClass(word)) → \(toCyrillic ? "RU" : "EN")")   // без контента
         noteConvRepeat(word: word, produced: converted, path: manual ? "хоткей" : "boundary")
         // Снятие muted — в completion (после async-постинга), а не фикс-таймером (см. live-fix выше).
-        TextReplacer.replace(deleteCount: item.deleteCount, with: converted + replacementTail) { [weak self] in
-            guard let self else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
-        }
+        replaceTypedText(deleteCount: item.deleteCount, with: converted + replacementTail)
         let tailT0 = CACurrentMediaTime()
         if manual { buffer.applyConversion(converted: converted) }
         else {
@@ -1989,10 +2055,7 @@ final class Engine: EventTapHandler {
         }
         muted = true
         kbLog("две заглавные: \(item.deleteCount) симв. исправлено")   // без контента (принцип №2)
-        TextReplacer.replace(deleteCount: item.deleteCount, with: fixed + item.tail) { [weak self] in
-            guard let self else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
-        }
+        replaceTypedText(deleteCount: item.deleteCount, with: fixed + item.tail)
         buffer.applyCompletedConversion(converted: fixed)
     }
 
@@ -2040,10 +2103,7 @@ final class Engine: EventTapHandler {
         kbLog("caps lock: \(item.deleteCount) симв. развёрнуто")   // без контента (принцип №2)
         UndoLearner.shared.noteConversion(original: word, converted: fixed)
         lastTextFix = (word, fixed)                                           // чтобы хоткей мог вернуть
-        TextReplacer.replace(deleteCount: item.deleteCount, with: fixed + item.tail) { [weak self] in
-            guard let self else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
-        }
+        replaceTypedText(deleteCount: item.deleteCount, with: fixed + item.tail)
         buffer.applyCompletedConversion(converted: fixed)
         return true
     }
@@ -2078,10 +2138,7 @@ final class Engine: EventTapHandler {
         // не даём автоисправлению немедленно превратить возвращённое слово обратно.
         UndoLearner.shared.protect(fix.original)
         lastTextFix = nil
-        TextReplacer.replace(deleteCount: item.deleteCount, with: fix.original + item.tail) { [weak self] in
-            guard let self else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
-        }
+        replaceTypedText(deleteCount: item.deleteCount, with: fix.original + item.tail)
         buffer.applyCompletedConversion(converted: fix.original)
         playSound()
         return true
@@ -2095,10 +2152,7 @@ final class Engine: EventTapHandler {
         kbLog("опечатка: \(item.deleteCount) симв. исправлено")   // без контента (принцип №2)
         UndoLearner.shared.noteConversion(original: word, converted: fixed)   // откат научит нас навсегда
         lastTextFix = (word, fixed)                                           // чтобы хоткей мог вернуть
-        TextReplacer.replace(deleteCount: item.deleteCount, with: fixed + item.tail) { [weak self] in
-            guard let self else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
-        }
+        replaceTypedText(deleteCount: item.deleteCount, with: fixed + item.tail)
         buffer.applyCompletedConversion(converted: fixed)
     }
 
@@ -2235,32 +2289,17 @@ final class Engine: EventTapHandler {
     /// исправить, чем исправить правильное».
     private static let softMaxIntraWordGap: TimeInterval = 1.0
 
-    /// Общая атомарная доставка точной опечатки перед Enter. Реальный Enter уже проглочен:
-    /// сначала заменяем слово, затем тем же synth-заданием отдаём Return приложению.
+    /// Точная правка опечатки перед отправкой строки.
     private func applyTypoBeforeReturn(word: String, fixed: String, kind: String) -> Bool {
         muted = true
         kbLog("\(kind)(enter-pre): \(word.count) симв. исправлено")   // без контента
-        // После отправки отменять уже нечего. Убираем и старую пару, иначе запоздалая boundary-правка
-        // может совпасть с новым буфером и вернуть исходник в уже очищенное поле чата.
-        lastTextFix = nil
-        TextReplacer.replace(deleteCount: word.count, with: fixed, thenReturn: true) { [weak self] in
-            guard let self else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
-        }
-        buffer.applyConversion(converted: fixed)
-        buffer.boundary("\n")
+        replaceTypedText(deleteCount: word.count, with: fixed, thenReturn: true)
         return true
     }
 
-    /// Enter-гонка «send on Enter» (репорт Жени 11.07, скрин: «nbgf» отправлен, «типа» осталось в
-    /// строке ввода): чат отправляет сообщение по Enter МГНОВЕННО, а boundary-конверсия приходила
-    /// через 30мс в уже ПУСТОЕ поле — сообщение улетало неисправленным, и исправленное слово
-    /// печаталось в опустевшую строку. Фикс: голый Enter ГЛОТАЕМ (тап активный — прецедент
-    /// сниппетов), чиним слово, пока оно ЕЩЁ на экране, и отпускаем синтетический Return строго
-    /// ПОСЛЕ замены (thenReturn в том же synth-задании) → приложение отправляет уже починенный
-    /// текст. В редакторах то же: починка, затем перенос. Задержка Enter ≈ длина слова × 2.7мс +
-    /// 10мс — незаметно. Аварийный откат без релиза: defaults write ru.keyboop.app enterPreConvert -bool NO.
-    /// Возвращает true, если Enter проглочен (уйдёт синтетикой).
+    /// Готовит правку до отправки строки. true означает, что замена начата.
+    /// В Paradev EventTap доставляет её перед исходной клавишей. На обычном асинхронном пути
+    /// физический Return поглощается и TextReplacer выпускает его после Backspace и текста.
     private func convertBeforeReturn(flags: CGEventFlags) -> Bool {
         guard Warm.isReady else { return false }   // см. Warm
         guard settings.enterPreConvert, settings.autoEnabled, settings.triggerEnter, !muted, !Pause.active else { return false }
@@ -2317,13 +2356,7 @@ final class Engine: EventTapHandler {
         muted = true
         kbLog("\(prop.rescue ? "mixed-rescue" : "convert-word")(enter-pre): \(word.count) симв. → \(prop.toCyrillic ? "RU" : "EN")")   // без контента
         noteConvRepeat(word: word, produced: prop.text, path: "enter")
-        TextReplacer.replace(deleteCount: word.count, with: prop.text, thenReturn: true) { [weak self] in
-            guard let self else { return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + self.muteDrain) { self.endSyntheticFlight() }
-        }
-        buffer.applyConversion(converted: prop.text)   // экран после замены = converted
-        buffer.boundary("\n")                          // граница в модели: Enter уйдёт нашей синтетикой
-        if !prop.rescue { UndoLearner.shared.noteConversion(original: word, converted: prop.text) }
+        replaceTypedText(deleteCount: word.count, with: prop.text, thenReturn: true)
 
         // ⚠️ ХВОСТ ЭТОГО МЕТОДА — САМОЕ ГОРЯЧЕЕ МЕСТО В ПРОЕКТЕ (правка 29.07).
         // convertBeforeReturn работает СИНХРОННО внутри колбэка CGEventTap, то есть всё, что стоит
@@ -2367,6 +2400,14 @@ final class Engine: EventTapHandler {
     /// стали, чтобы у тех, кто уже привык, ничего не поменялось. Комментарий тут утверждал обратное
     /// и разошёлся с кодом (поймано аудитом умолчаний 05.08.2026).
     private func playSound() {
+        if eventTap.inKeyboardCallback {
+            DispatchQueue.main.async { [weak self] in self?.playSwitchSound() }
+        } else {
+            playSwitchSound()
+        }
+    }
+
+    private func playSwitchSound() {
         guard settings.soundEnabled, !settings.soundName.isEmpty else { return }
         if settings.soundName == "keyboop" {
             switchCue?.stop()

@@ -1,5 +1,24 @@
 import Foundation
 
+/// Срок действия отложенной конверсии. Обе отсрочки одной конверсии используют один номер.
+struct BoundaryGeneration {
+    private(set) var current: UInt64 = 0
+
+    static func isReturnKey(_ keyCode: Int64) -> Bool {
+        keyCode == 36 || keyCode == 76
+    }
+
+    mutating func invalidate() { current &+= 1 }
+
+    mutating func invalidateOnReturn(_ keyCode: Int64) -> Bool {
+        guard Self.isReturnKey(keyCode) else { return false }
+        invalidate()
+        return true
+    }
+
+    func isCurrent(_ generation: UInt64) -> Bool { generation == current }
+}
+
 /// Локальный буфер набранного — то, что приложение нам не отдаёт.
 /// Храним текущее слово + последнее завершённое слово и хвост (пробел/таб после него).
 /// Буфер сбрасывается на навигации/клике/смене окна, чтобы не чинить чужой текст.

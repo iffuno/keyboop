@@ -2,6 +2,7 @@ import Foundation
 import CoreGraphics
 import AppKit
 import QuartzCore
+import Carbon
 
 protocol EventTapHandler: AnyObject {
     /// Возвращает true, если клавишу нужно ПРОГЛОТИТЬ (не пускать в приложение) — напр. граница слова,
@@ -54,12 +55,6 @@ final class EventTap {
     private var suspensions = 0
     private let maxSuspensions = 3
     private let suspendCooldown: TimeInterval = 300   // 5 минут
-
-    /// Сброс метки проглоченного keyDown. Отдельным методом, потому что поле приватно для Engine,
-    /// а чистить его надо и при смерти тапа тоже.
-    private func inlineSwallowedKeyCodeReset() {
-        (handler as? Engine)?.forgetInlineSwallowedKey()
-    }
 
     /// Возраст события в миллисекундах: сколько оно пролежало от штампа системы до входа в колбэк.
     /// Это и есть та величина, по которой нас судит WindowServer.
@@ -169,8 +164,11 @@ final class EventTap {
         return row.firstIndex(of: keyCode)
     }
 
-    private func swallowDown(_ keyCode: Int64) -> Unmanaged<CGEvent>? {
-        swallowedDownKeyCodes.insert(keyCode)
+    private func swallowDown(_ keyCode: Int64, event: CGEvent) -> Unmanaged<CGEvent>? {
+        // Автоповтор не меняет судьбу keyUp: нажатие уже увидело само приложение или наш тап.
+        if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+            swallowedDownKeyCodes.insert(keyCode)
+        }
         return nil
     }
 
@@ -239,7 +237,8 @@ final class EventTap {
         // человек хотел всего лишь прибавить звук. Событие пропускаем насквозь, нам нужен только
         // сам факт «при зажатом модификаторе что-то нажали».
         let sysDefined = CGEventMask(1) << 14
-        let mask = bit(.keyDown) | bit(.flagsChanged) | bit(.keyUp) | sysDefined
+        let mouseDown = bit(.leftMouseDown) | bit(.rightMouseDown) | bit(.otherMouseDown)
+        let mask = bit(.keyDown) | bit(.flagsChanged) | bit(.keyUp) | sysDefined | mouseDown
         guard let newTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap, place: .headInsertEventTap, options: .defaultTap,
             eventsOfInterest: mask, callback: eventTapCallback,
@@ -309,7 +308,7 @@ final class EventTap {
                 let clickAt = ev.timestamp
                 // ⚠️ КЛИК СНИМАЕТ ВЗВОД ЖЕСТА ПО МОДИФИКАТОРУ (05.08.2026). Раньше клик только чистил
                 // набранное слово, а взвод оставался, и получалось вот что: перехватчик слушает
-                // ТОЛЬКО клавиатуру (keyDown/flagsChanged/keyUp), мышь в маску не входит. Значит
+                // раньше слушал только клавиатуру (keyDown/flagsChanged/keyUp). Значит
                 // ⌥+клик выглядел для нас как чистый тап по ⌥: нажали модификатор (взвод), кликнули
                 // (мы не заметили), отпустили (выстрел). Проверено опытом: ⌥+клик переключал раскладку.
                 //
@@ -335,10 +334,60 @@ final class EventTap {
         return true
     }
 
+    // Пустышка доставляет готовую замену в простаивающий терминал. Если первой пришла
+    // физическая клавиша, доставляем замену в её колбэке, перед самой клавишей.
+    private struct WordEdit {
+        let deleteCount: Int
+        let text: String
+        let target: String
+        let completion: (Bool) -> Void
+    }
+    private var pendingWordEdits: [WordEdit] = []
+    private(set) var inKeyboardCallback = false
+    private let wordEditWakeMarker: Int64 = {
+        var marker: Int64 = 0
+        while marker == 0 || marker == kbSyntheticMarker || marker == kbPauseFixMarker {
+            marker = Int64.random(in: .min ... .max)
+        }
+        return marker
+    }()
+
+    func scheduleWordEdit(deleteCount: Int, text: String, target: String, completion: @escaping (Bool) -> Void) {
+        pendingWordEdits.append(WordEdit(deleteCount: deleteCount, text: text, target: target, completion: completion))
+        guard !inKeyboardCallback, pendingWordEdits.count == 1 else { return }
+        guard let tap, CGEvent.tapIsEnabled(tap: tap),
+              let wake = CGEvent(keyboardEventSource: nil, virtualKey: 255, keyDown: true) else {
+            finishWordEdits()
+            return
+        }
+        wake.flags = []
+        wake.setIntegerValueField(.eventSourceUserData, value: wordEditWakeMarker)
+        wake.post(tap: .cghidEventTap)
+    }
+
+    func cancelPendingWordEdits() { finishWordEdits() }
+
+    private func finishWordEdits(post: ((CGEvent) -> Void)? = nil) {
+        guard !pendingWordEdits.isEmpty else { return }
+        let edits = pendingWordEdits
+        pendingWordEdits.removeAll()
+        let target = post == nil || IsSecureEventInputEnabled() ? nil : Engine.frontmostBundleID()
+        for edit in edits {
+            if let post, target == edit.target {
+                let delivered = TextReplacer.replaceInline(deleteCount: edit.deleteCount, with: edit.text,
+                                                           oneCharacterPerKey: true, post: post)
+                edit.completion(delivered)
+            } else {
+                edit.completion(false)
+            }
+        }
+    }
+
     /// Снести невалидный порт перед пересозданием (mouseMonitor НЕ трогаем — он независим).
     /// Набор парности чистим: пока тап был мёртв, отпускания прошли мимо нас, и висящие записи
     /// съели бы keyUp у следующих честных нажатий.
     private func teardown() {
+        finishWordEdits()
         swallowedDownKeyCodes.removeAll()
         if let s = runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetCurrent(), s, .commonModes) }
         runLoopSource = nil
@@ -351,6 +400,17 @@ final class EventTap {
     @inline(__always) private func onMain(_ b: @escaping () -> Void) { DispatchQueue.main.async(execute: b) }
 
     func handle(type: CGEventType, event: CGEvent, proxy: CGEventTapProxy) -> Unmanaged<CGEvent>? {
+        // Граница теряет силу до доставки клика. Асинхронный монитор ниже по цепочке
+        // по-прежнему отвечает за сброс буфера и модификаторных жестов.
+        switch type {
+        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+            finishWordEdits()
+            (handler as? Engine)?.invalidatePendingBoundary()
+            return Unmanaged.passUnretained(event)
+        default:
+            break
+        }
+
         // Инструментовка: если колбэк вдруг стал медленным — увидим это ДО того, как система вырубит
         // тап, а не по факту потерянных нажатий.
         // ⚠️ МЕРЯЕМ ВОЗРАСТ СОБЫТИЯ, А НЕ ТЕЛО ОБРАБОТЧИКА (31.07). Прежний замер брал время от входа
@@ -390,6 +450,10 @@ final class EventTap {
         // замену нечему (тот же принцип, что inline-путь). Обрабатываем до handleKeyDown/handleFlags:
         // пустышка не должна трогать буфер и взводы хоткеев. keyUp у неё нет (мы его не шлём),
         // поэтому глотание не нарушает инвариант парности.
+        if type == .keyDown, sourceUserData == wordEditWakeMarker {
+            finishWordEdits { $0.tapPostEvent(proxy) }
+            return nil
+        }
         if type == .keyDown,
            sourceUserData == kbPauseFixMarker {
             (handler as? Engine)?.handlePauseFixMarker(post: { $0.tapPostEvent(proxy) })
@@ -398,6 +462,18 @@ final class EventTap {
         if (type == .keyDown || type == .keyUp),
            sourceUserData == kbSyntheticMarker {
             return Unmanaged.passUnretained(event)
+        }
+        let keyboardEvent = type == .keyDown || type == .keyUp || type == .flagsChanged
+        let wasInKeyboardCallback = inKeyboardCallback
+        if keyboardEvent {
+            inKeyboardCallback = true
+            finishWordEdits { $0.tapPostEvent(proxy) }
+        }
+        defer {
+            if keyboardEvent {
+                finishWordEdits { $0.tapPostEvent(proxy) }
+                inKeyboardCallback = wasInKeyboardCallback
+            }
         }
         // ПАУЗА «НЕ МЕШАТЬ» ЗДЕСЬ БОЛЬШЕ НЕ ГЕЙТИТ (11.09.2026, решение автора в два шага).
         //
@@ -436,6 +512,7 @@ final class EventTap {
         }
         switch type {
         case .tapDisabledByTimeout, .tapDisabledByUserInput:
+            finishWordEdits()
             // ДИАГНОСТИКА «под нагрузкой конверсия не срабатывает» (баг-репорт): macOS САМА
             // глушит tap, если наш колбэк не успел вернуться вовремя (byTimeout) — а runloop tap'а
             // живёт на ГЛАВНОМ потоке, поэтому любой затык main (сборка окна настроек, своп при
@@ -447,9 +524,7 @@ final class EventTap {
             // у следующих ЧЕСТНЫХ нажатий. Чистим здесь, а не только в teardown() — этот путь
             // оживления тапа его не зовёт.
             swallowedDownKeyCodes.removeAll()
-            // ⚠️ Проглоченный keyDown тоже сбрасываем: пока тап был мёртв, его keyUp прошёл мимо, и
-            // метка «эту клавишу мы съели» пережила бы смерть тапа, съев чужое отпускание.
-            inlineSwallowedKeyCodeReset()
+            (handler as? Engine)?.invalidatePendingBoundary()
 
             // 🔴 ПРЕДОХРАНИТЕЛЬ (31.07). До этого дня мы включали тап обратно БЕЗУСЛОВНО и БЕСКОНЕЧНО,
             // а выключить себя не умели вовсе: во всём проекте не было ни одного tapEnable(false).
@@ -499,12 +574,19 @@ final class EventTap {
             if type == .tapDisabledByTimeout { (handler as? Engine)?.disableInlineAfterTapTimeout() }
         case .keyDown:
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            if Engine.isReturnKey(keyCode) { (handler as? Engine)?.invalidatePendingBoundary() }
+            if event.getIntegerValueField(.keyboardEventAutorepeat) != 0 {
+                if swallowedDownKeyCodes.contains(keyCode) { return nil }
+            } else {
+                // Новое физическое нажатие могло прийти после потерянного keyUp.
+                swallowedDownKeyCodes.remove(keyCode)
+            }
             // ДРЕБЕЗГ КЛАВИШИ — ДО всего остального (T18). Фантомное нажатие не должно ни печататься,
             // ни попадать в буфер, ни сбивать взводы хоткеев: для нас его как будто не было.
             // Наша синтетика сюда не доходит, она отсеяна по маркеру выше.
             if s.dedupeChatter, isChatter(keyCode: keyCode, event: event) {
                 kbLog("дребезг: повтор клавиши \(keyCode) быстрее \(Int(chatterWindow * 1000)) мс — проглочен")
-                return swallowDown(keyCode)
+                return swallowDown(keyCode, event: event)
             }
             // Опрос Spotlight. Здесь выполняется одно чтение часов: сама проба (1.3 мс) уходит в
             // фоновую очередь и не чаще раза в 250 мс. Привязано к нажатиям намеренно — панель
@@ -547,7 +629,7 @@ final class EventTap {
             if keyCode == 53, s.escCancelsDictation, VoiceController.shared.isRecording {
                 onMain { VoiceController.shared.cancel() }
                 if s.voiceHoldMode == "toggle" { voiceKeyArmed = false } else { voiceActive = false }
-                return swallowDown(keyCode)
+                return swallowDown(keyCode, event: event)
             }
             // Мгновенное переключение языка комбинацией (⌘Space/⌃Space/своя): ГЛОТАЕМ, чтобы не
             // сработало то, что висит на ней в системе (Spotlight и пр.) — иначе всплывут оба.
@@ -580,7 +662,7 @@ final class EventTap {
                 if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
                     onMain { [weak self] in self?.handler?.handleLayoutSwitchOnly() }
                 }
-                return swallowDown(keyCode)
+                return swallowDown(keyCode, event: event)
             }
             // Caps Lock-режим мгновенного переключения: физический Caps РЕМАПНУТ на LANG1
             // (keyCode 104) через hidutil — см. CapsRemap, почему flagsChanged-путь невозможен
@@ -596,7 +678,7 @@ final class EventTap {
                         onMain { [weak self] in self?.handler?.handleLayoutSwitchOnly() }
                     }
                 }
-                return swallowDown(keyCode)
+                return swallowDown(keyCode, event: event)
             }
             // Caps Lock, отданный РУЧНОМУ переключению (отзыв #160 и ещё несколько: «капс
             // практически никогда не нужен, а в Punto так было можно»). Механизм тот же, что
@@ -609,10 +691,10 @@ final class EventTap {
                     if event.flags.contains(.maskShift) {
                         onMain { RealCapsLock.toggle() }   // ⇧+Caps — единственный путь к настоящему замку
                     } else {
-                        onMain { [weak self] in self?.handler?.handleSwitchHotkey() }
+                        handler?.handleSwitchHotkey()
                     }
                 }
-                return swallowDown(keyCode)
+                return swallowDown(keyCode, event: event)
             }
             // Диагностика допущения «LANG1 = keyCode 104»: если при активном caps-режиме прилетает
             // сосед по диапазону экзотических кодов — это ремапнутый Caps под другим номером.
@@ -642,7 +724,7 @@ final class EventTap {
                         onMain { [weak self] in self?.handler?.handleVoiceBegin() }
                     }
                 }
-                return swallowDown(keyCode)   // глотаем ВСЕГДА (вкл. autorepeat) — чтобы клавиша не печаталась
+                return swallowDown(keyCode, event: event)   // глотаем ВСЕГДА (вкл. autorepeat) — чтобы клавиша не печаталась
             }
             // Перевод выделенного по хоткею (по умолчанию ⌃⌥T). Глотаем, чтобы 'T' не печаталась.
             //
@@ -655,7 +737,7 @@ final class EventTap {
             // ЛЮБАЯ другая клавиша просто закрывает список и уходит дальше своим ходом: человек
             // передумал и продолжил печатать, отбирать у него нажатие за это нельзя.
             if SnippetPicker.shared.isOpen {
-                if keyCode == 53 { onMain { SnippetPicker.shared.hide() }; return swallowDown(keyCode) }
+                if keyCode == 53 { onMain { SnippetPicker.shared.hide() }; return swallowDown(keyCode, event: event) }
                 // Цифра `0` — нулевая строка «последняя диктовка» (задача 242). Своя цифра, ничью
                 // нумерацию не сдвигает; если строки на экране нет, клавиша человеку и остаётся.
                 if keyCode == 29, relevantMods(event.flags).isEmpty, SnippetPicker.shared.showsLastDictation {
@@ -663,7 +745,7 @@ final class EventTap {
                         guard SnippetPicker.shared.pickLastDictation() else { return }
                         self?.handler?.handlePasteDictationHotkey()
                     }
-                    return swallowDown(keyCode)
+                    return swallowDown(keyCode, event: event)
                 }
                 if let d = Self.digitIndex(keyCode), let bank = Self.digitBank(relevantMods(event.flags)) {
                     // Нумерация продолжается модификаторами (автор 06.08): 1…9, затем ⇧1…⇧9, затем
@@ -674,7 +756,7 @@ final class EventTap {
                         guard let text = SnippetPicker.shared.pick(index: idx) else { return }
                         self?.handler?.handleSnippetPicked(text)
                     }
-                    return swallowDown(keyCode)
+                    return swallowDown(keyCode, event: event)
                 }
                 onMain { SnippetPicker.shared.hide() }
                 // не глотаем: клавиша принадлежит человеку
@@ -682,7 +764,7 @@ final class EventTap {
                 let want = relevantMods(CGEventFlags(rawValue: s.snippetPickModifiers))
                 if relevantMods(event.flags) == want {
                     onMain { _ = SnippetPicker.shared.show() }
-                    return swallowDown(keyCode)
+                    return swallowDown(keyCode, event: event)
                 }
             }
             // Вставка без форматирования. Стоит ДО перевода и до общего хоткея: сочетание с ⌘V
@@ -691,7 +773,7 @@ final class EventTap {
                 let want = relevantMods(CGEventFlags(rawValue: s.plainPasteModifiers))
                 if !want.isEmpty, relevantMods(event.flags) == want {
                     onMain { PlainPaste.paste() }
-                    return swallowDown(keyCode)
+                    return swallowDown(keyCode, event: event)
                 }
             }
             // Смена регистра выделенного. Стоит рядом со вставкой без форматирования и переводом:
@@ -704,7 +786,7 @@ final class EventTap {
                     if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
                         onMain { [weak self] in self?.handler?.handleCaseHotkey() }
                     }
-                    return swallowDown(keyCode)
+                    return swallowDown(keyCode, event: event)
                 }
             }
             // Вставка последней диктовки. Стоит здесь же, среди «работы с чужим полем по сочетанию»,
@@ -719,22 +801,22 @@ final class EventTap {
                     if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
                         onMain { [weak self] in self?.handler?.handlePasteDictationHotkey() }
                     }
-                    return swallowDown(keyCode)
+                    return swallowDown(keyCode, event: event)
                 }
             }
             if #available(macOS 15.0, *), s.translateEnabled, keyMatches(keyCode, s.translateHotkeyKeyCode) {
                 let want = relevantMods(CGEventFlags(rawValue: s.translateHotkeyModifiers))
                 if !want.isEmpty, relevantMods(event.flags) == want {
                     onMain { [weak self] in self?.handler?.handleTranslateHotkey() }
-                    return swallowDown(keyCode)
+                    return swallowDown(keyCode, event: event)
                 }
             }
             // key-режим: обычная клавиша + модификаторы.
             if s.hotkeyMode == "key", s.hotkeyKeyCode >= 0, keyMatches(keyCode, s.hotkeyKeyCode) {
                 let target = relevantMods(CGEventFlags(rawValue: s.hotkeyModifiers))
                 if !target.isEmpty, relevantMods(event.flags) == target {
-                    onMain { [weak self] in self?.handler?.handleSwitchHotkey() }
-                    return swallowDown(keyCode)   // глотаем: символ хоткея не должен печататься
+                    handler?.handleSwitchHotkey()
+                    return swallowDown(keyCode, event: event)   // глотаем: символ хоткея не должен печататься
                 }
             }
             // (Учёт для модификаторных жестов перенесён в НАЧАЛО ветки — см. выше: ранние
@@ -770,26 +852,9 @@ final class EventTap {
             let post: (CGEvent) -> Void = { $0.tapPostEvent(proxy) }
             if handler?.handleKeyDown(keyCode: keyCode, characters: chars, flags: event.flags,
                                       eventTime: Self.eventUptime(event), post: post) == true {
-                // Здесь НЕ регистрируем парность: за inline-замену учёт ведёт Engine
-                // (inlineSwallowedKeyCode → consumeInlineSwallowedKeyUp), и двойной учёт съел бы
-                // keyUp дважды. ⚠️ Но handleKeyDown возвращает true из ТРЁХ мест, а метку ставит
-                // только путь inline-замены: раскрытие сниппета и проглоченный Enter метки не
-                // ставят, и их keyUp уходит в приложение непарным. Это не регрессия (так было и до
-                // введения парности), но при следующей правке этой ветки не считай инвариант
-                // «true ⇒ Engine пометил» верным — он неверен.
-                return nil   // клавиша проглочена: раскрытие сниппета ИЛИ inline-замена уже отправлена
+                return swallowDown(keyCode, event: event)
             }
-            // Клавиша уходит в приложение как обычно. Снимаем возможную «протухшую» пару: если её
-            // keyUp когда-то потерялся (переключение из приложения с зажатой клавишей), запись в
-            // наборе съела бы отпускание СЛЕДУЮЩЕГО, честного нажатия. Так набор самоизлечивается.
-            swallowedDownKeyCodes.remove(keyCode)
         case .keyUp:
-            // F3: keyDown этой клавиши мы проглотили inline-заменой → её keyUp тоже нельзя пускать,
-            // иначе Chromium/Qt/игры получают непарное «отпускание» клавиши, которую не нажимали.
-            if let h = handler as? Engine,
-               h.consumeInlineSwallowedKeyUp(event.getIntegerValueField(.keyboardEventKeycode)) {
-                return nil
-            }
             // ⚠️ Отдельной ветки «глотаем keyUp у LANG1» здесь больше нет (28.07): она глотала
             // отпускание ПО УСЛОВИЮ НАСТРОЕК, а не по факту того, что мы глотали нажатие. Стоило
             // caps-режиму включиться между нажатием и отпусканием — и приложение получало клавишу,
@@ -1096,7 +1161,7 @@ final class EventTap {
                     // работает с Windows-машиной по RDP.
                     modkeyArmed = relevantMods(flags).subtracting(relevantMods(mask)).isEmpty
                 } else if modkeyArmed {
-                    onMain { [weak self] in self?.handler?.handleSwitchHotkey() }
+                    handler?.handleSwitchHotkey()
                     modkeyArmed = false
                 }
             } else {
@@ -1134,7 +1199,7 @@ final class EventTap {
             } else if keyCodeMatchesMask(keyCode, mask) && pressed {
                 let now = CACurrentMediaTime()
                 if now - lastModTap < 0.30 && !otherKeyBetweenTaps {
-                    onMain { [weak self] in self?.handler?.handleSwitchHotkey() }
+                    handler?.handleSwitchHotkey()
                     lastModTap = 0
                 } else {
                     lastModTap = now
@@ -1164,7 +1229,7 @@ final class EventTap {
             } else if comboArmed {
                 if now.isEmpty {
                     // Жест закончен: всё отпущено и посторонних клавиш не было — это наш хоткей.
-                    if !otherKeyDuringCombo { onMain { [weak self] in self?.handler?.handleSwitchHotkey() } }
+                    if !otherKeyDuringCombo { handler?.handleSwitchHotkey() }
                     comboArmed = false
                 } else if !now.subtracting(target).isEmpty {
                     // Поверх маски пришёл ЧУЖОЙ модификатор (⌥⇧ + ⌘) — это другой аккорд, не наш.

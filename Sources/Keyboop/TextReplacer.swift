@@ -355,7 +355,8 @@ enum TextReplacer {
     /// F5: `IsSecureEventInputEnabled()` стоит до ~44мс на холодную — в колбэке его НЕ зовём,
     /// вызывающий проверяет заранее (Engine держит поллер secure input).
     @discardableResult
-    static func replaceInline(deleteCount n: Int, with text: String, post: (CGEvent) -> Void) -> Bool {
+    static func replaceInline(deleteCount n: Int, with text: String, oneCharacterPerKey: Bool = false,
+                              post: (CGEvent) -> Void) -> Bool {
         guard n >= 0, let src = inlineSource else { return false }
         var batch: [CGEvent] = []
         batch.reserveCapacity(n * 2 + 6)
@@ -377,12 +378,23 @@ enum TextReplacer {
                 batch.append(e)
             }
         }
-        let units = Array(text.utf16)
-        var i = 0
-        while i < units.count {
-            let chunk = Array(units[i..<min(i + 12, units.count)])
+        // В Paradev много букв в одном событии иногда доходят до textarea Chromium,
+        // но пропускаются xterm при передаче в PTY. Один символ на пару событий доходит целиком.
+        let chunks: [[UInt16]]
+        if oneCharacterPerKey {
+            chunks = text.map { Array(String($0).utf16) }
+        } else {
+            let units = Array(text.utf16)
+            chunks = stride(from: 0, to: units.count, by: 12).map {
+                Array(units[$0..<min($0 + 12, units.count)])
+            }
+        }
+        // Код 0 — физическая A. В режиме Kitty xterm отправит в PTY отпускание A после
+        // каждой напечатанной буквы. 255 оставляет Unicode в keyDown и даёт нейтральный keyUp.
+        let textKey: CGKeyCode = oneCharacterPerKey ? 255 : 0
+        for chunk in chunks {
             for down in [true, false] {
-                guard let e = CGEvent(keyboardEventSource: src, virtualKey: 0, keyDown: down) else { return false }
+                guard let e = CGEvent(keyboardEventSource: src, virtualKey: textKey, keyDown: down) else { return false }
                 e.flags = []
                 e.setIntegerValueField(.eventSourceUserData, value: kbSyntheticMarker)
                 chunk.withUnsafeBufferPointer {
@@ -390,7 +402,6 @@ enum TextReplacer {
                 }
                 batch.append(e)
             }
-            i += 12
         }
         guard !batch.isEmpty else { return false }
         for e in batch { post(e) }   // всё построено — отправляем разом
